@@ -55,6 +55,13 @@ const PRE_FIX_RESUME = [[
   '',
 ]];
 
+// 5. no cover deadline: the pre-fix timer was declared but the branch was never
+//    announced, and a bound equal to the contract cannot resolve inside it.
+const PRE_FIX_COVER = [[
+  "            adLog('cold-cover-timeout', { ms: Date.now() - (overlay.coldCoverAt || Date.now()) });\n            stopAdOverlay('cold-cover-timeout');",
+  "            void 0;",
+]];
+
 const checks = [];
 function check(name, fn) {
   try {
@@ -234,6 +241,40 @@ async function main() {
     });
   }
 
+  // ---- 6. the cold cover has a deadline INSIDE the 12 s contract ----------
+  // Measured 2026-11-07T13:40Z in a guest Chrome: the cover was taken at
+  // 3410 ms, the clean frame reported `buffered=2.450291` and never reached the
+  // 4 s reveal gate, and the cover ended at 15294 ms — past the contract, and
+  // with no log line naming the branch, so the instrument read it as "resolved
+  // by nothing". These two arms pin the branch: the timer must fire before the
+  // bound and it must announce itself.
+  async function coldCoverArm(source, boundMutated) {
+    const page = makePage(source);
+    setNative(page, { ct: 0.2, edge: 0, bufferedEnd: 0, paused: true }); // cold preroll
+    page.bypass({ type: 'standby-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+    await settle(20);
+    page.frameMsg({ t: 'ready' });
+    // Thin forward buffer: the reveal gate wants 4 s, this source never gives it.
+    page.frameMsg(healthySt({ buffered: 2.45, lat: 30, pos: 30 }));
+    page.bypass({ type: 'ad-hold' });
+    await settle(40);
+    const covered = page.logsOf('cold-cover').length > 0;
+    const started = Date.now();
+    await settle(boundMutated ? 12600 : 9600); // past 9 s, or past 12 s for the mutant
+    return { page, covered, elapsed: Date.now() - started };
+  }
+  {
+    const { page, covered } = await coldCoverArm(SOURCE, false);
+    check('a cover that never reaches the 4s buffer bound hands the native back inside the 9s deadline', () => {
+      assert(covered, `no cold-cover was taken (${JSON.stringify(page.logs().map((l) => l.ev))})`);
+      const fired = page.logsOf('cold-cover-timeout');
+      assert(fired.length === 1, `cold-cover-timeout fired ${fired.length} time(s), not once`);
+      assert(fired[0].d.ms <= 9500, `the deadline fired at ${fired[0].d.ms} ms, not inside 9 s`);
+      assert(page.logsOf('overlay-reveal').length === 0, 'the clean player was revealed although it never got healthy');
+      assert(page.video.style.visibility !== 'hidden', `the native was left hidden (${page.video.style.visibility})`);
+    });
+  }
+
   // ---- negative arms: the pre-fix code must fail every detector -----------
   const negatives = [
     ['catch-up scope/threshold', PRE_FIX_CATCHUP, async () => {
@@ -281,6 +322,14 @@ async function main() {
       return {
         caught: page.video.paused === false || (page.video.plays || 0) > 0,
         detail: `paused=${page.video.paused} plays=${page.video.plays || 0}`,
+      };
+    }],
+    ['cover deadline', PRE_FIX_COVER, async () => {
+      const { page, covered } = await coldCoverArm(mutate(PRE_FIX_COVER), true);
+      const fired = page.logsOf('cold-cover-timeout').length;
+      return {
+        caught: !covered || fired !== 1 || page.video.style.visibility === 'hidden',
+        detail: `covered=${covered} timeouts=${fired} nativeVis=${page.video.style.visibility}`,
       };
     }],
   ];

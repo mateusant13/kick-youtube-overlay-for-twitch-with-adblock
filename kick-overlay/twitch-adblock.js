@@ -168,6 +168,13 @@
   // 3292 ms, hand-off at 15294 ms). The catch-up below still moves the picture
   // to the edge on the next tick, so a late reveal corrects itself.
   const CLEAN_LAT_REVEAL_MAX = 20;
+  // A cold cover holds the picture while the clean source is still minting, so
+  // it needs a hard deadline INSIDE the 12 s contract, not equal to it. Equal
+  // was unpassable: the timer fired at 12000 ms and the reachability arm
+  // requires resolution at <= 12000 ms, so the timer branch always measured as
+  // a violation (guest run 2026-11-07T13:40Z: cold-cover 3410 ms, hand-off
+  // 15294 ms, `buffered=2.450291` never reaching the 4 s reveal gate).
+  const COLD_COVER_BOUND_MS = 9000;
   const RESUME_GAP_SEC = 1.5; // a smaller native/clean difference is not worth a seek
   const bypassStats = {
     starts: 0,
@@ -1670,10 +1677,17 @@
           try { overlay.frame.style.opacity = '1'; } catch { /* ignore */ }
           try { hideNativeVideos(); } catch { /* ignore */ }
           adLog('cold-cover', { reason: 'ad-hold', ct: +Number(v.currentTime || 0).toFixed(1) });
+          overlay.coldCoverAt = Date.now();
           try { clearTimeout(overlay.coldTimer); } catch { /* ignore */ }
           overlay.coldTimer = setTimeout(() => {
-            if (overlay.coldCover && !overlay.revealed) stopAdOverlay('cold-cover-timeout');
-          }, 12000);
+            if (!overlay.coldCover || overlay.revealed) return;
+            // Announce the branch before handing back: the reachability arm
+            // (and anyone reading ko.adlog) sees WHY the cover ended. Without
+            // this line the timer path was invisible and read as "resolved at
+            // 15.3s by nothing" (measured guest run 2026-11-07T13:40Z).
+            adLog('cold-cover-timeout', { ms: Date.now() - (overlay.coldCoverAt || Date.now()) });
+            stopAdOverlay('cold-cover-timeout');
+          }, COLD_COVER_BOUND_MS);
         }
         // A warm standby is already playing the clean live edge. Reveal it
         // now: this is the 0s path. If it is still buffering, adopt it here:
