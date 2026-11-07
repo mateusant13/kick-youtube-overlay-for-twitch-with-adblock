@@ -36,7 +36,7 @@ Cap: one visible pane per canonical project across workspaces/worktrees. Create 
 - Reload the content script of an open tab with `_tools\ko-cdp.mjs` + `Page.reload`. A page reload can trigger a Twitch preroll.
 - Inspect the owner tab and the extension service worker (`ko.adlog`): `G:\Temp\opencode\ko-owner-probe.mjs`.
 - Single-channel harness: `G:\Temp\opencode\ko-one-soak.mjs`.
-- Gate: `node _tools\ko-verify.mjs`; require `RESULT PASS` and `failed=0` (18 checks as of 0.8.44; the count grows with the suite, so pin the verdict, not the number).
+- Gate: `node _tools\ko-verify.mjs`; require `RESULT PASS` and `failed=0` (18 checks as of 0.8.45; the count grows with the suite, so pin the verdict, not the number).
 - agent-browser: `H:\env\npm-global\agent-browser.cmd`, `connect 9222`. Use it for page UI, not for the extension service worker or `ko.adlog`.
 
 ## Project notes
@@ -53,6 +53,12 @@ Destination: the four defects the owner reported on 2026-11-07 (live several sec
 
 Scope decision (`project-revival`): this stays a contained defect wave, not a project-revival programme. The failure modes live in one module and one gate, and the product surface (features, install, usage) does not change, so the containment the skill asks for is already met.
 
+Shipped build: 0.8.45, synced to the installed copy and reloaded into the debug-profile Chrome (`loaded=0.8.44 expected=0.8.45`, `after=0.8.45`). 0.8.44 was cut and then corrected before it reached the browser, so the four ledger rows name 0.8.45 as `fixed_in`.
+
+Two claims were demoted from `verified` to `fixed` instead of being carried on evidence that predates this commit, because `_tools/ko-verify.mjs` refuses a reachability record older than the source it measured: `KO-20261023-01` (cold cover) and `KO-20261026-04` (YouTube resume). Both keep their old records, their new `next` field names the exact re-arm command, and the re-arm was NOT chased with a retry loop: three guest runs on 2026-11-07 measured the reason (one cold-cover resolved at 15.3 s past the 12 s bound on `buffered=2.45 < 4`, two NO-VERDICT), and repeated guest starts are what the owner reported as terminal popups.
+
+Console windows: `_tools/ko-guest.mjs:41` (the `powershell -Command Get-CimInstance … taskkill` kill), `:84` (the Chrome child) and `_tools/ko-harness.mjs:58` (the `guest stop` child) spawned without a console flag from a console-less parent, which is what Windows presented to the owner as a popup window (herdr DMs `dm-09d12544c5fb3ffeadee`, `dm-17db5363d76e5e8d0b0b`). All three now carry `windowsHide: true`, and the per-measurement start/stop loop was replaced by one combined invocation. The two `pythonw.exe` rows (`tools\tray.ps1`) are not this lane.
+
 Declined parts and their re-arm conditions:
-- **No live-pod measurement.** A real pod was not painted in the guest Chrome during the 2026-10-26 runs (5 `ad-net` requests, 0 visible-ad samples over 150 s), so the arms are unit-level through the real module. Re-arm: the first time the owner reports a pod while 0.8.44 is installed, time the reveal and the hand-back on his Chrome and move the four ledger rows off `fixed`.
+- **No live-pod measurement.** A real pod was not painted in the guest Chrome during the 2026-10-26 runs (5 `ad-net` requests, 0 visible-ad samples over 150 s), so the arms are unit-level through the real module. Re-arm: the first time the owner reports a pod while 0.8.45 is installed, time the reveal and the hand-back on his Chrome and move the four ledger rows off `fixed`.
 - **No cold-open (preroll cover) work.** That defect has its own trap (`cold-cover-fixture`, 7.4 s observed on 2026-10-25) and is not in the four reports. Re-arm: only if the owner names the cold open again.

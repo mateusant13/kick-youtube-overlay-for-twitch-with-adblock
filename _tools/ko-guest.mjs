@@ -33,7 +33,13 @@ function killTree() {
   const ps = 'Get-CimInstance Win32_Process -Filter "Name=\'chrome.exe\'" | ' +
     "Where-Object { $_.CommandLine -like '*ko-guest*' -or $_.CommandLine -like '*ko-harness*' } | " +
     'ForEach-Object { taskkill /PID $($_.ProcessId) /T /F 2>&1 | Out-Null }';
-  try { spawnSync('powershell', ['-NoProfile', '-Command', ps], { stdio: 'ignore' }); } catch {}
+  try {
+    // windowsHide: a console-subsystem child spawned from a console-less parent
+    // allocates a NEW console, and Windows presents it as a real window that
+    // takes focus (owner report 2026-11-07: a terminal popped up on his screen
+    // while this kill ran). The flag belongs on every level of the chain.
+    spawnSync('powershell', ['-NoProfile', '-Command', ps], { stdio: 'ignore', windowsHide: true });
+  } catch {}
   for (const f of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
     try { rmSync(`${UDD}/${f}`, { force: true }); } catch {}
   }
@@ -75,7 +81,7 @@ const args = [
   URL_,
 ];
 log('chrome args', args.join(' '));
-const child = spawn(CHROME, args, { stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'] });
+const child = spawn(CHROME, args, { stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'], windowsHide: true });
 child.stdio[2].on('data', (d) => { const s = String(d).trim(); if (s && !/TensorFlow|XNNPACK|Fontconfig/.test(s)) log('stderr', s.split('\n').slice(0, 3).join(' | ')); });
 child.on('exit', (c) => { log('chrome exited', c); process.exit(0); });
 

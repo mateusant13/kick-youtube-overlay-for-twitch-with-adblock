@@ -7,7 +7,7 @@
       "state": "fixed",
       "author": "lane",
       "reported": "2026-11-07",
-      "fixed_in": "0.8.44",
+      "fixed_in": "0.8.45",
       "commit": null,
       "hypothesis": "The clean player was only pulled onto the live edge when it was MORE than 20s behind AND only while an ad was active. A warm standby minted at page load sits wherever hls.js joined the live window (5-19s behind), so it passed the gate unchanged and was revealed one segment-delay behind the native. hls.js then plays at 1x and can never close a constant offset, so the delay was permanent for the whole pod. The user's own observation that dragging the bar forward a few seconds keeps working proves a forward seek inside the live window is safe, so the extension had no reason to leave the offset there. The same 20s gate also gated `healthy`, so a 12s-behind standby was considered fit to show.",
       "falsifier": "With a standby 12s behind the live edge, a reveal must hand the user a picture at the same offset as the native (within 3s of the edge). If the revealed player is left 12s behind, or is revealed without a seek, the fix did not take.",
@@ -30,7 +30,7 @@
       "state": "fixed",
       "author": "lane",
       "reported": "2026-11-07",
-      "fixed_in": "0.8.44",
+      "fixed_in": "0.8.45",
       "commit": null,
       "hypothesis": "resumeNative() seeked the native to `buffered.end - 0.5`, which is the newest frame the ELEMENT holds, not the offset the clean player was showing. On a native Twitch paused while it was covered that is a seek across the whole pod (a visible jump); on one that kept buffering it is a free jump forward past the clean position. Independently, ad-end called resumeNativeIfAllowed(), which refuses while `overlay.adActive` is still set and a revealed frame is still mounted - both true at that moment - so the hand-back was deferred to the 300ms retry, i.e. a frozen native frame followed by a jump.",
       "falsifier": "At ad-end the native must already stand at the offset the clean player had (edge - cleanLatTarget, within 1.5s), with no seek at all when it is already there. A hand-back that moves the native by seconds, or that leaves it frozen for a retry, is the defect.",
@@ -52,7 +52,7 @@
       "state": "fixed",
       "author": "lane",
       "reported": "2026-11-07",
-      "fixed_in": "0.8.44",
+      "fixed_in": "0.8.45",
       "commit": null,
       "hypothesis": "The user's mute decision was captured ONCE at take-over (adoptNativeMute/overlay.muteIntent) and never tracked afterwards, so an unmute during the pod reached the clean player only if the generic pointerdown handler fired - and that handler returned early for `overlay.muteIntent`, i.e. exactly the case of a user who had muted. The reverse direction came from the autoplay muting: the extension muted the clean frame to get it to play, and nothing marked that mute as OURS, so `autoplayMuted` was never set and the reveal treated the silence as the user's, while a page click later unmuted a user who had asked for silence.",
       "falsifier": "Unmute while the clean player covers the ad: the clean player must become audible immediately, and the ad-end hand-back must NOT re-mute the native. Mute, then click anywhere in the page: it must stay silent.",
@@ -74,7 +74,7 @@
       "state": "fixed",
       "author": "lane",
       "reported": "2026-11-07",
-      "fixed_in": "0.8.44",
+      "fixed_in": "0.8.45",
       "commit": null,
       "hypothesis": "resumeNative() called play() on the native whenever the lifecycle allowed it, with no check on (a) document.visibilityState and (b) whether the user had paused the native before the pod. A tab left paused in the background is therefore started by the ad path as soon as a standby start or an ad-end tick reaches it, which is audible from another tab.",
       "falsifier": "A native that was already paused at take-over (and never played) must still be paused at ad-end, and a hidden tab must never be started. A cold preroll (paused at currentTime<1, i.e. the page just loaded) is the one case where starting it is correct.",
@@ -198,7 +198,7 @@
     {
       "id": "KO-20261023-01",
       "title": "Cold preroll native ad stays visible too long",
-      "state": "verified",
+      "state": "fixed",
       "author": "lane",
       "reported": "2026-10-23",
       "fixed_in": "0.8.31 / 0.8.32",
@@ -214,22 +214,24 @@
         "Same fixture, page arms: with a prewarmed standby, `cold-cover` fires on the ad-hold tick (reason `ad-hold`, <=2000 ms) with the native video hidden in the same turn, and `overlay-reveal` lands inside the 12 s cold-cover window. The pre-fix mutation (`if (overlay.frame && !overlay.revealed && !overlay.playing)` -> `if (false)`) emits no `cold-cover` and leaves the native ad visible, so the detector goes RED as required. Gate check `cold-cover-fixture`",
         "Arm artifact, regenerated every gate run: _evidence/KO-20261023-01-arms.md (command, source sha256 of twitch-adblock.js, the extracted RED/mutation lines, full captured output). Gate check `cold-cover-fixture`",
         "Reachability probe, real Chrome (guest profile 9333, live twitch.tv/rodil, 0.8.43): the real ad-hold posted on the extension's own BroadcastChannel returned NO-VERDICT because no `#ko-adfix` frame existed, so the cold-cover branch was never entered; recorded as _evidence/KO-20261023-01-real-browser-attempt.txt rather than dropped. Check `verified-artifacts` refuses this bug if the artifact is missing, stale (>24 h) or has no RED line",
-        "Real-Chrome reachability, 0.8.43, live twitch.tv/aggeo: cold-cover on the hold tick, frame opacity 1, every native <video> hidden, overlay-reveal 2,141 ms later (inside the 12 s bound), event stream captured from the module own ko-adlog CustomEvent. _evidence/KO-20261023-01-reachability.txt, produced by _tools/ko-real-arm-d1.mjs"
+        "Real-Chrome reachability, 0.8.43, live twitch.tv/aggeo: cold-cover on the hold tick, frame opacity 1, every native <video> hidden, overlay-reveal 2,141 ms later (inside the 12 s bound), event stream captured from the module own ko-adlog CustomEvent. _evidence/KO-20261023-01-reachability.txt, produced by _tools/ko-real-arm-d1.mjs",
+        "Re-arm attempt 2026-11-07 after 0.8.44 changed twitch-adblock.js (the freshness rule in _tools/ko-verify.mjs:521-529 refuses a reachability record older than the last commit of the source it measured). Three runs of `node _tools/ko-real-arm-d1.mjs 9333` against a fresh headless guest: (a) twitch.tv/aggeo 13:38Z - NO-VERDICT, the hold landed after the frame was already healthy (`playing-not-healthy` at 4132 ms); (b) twitch.tv/aggeo 13:40Z - cold-cover on the hold tick at 3410 ms, frame opacity 1, every native <video> hidden, but the cover resolved at 15294 ms (`native-handoff`), past the 12 s bound, because the healthy gate wants 4 s of forward buffer and the frame reported `rs=4 buffered=2.450291` at the first tick; (c) twitch.tv/rodil 13:42Z - NO-VERDICT (no cold-cover inside the 3 s post-hold window). The bound failure is NOT caused by the 0.8.44 latency change: that change made catch-up stricter (fires above 8 s instead of 20 s) while the reveal gate keeps the old 20 s (CLEAN_LAT_REVEAL_MAX), so resolution is weakly easier than before; the blocker in (b) is the untouched `buffered >= 4` limb. The claim is therefore kept as FIXED, NOT VERIFIED rather than silently carried on a record that predates the shipped source, and no fourth browser run was made: repeated guest Chrome starts are what the owner reported as terminal popups (herdr DMs dm-09d12544c5fb3ffeadee, dm-17db5363d76e5e8d0b0b)."
       ],
-      "verified": true,
+      "verified": false,
       "verified_by": "consultgpt gpt_ask (ChatGPT, separate provider, session ko-independent-review-1), third pass on 2026-10-27 with _evidence/KO-20261023-01-reachability.txt: \"A) VERIFIED - Deciding line: resolved: overlay-reveal, within_bound: true, pass true (2,141 ms after the injected ad-hold, with the cold-cover logged, the frame opaque, and the native video hidden).\" Passes 1 and 2 had refused for lack of a real-browser run.",
-      "owner_validation": "a Twitch-served ad that actually paints, across repeated runs and channels on the owner Chrome",
-      "next": "Arm, reachability and independent review are all recorded. The only open measurement is a genuine Twitch-served ad, which also gives coverMs/revealMs for real timing; it needs the owner Chrome and cannot be manufactured.",
+      "owner_validation": "pending: a Twitch-served ad that actually paints, across repeated runs and channels on the owner Chrome, which is also the only measurement that gives real coverMs/revealMs. The reachability re-arm must be taken again on a pod, not on a synthetic hold.",
+      "next": "Re-arm with `node _tools/ko-real-arm-d1.mjs` during a REAL pod on the owner Chrome (one run, not a loop): the synthetic-hold arm is timing-flaky (3 runs on 2026-11-07: NO-VERDICT / bound-exceeded / NO-VERDICT) because it races the three healthy heartbeats, and the 4 s forward-buffer limb cannot be reached on a source that buffers 2.45 s. Move the row back to `verified` only with a fresh PASS record.",
       "arms_artifact": "_evidence/KO-20261023-01-arms.md",
       "verified_at": "2026-10-27",
       "reachability_artifact": "_evidence/KO-20261023-01-reachability.txt",
       "reachability_verdict": "PASS",
-      "reachability_note": "node _tools/ko-real-arm-d1.mjs, real Chrome, shipped 0.8.43, live twitch.tv/aggeo: waited for #ko-adfix, posted the real ad-hold on the extension BroadcastChannel while healthyTicks was still under 3 (the code definition of cold), and captured the module own ko-adlog stream. cold-cover logged, frame opaque on the hold tick, every native video visibility:hidden, overlay-reveal 2,141 ms later. Three earlier designs returned NO-VERDICT and are recorded here because each one named a real fact about the code: (1) no #ko-adfix frame on a channel whose standby never started, (2) the adblock module globals live in the page MAIN world and reading an isolated context gives pageId null, (3) pausing the clean player does NOT make a standby cold, because overlay.playing flips on three healthy heartbeats (twitch-adblock.js:1288-1293) and the health test ignores the paused flag."
+      "reachability_note": "node _tools/ko-real-arm-d1.mjs, real Chrome, shipped 0.8.43, live twitch.tv/aggeo: waited for #ko-adfix, posted the real ad-hold on the extension BroadcastChannel while healthyTicks was still under 3 (the code definition of cold), and captured the module own ko-adlog stream. cold-cover logged, frame opaque on the hold tick, every native video visibility:hidden, overlay-reveal 2,141 ms later. Three earlier designs returned NO-VERDICT and are recorded here because each one named a real fact about the code: (1) no #ko-adfix frame on a channel whose standby never started, (2) the adblock module globals live in the page MAIN world and reading an isolated context gives pageId null, (3) pausing the clean player does NOT make a standby cold, because overlay.playing flips on three healthy heartbeats (twitch-adblock.js:1288-1293) and the health test ignores the paused flag.",
+      "rearm_note": "reachability_artifact and reachability_verdict left in place as the 2026-10-27 record; they no longer satisfy the gate because the source moved."
     },
     {
       "id": "KO-20261026-04",
       "title": "Overlay un-pauses the owner's own YouTube video (probe resumed a player the user paused)",
-      "state": "verified",
+      "state": "fixed",
       "author": "lane",
       "reported": "2026-10-26",
       "fixed_in": "unreleased (after 0.8.42)",
@@ -244,17 +246,19 @@
         "Fix: resumeNativePagePlayer() now requires ownership (`KO.twWasPlaying`, or an explicit `ours` passed across teardown) before it touches the element; the two OFF branches carry the flag across teardown() because teardown clears it (content.js:1705)",
         "kick-overlay/youtube-resume-test.cjs drives the real content.js through the real invoker (probe()) on a stubbed YouTube watch page: pre-fix arm RED (user-paused video resumed, play() called), real source GREEN (paused stays true, 0 play() calls, and a video WE paused is still handed back). Registered as gate check `youtube-resume`",
         "Arm artifact, regenerated every gate run: _evidence/KO-20261026-04-arms.md (command, source sha256 of content.js, the RED line, full captured output). Check `verified-artifacts` binds the state to it",
-        "Real Chrome, guest profile 9333, 0.8.43, live twitch.tv/rodil with the native video playing (rs=4): user pause through Twitch's own play/pause button via CDP input, then 50 s (two 20 s probe ticks) sampled every 5 s -> paused true in 10/10 samples, currentTime frozen at 69.98 (drift 0). Positive arm: KO.twWasPlaying set the way syncMute sets it -> the same probe resumed the video within 20 s (paused false, ct 73.64). _evidence/KO-20261026-04-real-browser.txt"
+        "Real Chrome, guest profile 9333, 0.8.43, live twitch.tv/rodil with the native video playing (rs=4): user pause through Twitch's own play/pause button via CDP input, then 50 s (two 20 s probe ticks) sampled every 5 s -> paused true in 10/10 samples, currentTime frozen at 69.98 (drift 0). Positive arm: KO.twWasPlaying set the way syncMute sets it -> the same probe resumed the video within 20 s (paused false, ct 73.64). _evidence/KO-20261026-04-real-browser.txt",
+        "Re-arm attempt 2026-11-07: 0.8.44 changed kick-overlay/content.js (the per-element `KO.twPaused` ownership set, which is the same defect class on the Twitch side of this session's report), so the freshness rule in _tools/ko-verify.mjs:521-529 no longer accepts the 2026-10-26 reachability record. Re-arming needs `node _tools/ko-real-arm-d2.mjs` on a real youtube.com watch page with a user-session; the guest profile is served a YouTube login/bot check (recorded in the gate NOT MEASURED list since 2026-10-26), so the arm cannot be taken from a guest. NOT re-run tonight, and the row is demoted instead of carrying an artifact that predates the shipped source."
       ],
-      "verified": true,
+      "verified": false,
       "verified_by": "consultgpt gpt_ask (ChatGPT, separate provider and browser session 'ko-independent-review-1'), two passes on 2026-10-27; asked to judge only the attached code and artifacts. Pass 1: the harness executes the real content.js probe() with a mutation that removes the ownership guard, \"meaningful regression evidence\", but not real-browser proof. Pass 2, after the real-Chrome run: \"Yes, independently verified for the shared resume path under the tested conditions\"; the deciding line is armA \"stayed_paused\": true, with armB resuming through the same probe path. Caveat kept: YouTube-specific behaviour was not tested because the guest profile hits YouTube's login/bot check.",
       "owner_validation": "youtube.com itself in the owner Chrome (guest profile is blocked by YouTube login/bot check)",
-      "next": "Confirm on the owner's own YouTube session after 0.8.43 is installed; the shared resume path is proved, the YouTube page is not.",
+      "next": "Re-arm with `node _tools/ko-real-arm-d2.mjs` against the owner's own YouTube session (one run): pause a video, let the overlay probe, confirm it stays paused. Then move the row back to `verified` with the fresh record.",
       "arms_artifact": "_evidence/KO-20261026-04-arms.md",
       "verified_at": "2026-10-27",
       "reachability_artifact": "_evidence/KO-20261026-04-reachability.txt",
       "reachability_verdict": "PASS",
-      "reachability_note": "node _tools/ko-real-arm-d2.mjs against the guest Chrome (live twitch.tv/rodil, 0.8.43): the guard was reached and held (10/10 samples paused, currentTime frozen) while the positive arm resumed through the same probe."
+      "reachability_note": "node _tools/ko-real-arm-d2.mjs against the guest Chrome (live twitch.tv/rodil, 0.8.43): the guard was reached and held (10/10 samples paused, currentTime frozen) while the positive arm resumed through the same probe.",
+      "rearm_note": "reachability_artifact/reachability_verdict kept as the 2026-10-26 record; they no longer satisfy the gate because content.js moved."
     }
   ]
 }

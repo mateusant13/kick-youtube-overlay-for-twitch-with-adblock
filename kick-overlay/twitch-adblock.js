@@ -161,6 +161,13 @@
   //    no visibility and no user-intent check.
   const CLEAN_LAT_TARGET = 3; // seconds behind the live edge the clean player aims for
   const CLEAN_LAT_MAX = 8; // above this the clean player is seeked back to the edge
+  // A reveal may go out at a looser offset than catch-up aims for. Keep this at
+  // the pre-2026-11-07 bound: the cold-cover contract resolves inside 12 s, and
+  // measuring showed a source whose live window could not be pulled under 8 s
+  // held the cover past that bound (guest arm 2026-11-07T13:40Z: cold-cover at
+  // 3292 ms, hand-off at 15294 ms). The catch-up below still moves the picture
+  // to the edge on the next tick, so a late reveal corrects itself.
+  const CLEAN_LAT_REVEAL_MAX = 20;
   const RESUME_GAP_SEC = 1.5; // a smaller native/clean difference is not worth a seek
   const bypassStats = {
     starts: 0,
@@ -1425,7 +1432,7 @@
         // user would see a delayed stream and a jump at ad-end. Seek forward
         // inside the live window, at most every 2s, and let the healthy gate
         // below hold the overlay hidden until latency is back under
-        // CLEAN_LAT_MAX. Before 2026-11-07 this only ran while an ad was
+        // CLEAN_LAT_REVEAL_MAX. Before 2026-11-07 this only ran while an ad was
         // active and only above 20s, so a warm standby could sit 5-19s behind
         // and be revealed as-is.
         if ((overlay.adActive || overlay.standby) && typeof m.st.lat === 'number') catchUpClean(m.st);
@@ -1438,7 +1445,7 @@
           // surface up until the clean player can survive several refreshes.
           const latOk = !overlay.adActive
             || typeof m.st.lat !== 'number'
-            || m.st.lat <= CLEAN_LAT_MAX;
+            || m.st.lat <= CLEAN_LAT_REVEAL_MAX;
           const healthy = latOk
             && (typeof m.st.rs !== 'number' || m.st.rs >= 3)
             && (typeof m.st.buffered !== 'number' || m.st.buffered >= 4);

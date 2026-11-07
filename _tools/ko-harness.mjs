@@ -55,7 +55,7 @@ async function guestUp(timeout = 1500) {
 }
 
 function stopGuest() {
-  const r = spawnSync(process.execPath, [GUEST, 'stop'], { encoding: 'utf8' });
+  const r = spawnSync(process.execPath, [GUEST, 'stop'], { encoding: 'utf8', windowsHide: true });
   process.stdout.write((r.stdout || '').trim() + '\n');
 }
 
