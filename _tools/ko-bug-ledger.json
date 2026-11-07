@@ -198,10 +198,10 @@
     {
       "id": "KO-20261023-01",
       "title": "Cold preroll native ad stays visible too long",
-      "state": "verified",
+      "state": "fixed",
       "author": "lane",
       "reported": "2026-10-23",
-      "fixed_in": "0.8.31 / 0.8.32 / 0.8.45 (cover deadline)",
+      "fixed_in": "0.8.31 / 0.8.32 / 0.8.45 (cover deadline) / 0.8.46 (hold no longer paints)",
       "commit": "98fd0f1",
       "hypothesis": "Early prewarm plus a fast standby handoff shrinks the window in which the native ad is visible on a cold open.",
       "falsifier": "A real cold open still reveals the clean frame more than 2 s after ad-start.",
@@ -217,15 +217,16 @@
         "Real-Chrome reachability, 0.8.43, live twitch.tv/aggeo: cold-cover on the hold tick, frame opacity 1, every native <video> hidden, overlay-reveal 2,141 ms later (inside the 12 s bound), event stream captured from the module own ko-adlog CustomEvent. _evidence/KO-20261023-01-reachability.txt, produced by _tools/ko-real-arm-d1.mjs",
         "Re-arm attempt 2026-11-07 after 0.8.44 changed twitch-adblock.js (the freshness rule in _tools/ko-verify.mjs:521-529 refuses a reachability record older than the last commit of the source it measured). Three runs of `node _tools/ko-real-arm-d1.mjs 9333` against a fresh headless guest: (a) twitch.tv/aggeo 13:38Z - NO-VERDICT, the hold landed after the frame was already healthy (`playing-not-healthy` at 4132 ms); (b) twitch.tv/aggeo 13:40Z - cold-cover on the hold tick at 3410 ms, frame opacity 1, every native <video> hidden, but the cover resolved at 15294 ms (`native-handoff`), past the 12 s bound, because the healthy gate wants 4 s of forward buffer and the frame reported `rs=4 buffered=2.450291` at the first tick; (c) twitch.tv/rodil 13:42Z - NO-VERDICT (no cold-cover inside the 3 s post-hold window). The bound failure is NOT caused by the 0.8.44 latency change: that change made catch-up stricter (fires above 8 s instead of 20 s) while the reveal gate keeps the old 20 s (CLEAN_LAT_REVEAL_MAX), so resolution is weakly easier than before; the blocker in (b) is the untouched `buffered >= 4` limb. The claim is therefore kept as FIXED, NOT VERIFIED rather than silently carried on a record that predates the shipped source, and no fourth browser run was made: repeated guest Chrome starts are what the owner reported as terminal popups (herdr DMs dm-09d12544c5fb3ffeadee, dm-17db5363d76e5e8d0b0b)."
       ],
-      "verified": true,
-      "verified_by": "instrument record, not an independent reviewer: the arm itself (node _tools/ko-real-arm-d1.mjs) on a fresh headless guest, 2026-11-07T17:01Z, tree 1d734c3 — cold-cover on the hold tick at 3674 ms, native hidden, resolved by overlay-reveal at 7306 ms, inside the 12 s bound. The 2026-10-27 independent review (consultgpt gpt_ask) stays on record for the pre-0.8.45 source.",
+      "verified": false,
+      "verified_by": "was instrument-verified on 2026-11-07T17:01Z against 0.8.45; that record measured the OLD contract (opaque frame over a hidden native), which KO-20261107-05 demoted as the black-screen defect. Demoted back to fixed in the same change.",
       "owner_validation": "pending: a Twitch-served ad that actually paints on the owner Chrome, across repeated runs and channels; that is also the only measurement that gives real coverMs/revealMs.",
-      "next": "Owner: with 0.8.45 loaded, watch a cold open. The cover must end inside 9 s even when the clean source never gets a 4 s forward buffer (cold-cover-timeout), and inside 12 s on the healthy path.",
+      "next": "Re-arm the arm when the guest can mint a source again (prewarm.ok in ko.adlog), or read it from the owner Chrome on his next pod: cold-cover must log painted:false and the native must stay visible until overlay-reveal.",
       "arms_artifact": "_evidence/KO-20261023-01-arms.md",
       "verified_at": "2026-11-07",
       "reachability_artifact": "_evidence/KO-20261023-01-reachability.txt",
       "reachability_verdict": "PASS",
-      "reachability_note": "node _tools/ko-real-arm-d1.mjs, guest Chrome headless on live twitch.tv/aggeo, shipped 0.8.45: the real ad-hold posted on the extension BroadcastChannel at first frame sight while healthyTicks was under 3, cover on the hold tick, every native <video> hidden, resolved in bound. Regenerated after 0.8.45 moved twitch-adblock.js (commit 1d734c3)."
+      "reachability_note": "Re-arm after 0.8.46: node _tools/ko-harness.mjs start <twitch url> --fresh ; node _tools/ko-real-arm-d1.mjs 9333. Two attempts on 2026-11-07T17:2xZ returned NO-VERDICT because the guest never created the frame: the worker answered prewarm.fail for the channel, so there is no standby to hold. That is a source problem in the guest, not a verdict about the hold.",
+      "rearm_note": "arm currently NO-VERDICT: guest prewarm.fail, no #ko-adfix frame in 60 s"
     },
     {
       "id": "KO-20261026-04",
@@ -257,6 +258,49 @@
       "reachability_artifact": "_evidence/KO-20261026-04-reachability.txt",
       "reachability_verdict": "PASS",
       "reachability_note": "Regenerated after 0.8.45 changed content.js. The first attempt in a fresh guest returned NO-VERDICT because the overlay's own player leaves the native <video> paused by design; the arm needs the stored preference set to the native player, which the record documents as a measurement precondition."
+    },
+    {
+      "id": "KO-20261107-05",
+      "title": "Cold hold painted an opaque frame over a hidden native player: a full black screen for the whole pod",
+      "state": "fixed",
+      "author": "lane",
+      "reported": "2026-11-07",
+      "fixed_in": "0.8.46",
+      "commit": null,
+      "hypothesis": "The ad-hold cold path raised the clean frame to opacity 1 and hid every native <video> on the same tick, believing the clean player was about to play. The frame is an iframe with its own black background and its own player, so an opaque frame with no decoded picture is a black rectangle, and with the native hidden there is nothing else on screen. When the clean source cannot mint a playlist (owner log: worker answers no-source / no-playing, prewarm.fail in the guest) the hold stays until the fallback timer, so the user watches black for the whole cover window instead of either the clean picture or the muted native.",
+      "falsifier": "On a real ad-hold while the clean source cannot reach Playing, the native player must stay visible and the frame must not be raised; the surfaces swap only on overlay-reveal. If the hold tick hides the native or sets frame opacity 1, the defect is still there.",
+      "evidence": [
+        "Owner report 2026-11-07: 'tomei ad que a tela ficou inteira preta ate o ad acabar'",
+        "Owner Chrome ko.adlog (read over CDP, 500 events): cold-cover reason=ad-hold at 457399 ms ct=16.2 with every native video hidden, then overlay-no-playing reason=fallback-timeout at 474407 ms -- 17 s of nothing on screen; the worker had answered no-source 1.7 s before the cover",
+        "Pre-fix code, kick-overlay/twitch-adblock.js cold-cover branch: `overlay.frame.style.opacity = '1'` plus `hideNativeVideos()` on the hold tick",
+        "Fix (0.8.46): the hold no longer paints or hides anything; it logs cold-cover with painted:false, keeps the badge, keeps the cold-cover-timeout bound and lets revealOverlay() do the swap when the clean player is actually playing",
+        "kick-overlay/cold-cover-fixture-test.cjs GREEN now asserts the native is NOT hidden and the frame is NOT opaque on the hold tick, and that overlay-reveal then hides the native and raises the frame: RESULT PASS checks=11 failed=0",
+        "RED-2 arm: re-inserting `overlay.frame.style.opacity = '1'` + `hideNativeVideos()` on the hold tick makes the GREEN assertion fail (native hidden, frame opaque), so the guard measures the class",
+        "Gate: node _tools/ko-verify.mjs -> RESULT PASS checks=18 failed=0"
+      ],
+      "verified": false,
+      "owner_validation": "pending: 0.8.46 is loaded in his Chrome; the tab needs one reload for the content script. Next pod: the ad picture should stay visible (muted) until the clean player plays, and the screen must never go black.",
+      "next": "Owner: reload the Twitch tab, then the next pod. If the screen still goes black, the hold is not the path and the log line to read is cold-cover/skip + overlay-no-playing."
+    },
+    {
+      "id": "KO-20261107-06",
+      "title": "After a pod the picture is still several seconds behind live (owner: 'E AINDA ASSIM, FICOU COM DELAY A LIVE')",
+      "state": "reproduced",
+      "author": "lane",
+      "reported": "2026-11-07",
+      "fixed_in": null,
+      "commit": null,
+      "hypothesis": "Two offset sources can leave the user behind the edge. (a) The clean player sits wherever hls.js joined the window: the owner's own log records overlay-catchup lat=20.3 s and lat=20.6 s, i.e. the picture he was about to watch was ~20 s behind live. (b) The hand-back targets `nativeEdge - cleanLatTarget()`, and cleanLatTarget() preserves up to 8 s of the native's lag, so the native returns up to 8 s behind the edge and Twitch's own player does not close that gap by itself.",
+      "falsifier": "On the owner Chrome, after a pod: the revealed/handed-back player must sit within ~4 s of the live edge within 5 s of the swap, and the gap must not grow over 30 s. If the median latency stays above that, the offset policy is wrong for a live stream.",
+      "evidence": [
+        "Owner Chrome ko.adlog: overlay-catchup {pos:57.7, lat:20.3} and {pos:23.4, lat:20.6}; native-catchup {from:0.1, to:5.6, lat:5.6} then {from:5.6, to:35.8} (a 30 s forward jump after the pod)",
+        "Twitch-adblock.js:162-163 ",
+        "kick-overlay/twitch-adblock.js cleanLatTarget() returns min(8, max(2, nativeLat)) and resumeNative() seeks the native to edge - cleanLatTarget()",
+        "Gate check ad-time-continuity pins the same-offset behaviour, so a policy change must move that test with it"
+      ],
+      "verified": false,
+      "owner_validation": "pending: needs one real pod on 0.8.46 with the log read afterwards",
+      "next": "Read ko.adlog after the owner's next pod: overlay-catchup lat values and native-catchup lat. Decide between a 3 s ceiling on the hand-back target and a tighter catch-up threshold (5 s instead of 8 s) on that evidence, then move ad-time-continuity with it."
     }
   ]
 }

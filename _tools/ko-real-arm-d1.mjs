@@ -1,8 +1,10 @@
 // Reachability arm for KO-20261023-01 (cold cover) in real Chrome.
 //
 // What it proves: on a real Twitch page with the shipped extension, an ad-hold that
-// arrives while the clean source has not yet been healthy (the cold state) covers the
-// native player on the hold tick and resolves inside the 12 s bound.
+// arrives while the clean source has not yet been healthy (the cold state) takes the
+// HOLD on the ad-hold tick without painting over the native player (2026-11-07: an
+// opaque frame over a hidden native is the black screen the owner saw), and resolves
+// inside the bound either by revealing a healthy player or by restoring the native.
 //
 // Why "early": overlay.playing turns true only after three consecutive healthy
 // heartbeats (twitch-adblock.js:1288-1293) and the health test ignores the video's
@@ -109,7 +111,8 @@ out.cover = {
   events: [...new Set(fast.map((x) => (x.last ? x.last.ev : null)).filter(Boolean))],
   cold_cover_at_ms: cover ? cover.at : null,
   frame_opaque_at_ms: (fast.find((x) => x.frame && x.frame.opacity === '1') || {}).at ?? null,
-  native_hidden_when_covered: cover ? cover.native.length > 0 && cover.native.every((v) => v.vis === 'hidden') : null,
+  native_hidden_when_held: cover ? cover.native.length > 0 && cover.native.every((v) => v.vis === 'hidden') : null,
+  frame_opaque_when_held: cover ? cover.frame && cover.frame.opacity === '1' : null,
   samples: fast.slice(0, 4),
 };
 
@@ -145,7 +148,8 @@ out.verdict = {
     resolved.ms - coverAt <= 12000 &&
     /cold-cover-timeout|overlay-stop|overlay-reveal/.test(String(resolved.ev)),
 };
-out.pass = out.verdict.frame_opaque_on_hold && out.verdict.native_hidden_on_cover === true && out.verdict.within_bound;
+out.verdict.no_black_hold = out.verdict.native_hidden_when_held === false && out.verdict.frame_opaque_when_held === false;
+out.pass = out.verdict.no_black_hold && out.verdict.within_bound;
 console.log(JSON.stringify(out, null, 2));
 console.log(out.pass ? 'RESULT PASS d1-early-arm (cold cover on the hold tick, native hidden, resolved in bound)' : 'RESULT FAIL d1-early-arm');
 cdp.close();

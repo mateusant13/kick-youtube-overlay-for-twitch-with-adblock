@@ -14,17 +14,19 @@
 //     -> workerMain()  (real code, stubbed transport) -> digest + `ad-hold` on
 //        the real BroadcastChannel contract
 //     -> twitch-adblock.js page module (real code, stubbed DOM) -> cold-cover,
-//        native videos hidden, then overlay-reveal once the clean frame is
-//        healthy.
+//        then overlay-reveal once the clean frame is healthy.
 //
 // Arms:
 //   GREEN  real source: cold-cover fires ON the ad-hold tick, the native player
-//          is hidden in the same turn, and overlay-reveal lands well inside the
-//          12 s cold-cover bound.
+//          is NOT hidden and the frame is NOT painted (a hold, not a black
+//          screen), and overlay-reveal lands well inside the bound, at which
+//          point the native IS hidden and the frame IS opaque.
 //   RED    pre-fix mutation (`if (overlay.frame && ...)` -> `if (false)`,
-//          i.e. no cold cover): no cold-cover event and the native player is
-//          still visible on the ad-hold tick. The detector must catch this or
-//          it measures nothing.
+//          i.e. no cold cover): no cold-cover event. The detector must catch
+//          this or it measures nothing.
+//   RED-2  the 2026-11-07 defect mutation: paint the frame and hide the native
+//          on the hold tick again. The GREEN assertion must fail on it, or the
+//          "no black screen" property is not being measured.
 //
 // `node cold-cover-fixture-test.cjs` (no frameworks, no browser).
 'use strict';
@@ -38,6 +40,12 @@ const FIXTURES = path.join(__dirname, 'fixtures', 'cold-preroll');
 const PRE_FIX_MUTATION = [
   'if (overlay.frame && !overlay.revealed && !overlay.playing) {',
   'if (false) { // pre-fix: no cold cover',
+];
+// Re-instates the behaviour the owner reported on 2026-11-07: an opaque frame
+// over a hidden native player is a black rectangle until the source is healthy.
+const PAINT_MUTATION = [
+  'overlay.coldCover = true;',
+  "overlay.coldCover = true; try { overlay.frame.style.opacity = '1'; } catch { /* ignore */ } try { hideNativeVideos(); } catch { /* ignore */ }",
 ];
 const LIVE_HOST = 'https://video-edge-a.playlist.ttvnw.net';
 const CHANNEL = 'rodil';
@@ -240,14 +248,27 @@ async function main() {
     const coverEvents = at('cold-cover');
     const coveredAt = coverEvents.length ? Date.now() - t0 : null;
     const nativeHiddenAtHold = page.video.style.visibility === 'hidden';
-    const nativeHiddenNow = page.video.style.visibility === 'hidden';
+    const frameOpacityAtHold = page.frame ? page.frame.style.opacity : null;
 
     for (let i = 0; i < 3; i++) page.frameMsg(healthySt());
     await settle(30);
     const revealEvents = at('overlay-reveal');
     const revealedAt = revealEvents.length ? Date.now() - t0 : null;
+    const nativeHiddenAfterReveal = page.video.style.visibility === 'hidden';
+    const frameOpacityAfterReveal = page.frame ? page.frame.style.opacity : null;
 
-    return { label, coveredAt, revealedAt, nativeHiddenAtHold, nativeHiddenNow, coverEvents, revealEvents, events };
+    return {
+      label,
+      coveredAt,
+      revealedAt,
+      nativeHiddenAtHold,
+      frameOpacityAtHold,
+      nativeHiddenAfterReveal,
+      frameOpacityAfterReveal,
+      coverEvents,
+      revealEvents,
+      events,
+    };
   }
 
   const green = await arm(SOURCE, 'green');
@@ -256,13 +277,16 @@ async function main() {
     assert(green.coveredAt !== null && green.coveredAt <= 2000, `cover took ${green.coveredAt} ms, bound is 2000`);
     assert(green.coverEvents[0].d.reason === 'ad-hold', `reason=${green.coverEvents[0].d.reason}`);
   });
-  check('GREEN: the native ad is hidden on that same tick', () => {
-    assert(green.nativeHiddenAtHold === true, 'native video still visible when the cold cover was taken');
+  check('GREEN: the hold does not paint over the native (no black screen)', () => {
+    assert(green.nativeHiddenAtHold === false, 'the native player was hidden on the hold tick — that is the black screen');
+    assert(green.frameOpacityAtHold !== '1', `frame was raised to opacity ${green.frameOpacityAtHold} before the source played`);
   });
-  check('GREEN: overlay-reveal lands inside the 12 s cold-cover window', () => {
+  check('GREEN: overlay-reveal lands inside the 12 s cold-cover window and swaps the surfaces', () => {
     assert(green.revealEvents.length >= 1, `no overlay-reveal; adlog=${JSON.stringify(green.events.map((e) => e.ev))}`);
     assert(green.revealedAt !== null && green.revealedAt < 12000, `reveal at ${green.revealedAt} ms`);
     assert(green.revealedAt > green.coveredAt, 'reveal happened before the cover');
+    assert(green.nativeHiddenAfterReveal === true, 'the native player stayed visible after the reveal');
+    assert(green.frameOpacityAfterReveal === '1', `frame opacity after reveal = ${green.frameOpacityAfterReveal}`);
   });
 
   const mutated = SOURCE.split(PRE_FIX_MUTATION[0]).join(PRE_FIX_MUTATION[1]);
@@ -270,9 +294,19 @@ async function main() {
     assert(mutated !== SOURCE, 'the cold-cover mutation did not apply — the negative arm would be vacuous');
   });
   const red = await arm(mutated, 'red');
-  check('RED (pre-fix): no cold-cover and the native ad is still visible', () => {
+  check('RED (pre-fix): no cold-cover event at all', () => {
     assert(red.coverEvents.length === 0, `pre-fix arm still emitted cold-cover: ${JSON.stringify(red.coverEvents)}`);
-    assert(red.nativeHiddenAtHold === false, 'pre-fix arm hid the native video anyway — mutation is not pre-fix');
+  });
+
+  const painted = SOURCE.split(PAINT_MUTATION[0]).join(PAINT_MUTATION[1]);
+  check('the paint mutation applied', () => {
+    assert(painted !== SOURCE, 'the black-screen mutation did not apply — the guard would be vacuous');
+  });
+  const black = await arm(painted, 'black');
+  check('RED-2 (2026-11-07 defect): painting on the hold tick hides the native, so the GREEN arm catches it', () => {
+    assert(black.coverEvents.length >= 1, 'the mutant did not reach the hold branch');
+    assert(black.nativeHiddenAtHold === true, 'the mutant did not hide the native — it is not the reported defect');
+    assert(black.frameOpacityAtHold === '1', 'the mutant did not raise the frame — it is not the reported defect');
   });
 
   server.close();

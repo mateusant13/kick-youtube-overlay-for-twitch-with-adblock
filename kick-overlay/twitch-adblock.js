@@ -1667,22 +1667,32 @@
           /* ignore */
         }
         overlay.adActive = true;
-        // Cold preroll: the ad is already on screen and the clean source is
-        // still minting. Cover the native now instead of showing the ad. The
-        // badge explains the black/loading window; revealOverlay() finishes
-        // when the clean player is healthy, and the 12s stall bound restores
-        // the native if it never gets there (measured srdogg: reveal at 7.4s).
+        // The clean source is still minting. Do NOT paint over the native yet:
+        // raising the frame here (and hiding every native <video>) is exactly
+        // what showed the owner a full black screen until the ad ended
+        // (2026-11-07). The frame is an iframe with its own black background and
+        // its own player, so an opaque frame with no decoded picture is a black
+        // rectangle; with the native hidden there is nothing else on screen. On
+        // his own Chrome that state lasted 17 s (ko.adlog: cold-cover 457399ms,
+        // native hidden, then overlay-no-playing fallback-timeout 474407ms).
+        //
+        // Fail open instead: the native stays visible (the ad path already muted
+        // it), the badge says what is happening, and revealOverlay() only raises
+        // the frame once the clean player is actually playing. If it never gets
+        // there, the bound below restores the native and nothing was ever black.
         if (overlay.frame && !overlay.revealed && !overlay.playing) {
           overlay.coldCover = true;
-          try { overlay.frame.style.opacity = '1'; } catch { /* ignore */ }
-          try { hideNativeVideos(); } catch { /* ignore */ }
-          adLog('cold-cover', { reason: 'ad-hold', ct: +Number(v.currentTime || 0).toFixed(1) });
+          adLog('cold-cover', {
+            reason: 'ad-hold',
+            painted: false,
+            ct: +Number(v.currentTime || 0).toFixed(1),
+          });
           overlay.coldCoverAt = Date.now();
           try { clearTimeout(overlay.coldTimer); } catch { /* ignore */ }
           overlay.coldTimer = setTimeout(() => {
             if (!overlay.coldCover || overlay.revealed) return;
             // Announce the branch before handing back: the reachability arm
-            // (and anyone reading ko.adlog) sees WHY the cover ended. Without
+            // (and anyone reading ko.adlog) sees WHY the hold ended. Without
             // this line the timer path was invisible and read as "resolved at
             // 15.3s by nothing" (measured guest run 2026-11-07T13:40Z).
             adLog('cold-cover-timeout', { ms: Date.now() - (overlay.coldCoverAt || Date.now()) });
