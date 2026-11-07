@@ -179,8 +179,12 @@ async function runArm(arm) {
   const afterProbe = { paused: pageVideo.paused, plays: playCalls.n };
 
   // Ownership arm, same real invoker: a video WE paused must still come back.
+  // Ownership is per element (KO.twPaused, 2026-11-07): the document-wide flag
+  // alone is what let a pause made on a secondary video resume the main player
+  // the user had parked.
   pageVideo.paused = true;
   KO.twWasPlaying = true;
+  KO.twPaused.add(pageVideo);
   const oursBefore = playCalls.n;
   await api.probe();
   await settle(50);

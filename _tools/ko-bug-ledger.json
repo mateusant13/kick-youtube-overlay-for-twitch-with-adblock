@@ -2,6 +2,95 @@
   "schema": 1,
   "bugs": [
     {
+      "id": "KO-20261107-01",
+      "title": "A clean player revealed during an ad pod plays several seconds behind live and never closes the gap",
+      "state": "fixed",
+      "author": "lane",
+      "reported": "2026-11-07",
+      "fixed_in": "0.8.44",
+      "commit": null,
+      "hypothesis": "The clean player was only pulled onto the live edge when it was MORE than 20s behind AND only while an ad was active. A warm standby minted at page load sits wherever hls.js joined the live window (5-19s behind), so it passed the gate unchanged and was revealed one segment-delay behind the native. hls.js then plays at 1x and can never close a constant offset, so the delay was permanent for the whole pod. The user's own observation that dragging the bar forward a few seconds keeps working proves a forward seek inside the live window is safe, so the extension had no reason to leave the offset there. The same 20s gate also gated `healthy`, so a 12s-behind standby was considered fit to show.",
+      "falsifier": "With a standby 12s behind the live edge, a reveal must hand the user a picture at the same offset as the native (within 3s of the edge). If the revealed player is left 12s behind, or is revealed without a seek, the fix did not take.",
+      "evidence": [
+        "Owner report 2026-11-07: 'quando troca o player porque ele protege de um ad, a live volta varios segundos'",
+        "Pre-fix code, kick-overlay/twitch-adblock.js: frame-stats handler `if (overlay.adActive && typeof m.st.lat === 'number' && m.st.lat > 20) { ... seek to pos+lat-3 }` and `const latOk = ... || m.st.lat <= 20`. standby-start had its own 20s gate (`lat0 > 20`) and revealed without any catch-up below that",
+        "Fix (0.8.44): CLEAN_LAT_TARGET=3 / CLEAN_LAT_MAX=8 / RESUME_GAP_SEC=1.5, a single catchUpClean(st, force) helper shared by the frame-stats tick and by reveal, called for `overlay.adActive || overlay.standby`, plus a forced re-align at reveal when the standby is more than target+1.5s behind. cleanLatTarget() aims the clean player at the NATIVE's own offset captured at take-over (min 8, max 2 clamp) so the swap lands on the wall-clock second the user was watching",
+        "kick-overlay/ad-time-continuity-test.cjs drives the REAL kick-overlay/twitch-adblock.js through the shared stubbed DOM (mute-decision-test.cjs makePage/settle) and through the real ad path (ad-hold -> ad-start -> frame ready -> 3 healthy Playing ticks -> reveal -> ad-end): `a standby 12s behind live is seeked onto the edge (not left there)` and `a 6s-behind standby is re-aligned before it covers the native`",
+        "Negative arm: restoring the pre-fix gate (`(overlay.adActive || overlay.standby)` -> `overlay.adActive && lat > 20`) makes the detector FAIL with the player left 12s behind, so the check measures the fix and not the harness",
+        "node kick-overlay/ad-time-continuity-test.cjs -> RESULT PASS checks=13 failed=0",
+        "Gate: node _tools/ko-verify.mjs -> RESULT PASS checks=18 failed=0, new `ad-time-continuity` check"
+      ],
+      "verified": false,
+      "owner_validation": "pending: installed 0.8.44 in his Chrome. Watch a pod, confirm the picture returns at real time (badge does not show a visibly late stream) and that dragging the bar back does not reveal a further delay.",
+      "next": "Owner: with 0.8.44 installed, time the clean picture against the native edge on a real pod. Live pod not measured (no ad painted in the guest during the 2026-10-26 runs)."
+    },
+    {
+      "id": "KO-20261107-02",
+      "title": "Ad-end jumps the picture: the native was seeked to its buffered end and resumed 300ms late through a lifecycle gate",
+      "state": "fixed",
+      "author": "lane",
+      "reported": "2026-11-07",
+      "fixed_in": "0.8.44",
+      "commit": null,
+      "hypothesis": "resumeNative() seeked the native to `buffered.end - 0.5`, which is the newest frame the ELEMENT holds, not the offset the clean player was showing. On a native Twitch paused while it was covered that is a seek across the whole pod (a visible jump); on one that kept buffering it is a free jump forward past the clean position. Independently, ad-end called resumeNativeIfAllowed(), which refuses while `overlay.adActive` is still set and a revealed frame is still mounted - both true at that moment - so the hand-back was deferred to the 300ms retry, i.e. a frozen native frame followed by a jump.",
+      "falsifier": "At ad-end the native must already stand at the offset the clean player had (edge - cleanLatTarget, within 1.5s), with no seek at all when it is already there. A hand-back that moves the native by seconds, or that leaves it frozen for a retry, is the defect.",
+      "evidence": [
+        "Owner report 2026-11-07: 'quando acaba o ad e o player volta, aí acontece um salto no tempo por causa disso'",
+        "Pre-fix code: `const be = v.buffered && v.buffered.length ? v.buffered.end(v.buffered.length - 1) : 0; if (be > v.currentTime + 3) { v.currentTime = be - 0.5 }` and ad-end `resumeNativeIfAllowed(v, 'now')` where that helper returns early on `overlay.adActive` / revealed frame",
+        "Fix (0.8.44): the hand-off seeks to `nativeEdge - cleanLatTarget()` (skip when the gap is under RESUME_GAP_SEC, log from/to/lat/gap), and ad-end resumes the native DIRECTLY under the user-intent guard only, so the frame and the picture change in the same tick",
+        "kick-overlay/ad-time-continuity-test.cjs drives the REAL kick-overlay/twitch-adblock.js through the shared stubbed DOM (mute-decision-test.cjs makePage/settle) and through the real ad path (ad-hold -> ad-start -> frame ready -> 3 healthy Playing ticks -> reveal -> ad-end): `ad-end on a native already at the target offset does not seek` and `a native parked behind by the pod is handed back at edge-3`",
+        "Negative arm: restoring the buffered-end target makes the detector FAIL with ct=399.5 against a 397 target (a 2.5s jump), so the check is exercised",
+        "node kick-overlay/ad-time-continuity-test.cjs -> RESULT PASS checks=13 failed=0"
+      ],
+      "verified": false,
+      "owner_validation": "pending: installed 0.8.44. Watch an ad end while the native was covered for tens of seconds and confirm the picture continues instead of jumping.",
+      "next": "Owner: confirm on a real pod end. The 300ms retry stays as a fallback for a native that Twitch unmounts mid-pod."
+    },
+    {
+      "id": "KO-20261107-03",
+      "title": "A mute change made during the swap is inverted: the extension reads its own write as the user's decision",
+      "state": "fixed",
+      "author": "lane",
+      "reported": "2026-11-07",
+      "fixed_in": "0.8.44",
+      "commit": null,
+      "hypothesis": "The user's mute decision was captured ONCE at take-over (adoptNativeMute/overlay.muteIntent) and never tracked afterwards, so an unmute during the pod reached the clean player only if the generic pointerdown handler fired - and that handler returned early for `overlay.muteIntent`, i.e. exactly the case of a user who had muted. The reverse direction came from the autoplay muting: the extension muted the clean frame to get it to play, and nothing marked that mute as OURS, so `autoplayMuted` was never set and the reveal treated the silence as the user's, while a page click later unmuted a user who had asked for silence.",
+      "falsifier": "Unmute while the clean player covers the ad: the clean player must become audible immediately, and the ad-end hand-back must NOT re-mute the native. Mute, then click anywhere in the page: it must stay silent.",
+      "evidence": [
+        "Owner report 2026-11-07: 'eu desmutar rapidamente a live quando acontece o ad e troca de player, faz ele mutar o player. ou vice versa'",
+        "Pre-fix code: `document` pointerdown handler `if (!explicit && overlay.muteIntent) return;` (a muted user could never be unmuted by the flow that was supposed to unlock them) and reveal paths sending `mute: true` for autoplay with no flag distinguishing an autoplay mute from a user mute",
+        "Fix (0.8.44): a capture-phase `volumechange` listener (onNativeVolumeChange) tracks the user's decision continuously while the ad path owns playback, ignores our own writes within 400ms via noteMuteWrite(), forwards the decision to the revealed clean player immediately, and clears autoplayMuted on an explicit unmute. The pointerdown unlock now requires `overlay.autoplayMuted` before it may overrule silence",
+        "kick-overlay/ad-time-continuity-test.cjs drives the REAL kick-overlay/twitch-adblock.js through the shared stubbed DOM (mute-decision-test.cjs makePage/settle) and through the real ad path (ad-hold -> ad-start -> frame ready -> 3 healthy Playing ticks -> reveal -> ad-end): `an unmute made during the pod reaches the clean player immediately` and `the in-pod unmute survives ad-end (the native is not re-muted)`",
+        "Negative arm: removing the volumechange listener (`void onNativeVolumeChange`) makes the detector FAIL on the in-pod unmute, so the check is exercised",
+        "node kick-overlay/ad-time-continuity-test.cjs -> RESULT PASS checks=13 failed=0"
+      ],
+      "verified": false,
+      "owner_validation": "pending: installed 0.8.44. Unmute mid-pod and confirm sound appears on the clean picture and stays on after the pod; mute and confirm a page click does not restore sound.",
+      "next": "Owner: confirm both directions during a real pod. Recorder-only pages and hidden tabs never reach the handler (own guard)."
+    },
+    {
+      "id": "KO-20261107-04",
+      "title": "The ad path unpauses a Twitch tab the user had paused, including one in a background tab",
+      "state": "fixed",
+      "author": "lane",
+      "reported": "2026-11-07",
+      "fixed_in": "0.8.44",
+      "commit": null,
+      "hypothesis": "resumeNative() called play() on the native whenever the lifecycle allowed it, with no check on (a) document.visibilityState and (b) whether the user had paused the native before the pod. A tab left paused in the background is therefore started by the ad path as soon as a standby start or an ad-end tick reaches it, which is audible from another tab.",
+      "falsifier": "A native that was already paused at take-over (and never played) must still be paused at ad-end, and a hidden tab must never be started. A cold preroll (paused at currentTime<1, i.e. the page just loaded) is the one case where starting it is correct.",
+      "evidence": [
+        "Owner report 2026-11-07: 'tem vezes que estou em outra aba, com uma aba da twitch pausada, por algum motivo é despausado sozinho por causa da extensão'",
+        "Pre-fix code: resumeNative() had no visibility check and resumeNativeIfAllowed() only gated on the overlay lifecycle (`overlay.adActive`, revealed frame), never on the user's own pause",
+        "Fix (0.8.44): overlay.pauseBeforeAd / overlay.coldPreroll captured at take-over (both the ad-hold and the ad-start-without-hold paths) and a resumeRefusedByUser(v) guard - hidden tab, or a paused non-cold native - applied by resumeNativeIfAllowed and by the 1s watch tick and by ad-end",
+        "kick-overlay/ad-time-continuity-test.cjs drives the REAL kick-overlay/twitch-adblock.js through the shared stubbed DOM (mute-decision-test.cjs makePage/settle) and through the real ad path (ad-hold -> ad-start -> frame ready -> 3 healthy Playing ticks -> reveal -> ad-end): `a player the user had paused is not restarted after the pod`, `a pod that ends while the tab is hidden never starts playback`, `a cold preroll still hands back a running player at edge-3`",
+        "Negative arm: emptying the guard body makes the detector FAIL (the paused native restarts), so the check is exercised",
+        "node kick-overlay/ad-time-continuity-test.cjs -> RESULT PASS checks=13 failed=0"
+      ],
+      "verified": false,
+      "owner_validation": "pending: installed 0.8.44. Leave a Twitch tab paused in the background through an ad on another tab and confirm it stays paused.",
+      "next": "Owner: confirm on a real background tab. A cold preroll keeps its own exception so the first paint after a page load still starts."
+    },
+    {
       "id": "KO-20261027-01",
       "title": "The stream keeps the previous channel after an SPA channel switch (revealed clean player is never stopped)",
       "state": "fixed",

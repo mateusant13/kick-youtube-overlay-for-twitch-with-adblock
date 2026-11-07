@@ -146,6 +146,22 @@
   // the native where Twitch left it; the clean overlay either covers or the
   // native ad stays visible.
   const AD_REWIND_SEC = 0;
+  // ---- live-time alignment (owner report 2026-11-07) ----------------------
+  // Three of the four owner symptoms are one property: the clean player and
+  // the native player must sit at the SAME small offset from the live edge.
+  //  - "when it swaps because of an ad the live comes back several seconds" —
+  //    the clean player was only pulled forward when it was 20s+ behind, so a
+  //    revealed player could be 5-19s behind and never close the gap (hls.js
+  //    plays at 1x). The user can drag the bar forward a few seconds and it
+  //    keeps working, so a forward seek is safe: do it ourselves.
+  //  - "when the ad ends there is a jump in time" — that is the same delay
+  //    being corrected in one step when the native (nearer the edge) returns.
+  //    Keep both surfaces at one offset and the hand-off is the same frame.
+  //  - "it unpauses a paused Twitch tab" — the ad path resumed playback with
+  //    no visibility and no user-intent check.
+  const CLEAN_LAT_TARGET = 3; // seconds behind the live edge the clean player aims for
+  const CLEAN_LAT_MAX = 8; // above this the clean player is seeked back to the edge
+  const RESUME_GAP_SEC = 1.5; // a smaller native/clean difference is not worth a seek
   const bypassStats = {
     starts: 0,
     stops: 0,
@@ -174,6 +190,12 @@
     // happened to be playing). Owner report 2026-10-26: mute, then an ad
     // swapped the player and the audio came back.
     muteIntent: true,
+    // Live-time alignment + user-intent tracking (owner report 2026-11-07).
+    nativeLat: 0, // native latency (edge - currentTime) captured at take-over
+    pauseBeforeAd: false, // the native was PAUSED when the pod took over
+    coldPreroll: false, // ...and it had never played (page had just loaded)
+    autoplayMuted: false, // we muted the clean player for autoplay, not the user
+    muteWrite: null, // last mute/volume write WE made (volumechange attribution)
     held: false,
     holdWasMuted: false,
     holdVolume: 1,
@@ -336,6 +358,101 @@
   // tested without waiting for a real ad. Not used by the ad path.
   stats.testOverlay = (url) => startAdOverlay(url, 'test', false);
 
+  // ---- live-time alignment helpers ----------------------------------------
+  // The live edge of a native <video>. Twitch live reports duration=Infinity,
+  // so the seekable end is the only honest "now".
+  function nativeEdge(v) {
+    try {
+      const s = v && v.seekable;
+      if (s && s.length) {
+        const e = s.end(s.length - 1);
+        return isFinite(e) && e > 0 ? e : 0;
+      }
+    } catch {
+      /* not ready */
+    }
+    return 0;
+  }
+  function nativeLatency(v) {
+    const e = nativeEdge(v);
+    if (!(e > 0)) return 0;
+    return Math.max(0, e - Number(v.currentTime || 0));
+  }
+  // The offset the clean player aims for. Taken from the native player at
+  // take-over, so the swap and the hand-back land on the same wall-clock
+  // second the user was already watching. Falls back to the bridge's own
+  // liveSyncDuration target.
+  function cleanLatTarget() {
+    // A cold preroll never played, so the native's own offset (the whole live
+    // DVR, potentially hundreds of seconds) carries no meaning: aim at the
+    // bridge's own live-sync target instead.
+    if (overlay.coldPreroll) return CLEAN_LAT_TARGET;
+    const n = Number(overlay.nativeLat);
+    if (isFinite(n) && n > 0) return Math.min(8, Math.max(2, n));
+    return CLEAN_LAT_TARGET;
+  }
+  // Pull the clean player back onto the live edge. Bounded to one seek per 2s
+  // so a stalling manifest cannot turn into a seek storm. This replaces the
+  // old "only when 20s+ behind" gate: the picture is revealed at real time,
+  // not one segment-duration behind.
+  function catchUpClean(st, force) {
+    if (!overlay.frame || !st) return false;
+    const lat = Number(st.lat);
+    const pos = Number(st.pos);
+    if (!(lat >= 0) || !(pos >= 0)) return false;
+    if (!force && !(lat > CLEAN_LAT_MAX)) return false;
+    if (overlay.catchupAt && Date.now() - overlay.catchupAt < 2000) return false;
+    overlay.catchupAt = Date.now();
+    const target = Math.max(0, pos + lat - cleanLatTarget());
+    if (Math.abs(target - pos) < RESUME_GAP_SEC) return false;
+    overlaySend({ t: 'seek', s: target });
+    overlaySend({ t: 'play' });
+    adLog('overlay-catchup', {
+      lat: +lat.toFixed(1),
+      pos: +pos.toFixed(1),
+      to: +target.toFixed(1),
+      source: overlay.standby ? 'standby' : 'ad',
+    });
+    return true;
+  }
+  stats.cleanLatTarget = cleanLatTarget;
+  stats.catchUpClean = catchUpClean;
+
+  // Every mute/volume write the ad path makes. `volumechange` is the only DOM
+  // signal that carries the USER's decision; a write we just made must never
+  // be read back as intent. Owner report 2026-11-07: unmuting during the swap
+  // made the extension mute the clean player instead (and the reverse).
+  function noteMuteWrite(v) {
+    overlay.muteWrite = v
+      ? { at: Date.now(), muted: !!v.muted, volume: Number(v.volume) }
+      : null;
+  }
+  function onNativeVolumeChange(ev) {
+    const v = ev && ev.target;
+    if (!v || v.tagName !== 'VIDEO' || !v.isConnected) return;
+    if (!overlay.frame && !overlay.held && !overlay.adActive) return;
+    const w = overlay.muteWrite;
+    if (w && Date.now() - w.at < 400 && w.muted === !!v.muted && w.volume === Number(v.volume)) {
+      return; // our own write
+    }
+    const wasMuted = overlay.muteIntent;
+    overlay.muteIntent = !!v.muted;
+    if (Number.isFinite(v.volume) && v.volume > 0) overlay.wasVolume = v.volume;
+    if (overlay.frame && overlay.revealed) {
+      // Apply the user's decision to the surface they are looking at, now.
+      overlaySend({ t: 'mute', m: !!v.muted });
+      if (Number.isFinite(v.volume)) overlaySend({ t: 'volume', v: v.volume });
+      if (!v.muted) {
+        overlay.autoplayMuted = false;
+        if (overlay.badge) overlay.badge.textContent = 'sem anúncio';
+      }
+    }
+    if (wasMuted !== overlay.muteIntent) {
+      adLog('mute-intent', { muted: !!v.muted, vol: v.volume, revealed: !!overlay.revealed });
+    }
+  }
+  stats.onNativeVolumeChange = onNativeVolumeChange;
+
   function positionOverlay() {
     if (!overlay.frame) return;
     const v = overlay.video && overlay.video.isConnected ? overlay.video : mainVideo();
@@ -410,14 +527,20 @@
         // doubled audio ~1.5-2s behind the clean overlay). Re-apply on every
         // position tick instead of trusting the first hide.
         try { v.style.visibility = 'hidden'; } catch { /* ignore */ }
-        try { v.muted = true; } catch { /* ignore */ }
+        try {
+          v.muted = true;
+          noteMuteWrite(v);
+        } catch { /* ignore */ }
         continue;
       }
       overlay.hiddenVideos.push({ el: v, visibility: v.style.visibility, muted: v.muted, volume: v.volume });
       try { v.style.visibility = 'hidden'; } catch { /* ignore */ }
       // Mute every native video, not just the main one: a PBP/ad video can
       // keep playing audio behind the opaque overlay.
-      try { v.muted = true; } catch { /* ignore */ }
+      try {
+        v.muted = true;
+        noteMuteWrite(v);
+      } catch { /* ignore */ }
     }
   }
 
@@ -426,7 +549,10 @@
       try {
         if (el.isConnected) {
           el.style.visibility = visibility;
-          if (typeof muted === 'boolean') el.muted = muted;
+          if (typeof muted === 'boolean') {
+            el.muted = muted;
+            noteMuteWrite(el);
+          }
           if (Number.isFinite(volume)) el.volume = volume;
         }
       } catch { /* ignore */ }
@@ -500,6 +626,9 @@
     overlay.muteIntent = !!v.muted;
     overlay.wasMuted = !!v.muted;
     if (Number.isFinite(v.volume)) overlay.wasVolume = v.volume;
+    // The native latency at take-over is what the clean player must match, so
+    // the swap and the hand-back happen on the same wall-clock second.
+    overlay.nativeLat = nativeLatency(v);
   }
 
   function restoreHeldMute() {
@@ -510,7 +639,10 @@
     // overwrite the real original state.
     restoreNativeVideos();
     if (v) {
-      try { v.muted = overlay.holdWasMuted; } catch { /* ignore */ }
+      try {
+        v.muted = overlay.holdWasMuted;
+        noteMuteWrite(v);
+      } catch { /* ignore */ }
       // Twitch sets volume=0 when the element is muted. Restoring only
       // `muted` left the icon unmuted but the video at volume 0, so the user
       // heard nothing until clicking the volume button (real report). Restore
@@ -553,17 +685,25 @@
   function resumeNative(v, tag) {
     if (!v || !v.isConnected) return;
     try {
-      // A native element that resumed behind its own buffered range plays at
-      // 1x and never closes the gap (measured srdogg 2026-10-25: ct=3.9 while
-      // buffered end was 12.1 at ad-end, ~10s behind the clean edge). Seeking
-      // inside the buffered range is instant and cuts the handoff delay.
-      const b = v.buffered;
-      const be = b && b.length ? b.end(b.length - 1) : 0;
-      if (be > v.currentTime + 3) {
-        const from = Number(v.currentTime || 0);
-        const target = be - 0.5;
+      // Hand the native back AT THE SAME OFFSET the clean player was showing.
+      // The old code seeked to `buffered end - 0.5`, which is the newest frame
+      // the element happens to hold: on a native that Twitch paused while it
+      // was covered, that is a seek of the whole pod; on one that kept playing
+      // it is a free jump forward. Both read as "the picture jumped when the
+      // ad ended" (owner report 2026-11-07). Seeking to `edge - cleanLatTarget`
+      // is the same wall-clock second the clean player had, so the hand-off is
+      // continuous. Failure paths still land in real time.
+      const from = Number(v.currentTime || 0);
+      const se = nativeEdge(v);
+      const target = se > 0 ? Math.max(0, se - cleanLatTarget()) : 0;
+      if (target > from + RESUME_GAP_SEC) {
         v.currentTime = target;
-        adLog('native-catchup', { from: +from.toFixed(1), to: +target.toFixed(1) });
+        adLog('native-catchup', {
+          from: +from.toFixed(1),
+          to: +target.toFixed(1),
+          lat: +(se - target).toFixed(1),
+          gap: +(target - from).toFixed(1),
+        });
       }
       // readyState 2 with paused=false is still a frozen frame. Nudge behind
       // live and call play() even when the element claims it is not paused.
@@ -588,10 +728,26 @@
   // old 1200ms window. Do not click Twitch's play/pause button: its label and
   // state race with the element (measured: a click on the "Pausar" button
   // paused a native that had just resumed), so the button is not a safe resume.
+  // The two guards that belong to the USER, not to the overlay lifecycle:
+  //  - a hidden tab is never touched (playback starting there is what the user
+  //    hears from another tab);
+  //  - a native that was already PAUSED when the pod took over was parked by
+  //    the user, so it is not ours to start. A cold preroll (never played, at
+  //    the very beginning) is the one case where it is ours.
+  // Owner report 2026-11-07: "with a paused Twitch tab in another tab,
+  // something unpauses it".
+  function resumeRefusedByUser(v) {
+    if (!v || !v.isConnected) return true;
+    if (document.visibilityState && document.visibilityState !== 'visible') return true;
+    if (overlay.pauseBeforeAd && !overlay.coldPreroll) return true;
+    return false;
+  }
+
   function resumeNativeIfAllowed(v, tag) {
     if (!v || !v.isConnected) return;
     if (overlay.adActive) return;
     if (overlay.frame && !overlay.standby) return;
+    if (resumeRefusedByUser(v)) return;
     resumeNative(v, tag);
   }
 
@@ -743,11 +899,19 @@
       // unmute the user asked for during the pod survives the ad-end.
       restoreNativeVideos();
       if (v) {
-        try { v.muted = overlay.muteIntent; } catch { /* ignore */ }
+        try {
+          v.muted = overlay.muteIntent;
+          noteMuteWrite(v);
+        } catch { /* ignore */ }
         try {
           if (Number.isFinite(overlay.wasVolume)) v.volume = overlay.wasVolume;
         } catch { /* ignore */ }
-        resumeNativeIfAllowed(v, 'now');
+        // Hand back NOW, not at the 300ms retry: the frame is still mounted and
+        // adActive is still set at this point, so the lifecycle gate would
+        // refuse this call and leave a frozen native for another 300ms (the
+        // "player comes back and then jumps" half of the owner's report). Only
+        // the user-intent guard applies here.
+        if (!resumeRefusedByUser(v)) resumeNative(v, 'ad-end');
         setTimeout(() => {
           // A new *hidden standby* must not block the native resume retries;
           // only a visible/held ad overlay should. Measured: starting the new
@@ -774,7 +938,7 @@
             const nv = mainVideo();
             if (!nv || !nv.isConnected) return;
             if (!nv.paused && nv.readyState >= 3) return;
-            resumeNative(nv, 'watch');
+            resumeNativeIfAllowed(nv, 'watch');
           }, 1000);
         }
       }
@@ -851,18 +1015,27 @@
     if (wasStandby && overlay.lastSt) {
       const lat0 = Number(overlay.lastSt.lat);
       const pos0 = Number(overlay.lastSt.pos);
-      if (Number.isFinite(lat0) && lat0 > 20) {
+      if (Number.isFinite(lat0) && lat0 > CLEAN_LAT_MAX) {
         overlay.playing = false;
         overlay.healthyTicks = 0;
-        overlaySend({ t: 'seek', s: Math.max(0, pos0 + lat0 - 3) });
-        overlaySend({ t: 'play' });
-        adLog('overlay-catchup', { lat: +lat0.toFixed(1), pos: +pos0.toFixed(1) });
+        catchUpClean(overlay.lastSt);
+        adLog('overlay-catchup', {
+          lat: +lat0.toFixed(1),
+          pos: +pos0.toFixed(1),
+          target: cleanLatTarget(),
+        });
         try { clearTimeout(overlay.hideTimer); } catch { /* ignore */ }
         overlay.hideTimer = setTimeout(() => {
           if (overlay.frame && !overlay.revealed && !overlay.playing) stopAdOverlay('catchup-timeout');
         }, 12000);
         return;
       }
+    }
+    // A revealed player must sit at the same offset the native had. A standby
+    // that is only 4-8s behind is still a visible delay against the native
+    // edge, so pull it in before it is shown.
+    if (wasStandby && overlay.lastSt && Number(overlay.lastSt.lat) > cleanLatTarget() + 1.5) {
+      catchUpClean(overlay.lastSt, true);
     }
     if (wasStandby || reason === 'standby') bypassStats.standbyHits++;
     if (!overlay.revealed) {
@@ -902,6 +1075,9 @@
       overlaySend({ t: 'mute', m: true });
       overlaySend({ t: 'play' });
       adLog('reveal-muted', { reason });
+      // The user wants silence: keep the volume the native surface had so the
+      // clean picture is not playing at 100% the next time it unmutes.
+      if (overlay.autoplayMuted) overlay.autoplayMuted = false;
     } else if (!overlay.unmuteTried) {
       overlay.unmuteTried = true;
       overlaySend({ t: 'mute', m: false });
@@ -913,8 +1089,13 @@
         if (st.muted || st.paused) {
           overlaySend({ t: 'mute', m: true });
           overlaySend({ t: 'play' });
+          // Chrome refused the sound. This mute is OURS for autoplay reasons,
+          // not the user's decision: a click may still restore it, and it must
+          // never be read back as "the user wants silence".
+          overlay.autoplayMuted = true;
           adLog('unmute-blocked', { muted: !!st.muted, paused: !!st.paused });
         } else {
+          overlay.autoplayMuted = false;
           if (overlay.badge) overlay.badge.style.display = 'none';
           adLog('unmute-ok');
         }
@@ -1243,18 +1424,11 @@
         // A clean player that drifted behind live must not be revealed: the
         // user would see a delayed stream and a jump at ad-end. Seek forward
         // inside the live window, at most every 2s, and let the healthy gate
-        // below hold the overlay hidden until latency is back under 20s.
-        if (overlay.adActive && typeof m.st.lat === 'number' && m.st.lat > 20) {
-          if (!overlay.catchupAt || Date.now() - overlay.catchupAt > 2000) {
-            overlay.catchupAt = Date.now();
-            overlaySend({ t: 'seek', s: Math.max(0, Number(m.st.pos) + m.st.lat - 3) });
-            overlaySend({ t: 'play' });
-            adLog('overlay-catchup', {
-              lat: +m.st.lat.toFixed(1),
-              pos: +Number(m.st.pos).toFixed(1),
-            });
-          }
-        }
+        // below hold the overlay hidden until latency is back under
+        // CLEAN_LAT_MAX. Before 2026-11-07 this only ran while an ad was
+        // active and only above 20s, so a warm standby could sit 5-19s behind
+        // and be revealed as-is.
+        if ((overlay.adActive || overlay.standby) && typeof m.st.lat === 'number') catchUpClean(m.st);
         if (m.st.state === 'Playing') {
           // HAVE_FUTURE_DATA plus four seconds of forward buffer is the minimum
           // that survived the ad-heavy 2026-10-23 channels without a freeze.
@@ -1264,7 +1438,7 @@
           // surface up until the clean player can survive several refreshes.
           const latOk = !overlay.adActive
             || typeof m.st.lat !== 'number'
-            || m.st.lat <= 20;
+            || m.st.lat <= CLEAN_LAT_MAX;
           const healthy = latOk
             && (typeof m.st.rs !== 'number' || m.st.rs >= 3)
             && (typeof m.st.buffered !== 'number' || m.st.buffered >= 4);
@@ -1316,6 +1490,7 @@
           // Autoplay-with-audio was blocked. Retry muted; native controls let
           // the user unmute without losing the clean video.
           overlay.autoplayRetry = true;
+          overlay.autoplayMuted = true;
           overlaySend({ t: 'mute', m: true });
           overlaySend({ t: 'play' });
         }
@@ -1334,8 +1509,13 @@
       // click produced doubled/echoed audio (user report). Keep the handler
       // installed so the first click after reveal still unmutes.
       if (overlay.standby || !overlay.revealed) return;
-      if (!explicit && overlay.muteIntent) return;
+      // A generic page click (chat, layout) is only an autoplay unlock: the
+      // user already asked for sound and Chrome refused it. It must never
+      // overrule a mute — before 2026-11-07 every click on the page unmuted a
+      // muted user again ("or the other way round": muted, and it unmuted).
+      if (!explicit && (overlay.muteIntent || !overlay.autoplayMuted)) return;
       overlay.muteIntent = false;
+      overlay.autoplayMuted = false;
       overlay.unmuteTried = true;
       overlaySend({ t: 'mute', m: false });
       overlaySend({ t: 'play' });
@@ -1446,6 +1626,18 @@
         overlay.held = true;
         overlay.holdWasMuted = v.muted;
         overlay.holdVolume = v.volume;
+        // Live-time alignment: remember where the native sat relative to the
+        // edge, and whether it was PLAYING. Both are used to (a) put the clean
+        // player at the same offset so the swap is invisible, and (b) refuse to
+        // start a player the user had parked (a paused tab in the background).
+        overlay.nativeLat = nativeLatency(v);
+        overlay.pauseBeforeAd = !!v.paused;
+        // A cold preroll is the ONLY case where a paused native is ours to
+        // start: it has never played at all, so it sits at the very beginning.
+        // A user-parked player is at some real position — never < 1s — and must
+        // stay parked (owner report 2026-11-07: "a paused Twitch tab gets
+        // unpaused by the extension").
+        overlay.coldPreroll = !!v.paused && Number(v.currentTime || 0) < 1;
         // This is the takeover moment: whatever the user last decided about
         // sound applies to the clean player too. Refreshed here because a warm
         // standby was created at page load, before a later mute.
@@ -1456,6 +1648,7 @@
         // soon as the source is ready.
         try {
           v.muted = true;
+          noteMuteWrite(v);
         } catch {
           /* ignore */
         }
@@ -1490,7 +1683,15 @@
           overlay.adActive = true;
           // ad-start can arrive without ad-hold; the mute decision still
           // belongs to the native surface being covered.
-          if (!overlay.held && !overlay.revealed) adoptNativeMute(mainVideo());
+          if (!overlay.held && !overlay.revealed) {
+            const nv = mainVideo();
+            adoptNativeMute(nv);
+            if (nv) {
+              overlay.nativeLat = nativeLatency(nv);
+              overlay.pauseBeforeAd = !!nv.paused;
+              overlay.coldPreroll = !!nv.paused && Number(nv.currentTime || 0) < 1;
+            }
+          }
           if (overlay.playing) {
             revealOverlay('standby');
             return;
@@ -1651,6 +1852,17 @@
     }
   } catch {
     /* recorder is best-effort */
+  }
+
+  // The user's sound decision, as it happens. A volume/mute change on a native
+  // video while the ad path owns playback (or is about to) is the user talking;
+  // it outranks the mute state captured at take-over and is forwarded to the
+  // clean player immediately. Hidden tabs, recorder-only pages and the pre-ad
+  // page state are ignored by the handler's own guard.
+  try {
+    document.addEventListener('volumechange', onNativeVolumeChange, true);
+  } catch {
+    /* intent tracking is best-effort */
   }
 
   // Resource timing catches the ad SDK / creative requests even when the

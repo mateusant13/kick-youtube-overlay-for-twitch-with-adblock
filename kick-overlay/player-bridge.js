@@ -268,12 +268,20 @@ if (HLS_MODE) {
   // The YouTube layer keeps its tuned 30s/3-segment live buffer.
   const hlsConfig = TWITCH_HLS
     ? {
-        // A 1-segment live sync left the clean player 0.04s from the edge in
-        // the 2026-10-23 10-channel run; hls.js then stalled on the first
-        // refresh. Keep one target segment of slack so the hidden player has
-        // something to play while the next segment is fetched.
         maxBufferLength: 30,
-        liveSyncDurationCount: 2,
+        // Live sync in SECONDS, not segment durations (owner report
+        // 2026-11-07: "the live comes back several seconds behind after the
+        // swap"). `liveSyncDurationCount: 2` targeted two SEGMENT durations,
+        // which on a 15s-segment clean master parks the player ~30s behind the
+        // edge; hls.js then plays at 1x and the gap never closes. A fixed
+        // 3s target is independent of the segment duration, and
+        // maxLiveSyncPlaybackRate lets hls.js close drift by playing 1.5x for a
+        // moment instead of the old visible seek. 9s is the hard ceiling: above
+        // it hls.js seeks, which is the same correction twitch-adblock.js
+        // applies on the page side.
+        liveSyncDuration: 3,
+        liveMaxLatencyDuration: 9,
+        maxLiveSyncPlaybackRate: 1.5,
         liveBackBufferLength: 30,
         startPosition: -1,
         // The clean autoplay/android master can be LL-HLS. hls.js's low-latency
@@ -304,6 +312,7 @@ if (HLS_MODE) {
   // it stalled on the first refresh. A deliberate user seek later is not
   // overridden because the flag is only reset by a new load.
   let liveJumped = false;
+  const LIVE_TARGET_SEC = 3; // = hlsConfig.liveSyncDuration for the Twitch surface
   const jumpToLiveEdge = () => {
     if (liveJumped) return;
     try {
@@ -312,12 +321,14 @@ if (HLS_MODE) {
       if (!isFinite(end) || end <= 0) return;
       const pos = V.currentTime || 0;
       const behind = end - pos;
-      // liveSyncDurationCount 2 with 15s segments puts a healthy clean player
-      // about 30s behind the edge. The old `behind > 20` test mistook that for
-      // a DVR start and jumped to end-2, leaving only 0.4-1.2s of forward
-      // buffer on jynxzi (2026-10-24), so the 4s readiness gate never opened.
-      // Only correct a real DVR position or a player sitting on the edge.
-      if (behind > 120 || behind < 1.5) V.currentTime = Math.max(0, end - 2);
+      // Correct a DVR start, a player sitting on the edge, or one that hls.js
+      // left further behind than the hard ceiling. The old `behind > 20` test
+      // mistook a normal 30s segment-duration placement for a DVR start and
+      // jumped to end-2, leaving only 0.4-1.2s of forward buffer on jynxzi
+      // (2026-10-24). The same test is now what twitch-adblock's catch-up uses.
+      if (behind > 120 || behind < 1.5 || behind > 9) {
+        V.currentTime = Math.max(0, end - LIVE_TARGET_SEC);
+      }
       liveJumped = true;
       V.play().catch(() => { /* autoplay policy */ });
     } catch { /* not ready */ }

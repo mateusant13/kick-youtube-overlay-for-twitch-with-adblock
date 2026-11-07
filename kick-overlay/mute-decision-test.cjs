@@ -28,6 +28,7 @@ const PRE_FIX_MUTATION = ['if (overlay.muteIntent) {', 'if (false) {'];
 function makePage(source = SOURCE) {
   const sent = []; // every {t,m,v} the page posts into the clean frame
   const pageListeners = { message: [], pointerdown: [] };
+  const adLogs = []; // parsed ko-adlog decisions (see document.dispatchEvent)
   const bcInstances = [];
 
   const node = (tag) => {
@@ -87,7 +88,7 @@ function makePage(source = SOURCE) {
     closest: () => null,
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 1280, height: 720 }),
     pause() { this.paused = true; },
-    play() { this.paused = false; return Promise.resolve(); },
+    play() { this.paused = false; this.plays = (this.plays || 0) + 1; return Promise.resolve(); },
   };
 
   const document = {
@@ -108,14 +109,21 @@ function makePage(source = SOURCE) {
     querySelectorAll: (sel) => (sel === 'video' ? [video] : []),
     getElementById: () => null,
     addEventListener(t, f) {
-      if (t === 'pointerdown') pageListeners.pointerdown.push(f);
+      (pageListeners[t] = pageListeners[t] || []).push(f);
     },
     removeEventListener(t, f) {
       const l = pageListeners[t] || [];
       const i = l.indexOf(f);
       if (i >= 0) l.splice(i, 1);
     },
-    dispatchEvent() {},
+    dispatchEvent(e) {
+      // The real module records its decisions through `ko-adlog` CustomEvents;
+      // keeping them lets an arm assert on what the ad path DECIDED, not only
+      // on what it posted to the frame.
+      if (e && e.type === 'ko-adlog') {
+        try { adLogs.push(JSON.parse(e.detail)); } catch { /* malformed */ }
+      }
+    },
   };
 
   const window = {
@@ -207,6 +215,23 @@ function makePage(source = SOURCE) {
     },
     muteSent() {
       return sent.filter((m) => m && m.t === 'mute').map((m) => m.m);
+    },
+    // Drive the real document-level volumechange path (the ad path's intent
+    // tracker) exactly as a user click on Twitch's volume button would.
+    setNativeMuted(muted, volume) {
+      if (typeof muted === 'boolean') video.muted = muted;
+      if (Number.isFinite(volume)) video.volume = volume;
+      const ev = { type: 'volumechange', target: video };
+      for (const f of (pageListeners.volumechange || []).slice()) f(ev);
+    },
+    logs() {
+      return adLogs;
+    },
+    logsOf(ev) {
+      return adLogs.filter((l) => l && l.ev === ev);
+    },
+    seeks() {
+      return sent.filter((m) => m && m.t === 'seek').map((m) => m.s);
     },
   };
   return api;

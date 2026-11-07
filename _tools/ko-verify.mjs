@@ -307,6 +307,27 @@ check('channel-switch', () => {
   return 'revealed + standby overlays dropped on an SPA channel switch, native handed back, same-channel sub-route keeps it; pre-fix arm goes RED';
 });
 
+// ---- 6g. ad-path time continuity (owner report 2026-11-07) ---------------
+// "when the player is swapped because of an ad the live comes back several
+// seconds; when the ad ends there is a jump in time; unmuting during the swap
+// makes it mute the player; a paused Twitch tab gets unpaused by itself."
+// The clean player was only pulled forward when it was 20s+ behind, the
+// hand-back seeked to the buffered end instead of the clean offset, the mute
+// decision was captured once at take-over, and the resume had no visibility or
+// user-intent guard at all. This runs the real twitch-adblock.js through the
+// real ad path for all four and mutates each one back to its pre-fix shape; the
+// detector must catch every mutation.
+check('ad-time-continuity', () => {
+  const rel = 'kick-overlay/ad-time-continuity-test.cjs';
+  assert(existsSync(path.join(ROOT, rel)), `missing ${rel}`);
+  const r = spawnSync(process.execPath, [path.join(ROOT, rel)], {
+    cwd: path.join(ROOT, 'kick-overlay'),
+    encoding: 'utf8',
+  });
+  assert(r.status === 0, `${rel}: ${String(r.stderr || r.stdout || '').trim().slice(-320)}`);
+  return 'reveal at real time + hand-off at the same offset + user mute intent + no resume of a paused/hidden player; four pre-fix arms go RED';
+});
+
 // ---- 7. bug ledger -------------------------------------------------------
 // States are explicit. `fixed` is allowed; `verified` needs an independent
 // verifier, and `arm-verified` is the narrower claim: the negative arm was

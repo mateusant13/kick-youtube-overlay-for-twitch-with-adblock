@@ -237,7 +237,7 @@ const NOT_CHANNEL = new Set([
 
 // Build marker for the diag stream — lets us tell which code a tab runs
 // (content scripts of pre-reload tabs survive extension reloads).
-const KO_VER = '0.8.43';
+const KO_VER = '0.8.44';
 // ONE canonical yt state object: every reset site (boot, teardown, the
 // frame-death watchdog) must agree, or a drained/live flag survives a rebuild.
 function freshYtState() {
@@ -295,6 +295,7 @@ const KO = {
   ytUnlock: false,
   twLive: false,       // sticky: Twitch channel confirmed live on this page
   twWasPlaying: false, // Twitch was playing when we paused it → resume on switch back
+  twPaused: new Set(), // the elements THIS extension paused (resume only these)
   seeking: false,
   reconnectCount: 0,
   stableSince: null, // epoch ms of the current uninterrupted Playing run (budget reset)
@@ -1216,6 +1217,7 @@ function syncMute() {
       if (!v.paused) {
         v.pause();
         KO.twWasPlaying = true;
+        KO.twPaused.add(v); // ownership: only an element we paused is ours to resume
       }
       if (!v.muted) {
         v.muted = true;
@@ -1242,8 +1244,26 @@ function unmuteAll() {
 function resumeTwitchIfOurs() {
   if (!KO.twWasPlaying) return;
   KO.twWasPlaying = false;
+  // Resume ONLY the element this extension paused. KO.twWasPlaying is a
+  // document-wide flag: a secondary (PBP / preview) video paused by the
+  // overlay used to mark the whole page as ours, and the resume then started
+  // the MAIN player — which the user had paused himself (owner report
+  // 2026-11-07: "a paused Twitch tab is unpaused by the extension"). The
+  // per-element set is the ownership record; a video the user parked is not
+  // in it, so it stays parked.
   const v = twitchVideo();
-  if (v) v.play().catch(() => { /* autoplay policy */ });
+  // Prune stale entries so a detached element cannot resurrect a later resume.
+  for (const el of KO.twPaused) {
+    if (!el || !el.isConnected || !el.paused) KO.twPaused.delete(el);
+  }
+  if (!v || !KO.twPaused.has(v)) return;
+  KO.twPaused.delete(v);
+  try {
+    const p = v.play();
+    if (p && p.catch) p.catch(() => { /* autoplay policy */ });
+  } catch {
+    /* detached */
+  }
 }
 
 // Hand the page's own player back (player=twitch / overlay disabled).

@@ -10,7 +10,9 @@ const assert = require('assert');
 
 const manifest = JSON.parse(fs.readFileSync('manifest.json', 'utf8'));
 assert.ok(manifest.host_permissions.includes('https://kick.com/*'), 'manifest permits Kick API fetches');
-const CS_MATCHES = manifest.content_scripts && manifest.content_scripts[0] && manifest.content_scripts[0].matches;
+const CS_ENTRY = (manifest.content_scripts || []).find((c) => (c.js || []).includes('content.js'));
+assert.ok(CS_ENTRY, 'manifest registers content.js as a content script');
+const CS_MATCHES = CS_ENTRY.matches;
 assert.ok(Array.isArray(CS_MATCHES), 'manifest has content_scripts[0].matches');
 assert.ok(CS_MATCHES.includes('https://www.twitch.tv/*'), 'content script runs on www.twitch.tv');
 assert.ok(CS_MATCHES.includes('https://www.youtube.com/*'), 'content script runs on www.youtube.com');
@@ -21,7 +23,7 @@ assert.ok(Array.isArray(WAR), 'manifest has web_accessible_resources[0].matches'
 assert.ok(WAR.includes('https://www.youtube.com/*'), 'player.html is web-accessible from www.youtube.com');
 assert.ok(WAR.includes('https://m.youtube.com/*'), 'player.html is web-accessible from m.youtube.com');
 assert.ok(WAR.includes('https://youtu.be/*'), 'player.html is web-accessible from youtu.be');
-assert.strictEqual(manifest.version, '0.8.6', 'manifest version is 0.8.6');
+assert.match(manifest.version, /^\d+\.\d+\.\d+$/, 'manifest version is semver');
 const swCalls = []; // chrome.runtime.sendMessage recorder
 const badgeTexts = []; // chrome.action.setBadgeText recorder (clipping check)
 const badge = []; // paired {text,color} records — the 0.8.2 status contract
@@ -213,7 +215,10 @@ global.getComputedStyle = () => ({ height: '', maxHeight: '', position: 'static'
 global.fetch = () => Promise.reject(new Error('stub-fetch'));
 
 const src = fs.readFileSync('content.js', 'utf8');
-assert.ok(src.includes("const KO_VER = '0.8.6'"), 'content KO_VER stays 0.8.6, aligned with manifest (P3d — a half-bump would drift green)');
+assert.ok(
+  src.includes(`const KO_VER = '${manifest.version}'`),
+  `content KO_VER is aligned with the manifest version (${manifest.version}); a half-bump would drift green`,
+);
 const bridgeSrc = fs.readFileSync('player-bridge.js', 'utf8');
 // Run in a Function scope so top-level consts/functions are accessible.
 const scope = {};
@@ -335,7 +340,9 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
   // kick mapping — its probe would find the same offline channel).
   framePosts.length = 0;
   KO.ytHlsFailed = true;
-  KO.ytHlsFailedAt = Date.now();
+  // The bridge gets one automatic reload first: a fatal error is only a dead
+  // url after the 4s reload grace (content.js ytHardFail).
+  KO.ytHlsFailedAt = Date.now() - 5000;
   KO.ytLoadedUrl = 'https://hls.example/u1';
   KO.ytState = { ready: false, playing: false, muted: true, live: false, dur: 0, ct: 0, error: 0 };
   KO.ytEmbedAt = Date.now() - 10000; // embed grace expired too
@@ -350,6 +357,9 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
   // A REAL kick mapping (kickSlug != slug) DOES hand over — in memory only.
   storage.ko = undefined;
   KO.kickSlug = 'realkick';
+  // tryKickFallback is debounced to one attempt per 5s; the same-handle arm
+  // above just spent it.
+  KO.ytKickFallbackAt = 0;
   global.fetch = () => Promise.resolve({
     ok: true,
     json: async () => ({ livestream: { playback_url: 'https://ivs.example/live', id: 's1' } }),
@@ -405,7 +415,9 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
   KO.ytId = 'UCxxxxxxxxxxxxxxxxxxxxxx';
   KO.mappings['rodil'] = { yt: '@x' };
   KO.ytHlsFailed = true;
-  KO.ytHlsFailedAt = Date.now();    // inside the 30s backoff window
+  // Past the 4s bridge-reload grace (ytHardFail) and still inside the 30s
+  // mint backoff: the verdict is "dead url", which is the gray badge.
+  KO.ytHlsFailedAt = Date.now() - 5000;
   KO.ytHlsUrl = null;
   KO.ytHlsAt = 0;
   KO.ytEmbedAt = Date.now() - 10000; // embed grace expired too

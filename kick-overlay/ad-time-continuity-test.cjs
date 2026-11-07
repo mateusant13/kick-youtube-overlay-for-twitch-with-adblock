@@ -1,0 +1,315 @@
+// Time-continuity harness for the ad path (owner report 2026-11-07).
+//
+// Owner, verbatim: "quando troca o player por que ele protege de um ad, a live
+// volta varios segundos ... quando acaba o ad e o player volta, aí acontece um
+// salto no tempo por causa disso ... eu desmutar rapidamente a live quando
+// acontece o ad e troca de player, faz ele mutar o player ... tem vezes que
+// estou em outra aba, com uma aba da twitch pausada, por algum motivo é
+// despausado sozinho por causa da extensao ... tenta sempre manter o tempo
+// super parecido ou em tempo real, quando acontece o anuncio."
+//
+// Four properties, measured against the REAL twitch-adblock.js:
+//   1. REVEAL AT REAL TIME — the clean player is pulled onto the live edge
+//      before it covers the native. The old catch-up only ran inside an ACTIVE
+//      ad and only above 20s, so a 5-19s delayed picture was revealed as-is and
+//      never closed the gap (hls.js plays at 1x).
+//   2. HAND-OFF AT THE SAME OFFSET — at ad-end the native is seeked to
+//      `edge - target`, the same wall-clock second the clean player showed; a
+//      native already there is not touched.
+//   3. THE USER'S SOUND DECISION WINS — an unmute made while the pod owns the
+//      player reaches the clean player immediately and survives ad-end.
+//   4. A PAUSED PLAYER STAYS PAUSED — no resume in a hidden tab, and no resume
+//      of a player the user parked before the pod (a cold preroll, which never
+//      played at all, is still handed back).
+//
+// `node ad-time-continuity-test.cjs` (no frameworks). Every property has a
+// negative arm that restores the PRE-FIX behaviour; the detector must go RED.
+'use strict';
+const fs = require('fs');
+const path = require('path');
+const { makePage, settle, healthySt } = require('./mute-decision-test.cjs');
+
+// The checkout is CRLF; every mutation below is written LF-only, so the source
+// is normalised once here and handed to the stub DOM already normalised.
+const SOURCE = fs.readFileSync(path.join(__dirname, 'twitch-adblock.js'), 'utf8').replace(/\r\n/g, '\n');
+
+// ---- pre-fix mutations (the shipped 0.8.43 behaviour) ----------------------
+// 1. catch-up only inside an ACTIVE ad and only above 20s.
+const PRE_FIX_CATCHUP = [[
+  "if ((overlay.adActive || overlay.standby) && typeof m.st.lat === 'number') catchUpClean(m.st);",
+  "if (overlay.adActive && typeof m.st.lat === 'number' && m.st.lat > 20) catchUpClean(m.st);",
+]];
+// 2. hand-off seeked to the buffered end - 0.5 (a free jump, never aligned).
+const PRE_FIX_HANDOFF = [[
+  'const target = se > 0 ? Math.max(0, se - cleanLatTarget()) : 0;',
+  'const be = v.buffered && v.buffered.length ? v.buffered.end(v.buffered.length - 1) : 0;\n      const target = be - 0.5;',
+]];
+// 3. no continuous intent tracking (mute captured once at take-over).
+const PRE_FIX_INTENT = [[
+  "document.addEventListener('volumechange', onNativeVolumeChange, true);",
+  'void onNativeVolumeChange;',
+]];
+// 4. resume any paused native, in any visibility.
+const PRE_FIX_RESUME = [[
+  '    if (document.visibilityState && document.visibilityState !== \'visible\') return true;\n    if (overlay.pauseBeforeAd && !overlay.coldPreroll) return true;\n',
+  '',
+]];
+
+const checks = [];
+function check(name, fn) {
+  try {
+    fn();
+    checks.push({ name, status: 'PASS' });
+    console.log(`PASS ${name}`);
+  } catch (error) {
+    checks.push({ name, status: 'FAIL', detail: error.message });
+    console.log(`FAIL ${name}  ${error.message}`);
+  }
+}
+function assert(cond, msg) {
+  if (!cond) throw new Error(msg);
+}
+function mutate(pairs) {
+  let src = SOURCE;
+  for (const [from, to] of pairs) {
+    if (!src.includes(from)) throw new Error(`mutation target not found: ${from.slice(0, 60)}`);
+    src = src.split(from).join(to);
+  }
+  return src;
+}
+
+// Native player at a controllable position. `edge` is the live edge, so
+// `edge - ct` is the native's own latency.
+function setNative(page, { ct, edge, bufferedEnd, paused = false, muted = false }) {
+  const v = page.video;
+  v.currentTime = ct;
+  v.paused = paused;
+  v.readyState = 4;
+  v.muted = muted;
+  v.volume = 1;
+  v.plays = 0;
+  v.seekable = { length: 1, start: () => Math.max(0, edge - 3600), end: () => edge };
+  v.buffered = { length: 1, start: () => Math.max(0, edge - 3600), end: () => bufferedEnd };
+  return v;
+}
+
+// Warm standby: minted hidden, healthy, at `lat` seconds behind the edge.
+async function warmStandby(page, { pos, lat }) {
+  page.bypass({ type: 'standby-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+  await settle(20);
+  page.frameMsg({ t: 'ready' });
+  page.frameMsg(healthySt({ pos, lat }));
+  page.frameMsg(healthySt({ pos, lat }));
+  page.frameMsg(healthySt({ pos, lat }));
+  await settle(10);
+}
+
+// A full pod: ad-hold -> ad-start -> healthy Playing ticks -> reveal.
+async function pod(page, { pos = 100, lat = 3 } = {}) {
+  page.bypass({ type: 'ad-hold' });
+  page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+  await settle(20);
+  page.frameMsg({ t: 'ready' });
+  page.frameMsg(healthySt({ pos, lat }));
+  page.frameMsg(healthySt({ pos, lat }));
+  page.frameMsg(healthySt({ pos, lat }));
+  await settle(10);
+}
+
+async function main() {
+  // ---- 1. a hidden standby is pulled onto the live edge -------------------
+  {
+    const page = makePage();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 }); // nativeLat = 3
+    await warmStandby(page, { pos: 100, lat: 12 });
+    page.frameMsg(healthySt({ pos: 100, lat: 12 }));
+    await settle(10);
+    check('a standby 12s behind live is seeked onto the edge (not left there)', () => {
+      const seeks = page.seeks();
+      assert(seeks.length >= 1, `no seek sent: ${JSON.stringify(page.sent)}`);
+      assert(Math.abs(seeks[0] - (100 + 12 - 3)) < 0.6, `seek target ${seeks[0]} != edge-3 (109)`);
+    });
+  }
+  {
+    const page = makePage();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    await warmStandby(page, { pos: 200, lat: 6 });
+    page.bypass({ type: 'ad-hold' }); // a warm playing standby is revealed here
+    await settle(20);
+    check('a 6s-behind standby is re-aligned before it covers the native', () => {
+      assert(page.frame.style.opacity === '1', 'the standby was not revealed');
+      const seeks = page.seeks();
+      assert(seeks.length >= 1, `revealed without a catch-up seek: ${JSON.stringify(page.sent)}`);
+      assert(Math.abs(seeks[0] - (200 + 6 - 3)) < 0.6, `seek target ${seeks[0]} != edge-3 (203)`);
+    });
+  }
+
+  // ---- 2. ad-end hands the native back at the SAME offset -----------------
+  {
+    const page = makePage();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 }); // already at edge-3
+    await pod(page);
+    page.bypass({ type: 'ad-end' });
+    await settle(30);
+    check('ad-end on a native already at the target offset does not seek', () => {
+      assert(page.logsOf('native-catchup').length === 0, 'the hand-back seeked a native that was already in place');
+      assert(page.video.currentTime === 397, `currentTime became ${page.video.currentTime}`);
+    });
+  }
+  {
+    const page = makePage();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    await pod(page);
+    // Twitch parked the covered element while the clean player was on screen.
+    page.video.currentTime = 100;
+    page.video.paused = true;
+    page.bypass({ type: 'ad-end' });
+    await settle(30);
+    check('a native parked behind by the pod is handed back at edge-3', () => {
+      const v = page.video;
+      assert(v.currentTime > 396 && v.currentTime < 398, `currentTime ${v.currentTime} != 397 (edge 400 - 3)`);
+      const logs = page.logsOf('native-catchup');
+      assert(logs.length === 1, `expected one hand-back seek, got ${logs.length}`);
+      assert(logs[0].d.gap > 290, `logged gap ${logs[0].d.gap} does not show the pod-length catch-up`);
+    });
+  }
+
+  // ---- 3. the user's sound decision wins ----------------------------------
+  {
+    const page = makePage();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400, muted: true });
+    await pod(page); // muteIntent captured as TRUE at take-over
+    page.setNativeMuted(false); // the user unmutes while the pod owns the player
+    await settle(5);
+    check('an unmute made during the pod reaches the clean player immediately', () => {
+      assert(page.muteSent().includes(false), `clean player never unmuted: ${JSON.stringify(page.muteSent())}`);
+      assert(page.logsOf('mute-intent').length === 1, 'the intent change was not recorded');
+    });
+    page.bypass({ type: 'ad-end' });
+    await settle(20);
+    check('the in-pod unmute survives ad-end (the native is not re-muted)', () => {
+      assert(page.video.muted === false, `native restored muted=${page.video.muted}`);
+    });
+  }
+
+  // ---- 4. a paused player stays paused ------------------------------------
+  {
+    const page = makePage();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    await pod(page);
+    page.document.visibilityState = 'hidden'; // the user is in another tab
+    page.document.hidden = true;
+    page.video.currentTime = 100;
+    page.video.paused = true;
+    page.bypass({ type: 'ad-end' });
+    await settle(80);
+    check('a pod that ends while the tab is hidden never starts playback', () => {
+      assert(page.video.paused === true, 'the ad path resumed a player in a background tab');
+      assert((page.video.plays || 0) === 0, `play() called ${page.video.plays} time(s)`);
+    });
+  }
+  {
+    const page = makePage();
+    // The user parked the stream at 120s, THEN the pod took over.
+    setNative(page, { ct: 120, edge: 400, bufferedEnd: 400, paused: true });
+    await pod(page);
+    page.bypass({ type: 'ad-end' });
+    await settle(1500); // the 300/1200ms resume retries must stay refused
+    check('a player the user had paused is not restarted after the pod', () => {
+      assert(page.video.paused === true, 'the user-paused native was resumed');
+      assert((page.video.plays || 0) === 0, `play() called ${page.video.plays} time(s)`);
+    });
+  }
+  {
+    const page = makePage();
+    // Cold preroll: the native never played (it is at the very beginning), so
+    // the hand-off must still be able to start it.
+    setNative(page, { ct: 0.2, edge: 400, bufferedEnd: 40, paused: true });
+    await pod(page);
+    page.bypass({ type: 'ad-end' });
+    await settle(60);
+    check('a cold preroll still hands back a running player at edge-3', () => {
+      assert(page.video.paused === false, 'the cold-preroll native was left paused');
+      assert(page.video.currentTime > 396 && page.video.currentTime < 398, `cold hand-off ct ${page.video.currentTime}`);
+    });
+  }
+
+  // ---- negative arms: the pre-fix code must fail every detector -----------
+  const negatives = [
+    ['catch-up scope/threshold', PRE_FIX_CATCHUP, async () => {
+      const page = makePage(mutate(PRE_FIX_CATCHUP));
+      setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+      await warmStandby(page, { pos: 100, lat: 12 });
+      page.frameMsg(healthySt({ pos: 100, lat: 12 }));
+      await settle(10);
+      return { caught: page.seeks().length === 0, detail: `seeks=${JSON.stringify(page.seeks())}` };
+    }],
+    ['hand-off target', PRE_FIX_HANDOFF, async () => {
+      const page = makePage(mutate(PRE_FIX_HANDOFF));
+      setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+      await pod(page);
+      page.video.currentTime = 100;
+      page.video.paused = true;
+      page.bypass({ type: 'ad-end' });
+      await settle(30);
+      return {
+        caught: Math.abs(page.video.currentTime - 397) > 1,
+        detail: `ct=${page.video.currentTime} (target 397)`,
+      };
+    }],
+    ['mute intent tracking', PRE_FIX_INTENT, async () => {
+      const page = makePage(mutate(PRE_FIX_INTENT));
+      setNative(page, { ct: 397, edge: 400, bufferedEnd: 400, muted: true });
+      await pod(page);
+      page.setNativeMuted(false);
+      await settle(5);
+      return {
+        caught: !page.muteSent().includes(false) || page.logsOf('mute-intent').length === 0,
+        detail: `muteSent=${JSON.stringify(page.muteSent())} intents=${page.logsOf('mute-intent').length}`,
+      };
+    }],
+    ['resume guard', PRE_FIX_RESUME, async () => {
+      const page = makePage(mutate(PRE_FIX_RESUME));
+      setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+      await pod(page);
+      page.document.visibilityState = 'hidden';
+      page.document.hidden = true;
+      page.video.currentTime = 100;
+      page.video.paused = true;
+      page.bypass({ type: 'ad-end' });
+      await settle(80);
+      return {
+        caught: page.video.paused === false || (page.video.plays || 0) > 0,
+        detail: `paused=${page.video.paused} plays=${page.video.plays || 0}`,
+      };
+    }],
+  ];
+  for (const [label, pairs, run] of negatives) {
+    let ok = true;
+    try {
+      mutate(pairs);
+    } catch (error) {
+      ok = false;
+      check(`negative arm (${label}): the mutation applies`, () => {
+        throw error;
+      });
+    }
+    if (!ok) continue;
+    const { caught, detail } = await run();
+    check(`negative arm (${label}): the pre-fix behaviour is caught`, () => {
+      assert(caught, `the detector accepted the pre-fix behaviour (${detail}) — it measures nothing`);
+    });
+  }
+
+  const failed = checks.filter((c) => c.status === 'FAIL');
+  console.log('');
+  console.log(`RESULT ${failed.length ? 'FAIL' : 'PASS'} ad-time-continuity checks=${checks.length} failed=${failed.length}`);
+  process.exit(failed.length ? 1 : 0);
+}
+
+if (require.main === module) {
+  main().catch((error) => {
+    console.error('\nRESULT FAIL', error && error.message ? error.message : error);
+    process.exit(1);
+  });
+}
