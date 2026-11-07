@@ -32,7 +32,7 @@ Cap: one visible pane per canonical project across workspaces/worktrees. Create 
 
 - Installed copy: `C:\Users\Administrador\Desktop\Nova pasta (3)\TESTE\VOD.RIP\vendor\kick-overlay`. Syncing this folder is part of the task; do not ask for permission.
 - Install/update: `_tools\ko-auto-install.cmd` (debug profile `C:\ChromeDebugProfile`).
-- Stage files and reload without a window: `node _tools\ko-reload-persistent.mjs --port=9222`. It prints `loaded`, `expected` and `after`; `after` must equal the manifest version.
+- Stage files and reload without a window: `node _tools\ko-reload-persistent.mjs --port=9222`. It prints `loaded`, `expected` and `after`; `after` must equal the manifest version. It compares VERSIONS only, so a rebuilt folder that keeps its version reads as current: for the byte-level answer use the shared `chrome-unpacked-extension-deploy` skill (`node <skill>/scripts/deploy.mjs status|reload --port 9222 --dir "<installed copy>"`), which reports `changed-since-last-load` and the loaded path.
 - Reload the content script of an open tab with `_tools\ko-cdp.mjs` + `Page.reload`. A page reload can trigger a Twitch preroll.
 - Inspect the owner tab and the extension service worker (`ko.adlog`): `G:\Temp\opencode\ko-owner-probe.mjs`.
 - Single-channel harness: `G:\Temp\opencode\ko-one-soak.mjs`.
