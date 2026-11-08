@@ -50,7 +50,10 @@ function parseArgs(argv) {
 // One declared root for every guest profile, and a cap so a day of runs cannot
 // pile up gigabytes (2026-11-08: 15 profiles = 1424 MiB, all disposable).
 const PROFILE_ROOT = process.env.KO_PROFILE_ROOT || 'G:/Temp/ko-harness';
-const KEEP_PROFILES = 2;
+// Keep the run that just ended plus one previous, and no more: an old profile
+// silently serves the PREVIOUS extension build (see ko-guest.mjs killTree), so
+// a growing pile is both disk and a false build. Steady state = 2 profiles.
+const KEEP_PROFILES = 1;
 
 function pruneProfiles(keep = KEEP_PROFILES) {
   let names = [];
