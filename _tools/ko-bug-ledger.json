@@ -379,6 +379,61 @@
       "verified": false,
       "owner_validation": "pending: a pod that ends while the tab is in the background, then returning to the tab.",
       "next": "Owner: if a background tab still starts playing on its own, read ko.adlog native-resume-visible - its presence means the resume was deferred, its absence with a frozen player means the deferral never armed."
+    },
+    {
+      "id": "KO-20261108-04",
+      "title": "A revealed clean player was judged unhealthy on every tick, rewound 2s per nudge, then torn down",
+      "state": "fixed",
+      "author": "lane",
+      "reported": "2026-11-08",
+      "fixed_in": "0.8.49",
+      "commit": null,
+      "hypothesis": "`healthy` required 4s of forward buffer while the bridge syncs at liveSyncDuration:3, so on the owner's connection every genuine tick (measured buffered 3.38-3.65, rs=4) was 'playing-not-healthy'; that scheduled the stall guard, whose maybeNudgeOverlay seeked pos-2 TWICE (a visible 2s rewind), and then stopAdOverlay('clean-stall') handed the native back. catchUpClean's own seek aimed at edge-3, which is 4-5s beyond buffered.end, so each catch-up starved the frame and ended in the same teardown: 'trocou o player, voltou vários segundos'.",
+      "falsifier": "His own ko.adlog: 49 playing-not-healthy, 14 overlay-nudge, 20 overlay-catchup, 4 overlay-stall-stop; every catch-up (e.g. lat 8.2 pos 125.9 to 131) is followed by buffered≈2 and a stall-stop, and every nudge moves the position backwards.",
+      "evidence": [
+        "Owner ko.adlog 2026-11-08 (buzzyi_ pod, sid mw7yvdpn-51gfd): playing-not-healthy buffered 3.5933/3.6507/3.4354 at rs=4 while playing",
+        "overlay-nudge {pos:29.36} -> seek 27.36 (2s back), x14",
+        "overlay-catchup {lat:8.2,pos:125.9,to:131} then playing-not-healthy {buffered:2.079} then overlay-stall-stop {kind:'rs4'}"
+      ],
+      "verified": false,
+      "owner_validation": "Pending his next pod.",
+      "next": "Owner: play a pod. Expect no overlay-nudge with a lower position, no overlay-catchup whose `to` is past pos+hold-1, and no overlay-stall-stop while buffered>=1.5."
+    },
+    {
+      "id": "KO-20261108-05",
+      "title": "The reveal re-applied the mute on every heartbeat and the tick re-muted the native every 500ms",
+      "state": "fixed",
+      "author": "lane",
+      "reported": "2026-11-08",
+      "fixed_in": "0.8.49",
+      "commit": null,
+      "hypothesis": "revealOverlay() runs on every `st` (1/s) and re-sent mute:true whenever overlay.muteIntent was true, so the mute was an order repeated forever instead of a transition; hideNativeVideos() re-assigned v.muted=true on every 500ms position tick, and Twitch's own volume button controls that element, so the user's unmute was flipped back half a second later. He clicked again, and again: 'E AINDA FICA MUTANDO QUANDO EU DESMUTO O TEMPO INTEIRO'.",
+      "falsifier": "His own ko.adlog: 50 reveal-muted in 70s (one per second, reason 'playing'), 37 'video-pause' with targetMuted:true on the native, and unmute-blocked 1.5s after the reveal.",
+      "evidence": [
+        "Owner ko.adlog 2026-11-08: reveal-muted every ~1000ms from 1437578 to 1507921",
+        "mute-intent {muted:false} only at 1510547 after 70s of clicks; unmute-blocked at 1433363"
+      ],
+      "verified": false,
+      "owner_validation": "Pending his next pod.",
+      "next": "Owner: while the pod is up, click unmute once. Expect the sound to stay on and one `reveal-muted` in the log, not one per second."
+    },
+    {
+      "id": "KO-20261108-06",
+      "title": "The swap adopted up to 8s of the native's lag and the hand-back used that number, not the clean offset",
+      "state": "fixed",
+      "author": "lane",
+      "reported": "2026-11-08",
+      "fixed_in": "0.8.49",
+      "commit": null,
+      "hypothesis": "cleanLatTarget() adopted the native's own latency clamped to [2,8], so a pod that started on a native sitting 8s behind put the clean picture 8s behind live for its whole duration (and the catch-up only fired above 8, i.e. never). resumeNative() then seeked the native to edge - cleanLatTarget(): the offset captured at TAKE-OVER, not the offset the clean player was actually showing at ad-end, so any drift became a jump on hand-back.",
+      "falsifier": "log evidence: overlay-catchup lat 8.0-9.0 repeatedly (the clean player parked at the adopt-8 ceiling) and native-handoff/native-resume with the pod's own ct, not the clean offset.",
+      "evidence": [
+        "Owner ko.adlog 2026-11-08: overlay-catchup {lat:8.2}/{8.5}/{8.8}/{9.0} — the clean player sat at the adoption ceiling",
+        "native-handoff {ct:1157.5} at pod start and native-resume {ct:14445.9} at hand-back: the two surfaces were never on one offset"
+      ],
+      "verified": false,
+      "owner_validation": "Pending his next pod.",
+      "next": "Owner: at ad-end the picture must not jump. Expect native-catchup {lat: 2..4} and the clean player revealed at <= 4s behind the edge."
     }
   ]
 }

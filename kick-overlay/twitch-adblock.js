@@ -168,6 +168,21 @@
   // 3292 ms, hand-off at 15294 ms). The catch-up below still moves the picture
   // to the edge on the next tick, so a late reveal corrects itself.
   const CLEAN_LAT_REVEAL_MAX = 20;
+  // How much forward buffer the clean player must hold before it may cover the
+  // native surface. The bridge syncs at `liveSyncDuration: 3`, so a 4 s floor is
+  // UNREACHABLE by construction: measured in the owner's own ko.adlog on
+  // 2026-11-08, every clean tick sat at buffered 3.38-3.65 while genuinely
+  // playing (rs=4), i.e. permanently "not healthy" — which fired the stall
+  // guard, rewound the picture 2 s per nudge (`overlay-nudge` x14) and then tore
+  // the overlay down (`overlay-stall-stop`), handing the native back several
+  // seconds behind. The floor is the sync target plus the one second hls.js
+  // keeps in front of it, and it is the number the two surfaces are aligned to.
+  const HEALTH_BUFFER_SEC = 3;
+  // An ALREADY REVEALED player is judged more loosely: a dip to 1.5 s while it
+  // keeps decoding is normal jitter on a refresh, and tearing down a running
+  // picture for it is what produced both the rewind and the "several seconds
+  // behind" hand-back. Below this the stall guard still restores the native.
+  const REVEALED_MIN_BUFFER_SEC = 1.5;
   // A cold cover holds the picture while the clean source is still minting, so
   // it needs a hard deadline INSIDE the 12 s contract, not equal to it. Equal
   // was unpassable: the timer fired at 12000 ms and the reachability arm
@@ -217,6 +232,7 @@
     pauseBeforeAd: false, // the native was PAUSED when the pod took over
     coldPreroll: false, // ...and it had never played (page had just loaded)
     autoplayMuted: false, // we muted the clean player for autoplay, not the user
+    muteSent: null, // the mute state last SENT to the clean player (transition-only)
     muteWrite: null, // last mute/volume write WE made (volumechange attribution)
     held: false,
     holdWasMuted: false,
@@ -433,9 +449,27 @@
     // bridge's own live-sync target instead.
     if (overlay.coldPreroll) return CLEAN_LAT_TARGET;
     const n = Number(overlay.nativeLat);
-    if (isFinite(n) && n > 0) return Math.min(8, Math.max(2, n));
+    // Adopting the native's offset is what keeps the swap continuous, but an
+    // 8s ceiling on the ADOPTION hands the user an 8s-delayed picture for the
+    // whole pod ("a live volta vários segundos", owner 2026-11-08). Match the
+    // native within one second of the clean player's own target and let the
+    // catch-up close the rest.
+    if (isFinite(n) && n > 0) return Math.min(CLEAN_LAT_TARGET + 1, Math.max(CLEAN_LAT_TARGET - 1, n));
     return CLEAN_LAT_TARGET;
   }
+  // The offset the NATIVE must come back at, in the same unit (distance from
+  // its own live edge): the offset the clean player was actually showing on the
+  // tick the ad ended. `cleanLatTarget()` alone is the offset captured at
+  // take-over, so a clean player that had drifted (or a pod that started from a
+  // native 8s behind) made the hand-back jump relative to the picture the user
+  // was watching — the "salto no tempo" half of his report.
+  function cleanHandoffLat() {
+    const st = overlay.lastSt;
+    const lat = st ? Number(st.lat) : NaN;
+    if (isFinite(lat) && lat >= 0) return Math.min(CLEAN_LAT_MAX, Math.max(CLEAN_LAT_TARGET - 1, lat));
+    return cleanLatTarget();
+  }
+  stats.cleanHandoffLat = cleanHandoffLat;
   // Pull the clean player back onto the live edge. Bounded to one seek per 2s
   // so a stalling manifest cannot turn into a seek storm. This replaces the
   // old "only when 20s+ behind" gate: the picture is revealed at real time,
@@ -448,14 +482,29 @@
     if (!force && !(lat > CLEAN_LAT_MAX)) return false;
     if (overlay.catchupAt && Date.now() - overlay.catchupAt < 2000) return false;
     overlay.catchupAt = Date.now();
-    const target = Math.max(0, pos + lat - cleanLatTarget());
-    if (Math.abs(target - pos) < RESUME_GAP_SEC) return false;
+    const want = Math.max(0, pos + lat - cleanLatTarget());
+    // Never aim past the data the element already holds. `lat` is the distance
+    // to the PLAYLIST edge while `buffered` is what has actually been
+    // downloaded, so `edge - target` is normally 4-5s beyond the buffer:
+    // seeking there forces a download the player cannot finish before the frame
+    // is due, and the measured result was `playing-not-healthy buffered≈2`
+    // followed by `overlay-stall-stop` on every single catch-up (owner ko.adlog
+    // 2026-11-08, four for four). The buffer end is the honest ceiling; the rest
+    // of the gap belongs to hls.js's own maxLiveSyncPlaybackRate, not to a skip
+    // the user sees as the picture jumping.
+    const hold = Number(st.buffered);
+    const ceiling = isFinite(hold) && hold > 0 ? pos + hold - 1 : want;
+    const target = Math.min(want, ceiling);
+    // A seek that leaves under 1.5s of buffer is worse than the drift it fixes.
+    if (!(target - pos >= RESUME_GAP_SEC)) return false;
     overlaySend({ t: 'seek', s: target });
     overlaySend({ t: 'play' });
     adLog('overlay-catchup', {
       lat: +lat.toFixed(1),
       pos: +pos.toFixed(1),
       to: +target.toFixed(1),
+      want: +want.toFixed(1),
+      hold: isFinite(hold) ? +hold.toFixed(2) : null,
       source: overlay.standby ? 'standby' : 'ad',
     });
     return true;
@@ -486,6 +535,7 @@
     if (overlay.frame && overlay.revealed) {
       // Apply the user's decision to the surface they are looking at, now.
       overlaySend({ t: 'mute', m: !!v.muted });
+      overlay.muteSent = !!v.muted;
       if (Number.isFinite(v.volume)) overlaySend({ t: 'volume', v: v.volume });
       if (!v.muted) {
         overlay.autoplayMuted = false;
@@ -580,6 +630,24 @@
     for (const msg of q) overlaySend(msg);
   }
 
+  // Mute a native video WITHOUT writing the value it already has. Twitch's own
+  // volume button controls this element, so re-assigning `muted = true` on every
+  // 500 ms position tick is what flipped the icon back on the user half a second
+  // after he unmuted: his click reached the clean player (intent forwarded) but
+  // the page kept showing "muted", and he clicked again, and again (owner report
+  // 2026-11-08: "fica mutando quando eu desmuto"). A paused element is silent
+  // anyway, so only a video that is actually PLAYING is muted here.
+  function silenceNative(v) {
+    try {
+      if (v.paused) return;
+      if (v.muted) return;
+      v.muted = true;
+      noteMuteWrite(v);
+    } catch {
+      /* ignore */
+    }
+  }
+
   function hideNativeVideos() {
     for (const v of document.querySelectorAll('video')) {
       const known = overlay.hiddenVideos.find((x) => x.el === v);
@@ -588,20 +656,14 @@
         // doubled audio ~1.5-2s behind the clean overlay). Re-apply on every
         // position tick instead of trusting the first hide.
         try { v.style.visibility = 'hidden'; } catch { /* ignore */ }
-        try {
-          v.muted = true;
-          noteMuteWrite(v);
-        } catch { /* ignore */ }
+        silenceNative(v);
         continue;
       }
       overlay.hiddenVideos.push({ el: v, visibility: v.style.visibility, muted: v.muted, volume: v.volume });
       try { v.style.visibility = 'hidden'; } catch { /* ignore */ }
       // Mute every native video, not just the main one: a PBP/ad video can
       // keep playing audio behind the opaque overlay.
-      try {
-        v.muted = true;
-        noteMuteWrite(v);
-      } catch { /* ignore */ }
+      silenceNative(v);
     }
   }
 
@@ -760,7 +822,7 @@
       // seekable yet): fall back to the newest frame the element HOLDS, never to
       // a computed position. That is the pre-2026-11-07 behaviour and it can
       // only seek inside buffered data.
-      const target = se > 0 ? Math.max(0, se - cleanLatTarget()) : Math.max(0, nativeBufferedEnd(v) - 0.5);
+      const target = se > 0 ? Math.max(0, se - cleanHandoffLat()) : Math.max(0, nativeBufferedEnd(v) - 0.5);
       // Say WHICH edge source the hand-back used: a sentinel that silently
       // became "buffered" is indistinguishable from a healthy timeline, and
       // that ambiguity is what hid the 1e9 seek for a whole pod.
@@ -857,12 +919,19 @@
     if (!(pos > 2)) return false;
     if ((overlay.nudgeTries || 0) >= 2) return false;
     overlay.nudgeTries = (overlay.nudgeTries || 0) + 1;
-    // The clean player parks at its own live edge with 0.04s buffered and
-    // hls.js reports bufferStalledError. Seek back inside the media window and
-    // play again before falling back to the native ad.
-    overlaySend({ t: 'seek', s: Math.max(0, pos - 2) });
+    // The clean player parks at its own live edge with no forward buffer and
+    // hls.js reports bufferStalledError. Seek FORWARD to the newest frame the
+    // element already holds and play again.
+    // The old nudge seeked `pos - 2`, i.e. two seconds back, twice, plus the
+    // catch-up's own skip: measured in the owner's ko.adlog on 2026-11-08 as 14
+    // `overlay-nudge` rewind events and the complaint "a live volta vários
+    // segundos". On a live stream a backward seek is exactly the delay being
+    // reported, so nothing here may move the picture back.
+    const hold = Number(st.buffered);
+    const ahead = isFinite(hold) && hold > 0.5 ? hold - 0.3 : 0;
+    overlaySend({ t: 'seek', s: Math.max(0, pos + ahead) });
     overlaySend({ t: 'play' });
-    adLog('overlay-nudge', { kind: String(kind || ''), pos: +pos.toFixed(2), tries: overlay.nudgeTries });
+    adLog('overlay-nudge', { kind: String(kind || ''), pos: +pos.toFixed(2), to: +(pos + ahead).toFixed(2), hold: isFinite(hold) ? +hold.toFixed(2) : null, tries: overlay.nudgeTries });
     return true;
   }
 
@@ -1174,16 +1243,26 @@
     // for it with the badge). A user who muted keeps a muted picture plus the
     // click-to-sound badge, and if the browser refuses the unmute the muted
     // player stays; never trade a visible ad for a frozen clean frame.
+    //
+    // This runs on EVERY `st` heartbeat (1/s) while the overlay is up, so it
+    // must be a TRANSITION and not an order: the old unconditional mute re-sent
+    // `mute:true` once a second forever, which is the owner's "fica mutando
+    // quando eu desmuto o tempo inteiro" (ko.adlog 2026-11-08: 50 `reveal-muted`
+    // in 70 s, and the unmute he made was overwritten on the next tick).
     if (overlay.muteIntent) {
-      overlaySend({ t: 'mute', m: true });
+      if (overlay.muteSent !== true) {
+        overlaySend({ t: 'mute', m: true });
+        overlay.muteSent = true;
+        adLog('reveal-muted', { reason });
+      }
       overlaySend({ t: 'play' });
-      adLog('reveal-muted', { reason });
       // The user wants silence: keep the volume the native surface had so the
       // clean picture is not playing at 100% the next time it unmutes.
       if (overlay.autoplayMuted) overlay.autoplayMuted = false;
     } else if (!overlay.unmuteTried) {
       overlay.unmuteTried = true;
       overlaySend({ t: 'mute', m: false });
+      overlay.muteSent = false;
       overlaySend({ t: 'play' });
       try { clearTimeout(overlay.unmuteCheck); } catch { /* ignore */ }
       overlay.unmuteCheck = setTimeout(() => {
@@ -1191,6 +1270,7 @@
         if (!overlay.frame || !st) return;
         if (st.muted || st.paused) {
           overlaySend({ t: 'mute', m: true });
+          overlay.muteSent = true;
           overlaySend({ t: 'play' });
           // Chrome refused the sound. This mute is OURS for autoplay reasons,
           // not the user's decision: a click may still restore it, and it must
@@ -1383,6 +1463,10 @@
     overlay.lastSt = null;
     overlay.catchupAt = 0;
     overlay.unmuteTried = false;
+    // A fresh frame starts unmuted (autoplay is muted by the 'ready' handler).
+    // Clearing this makes the reveal re-assert the user's state instead of
+    // trusting one that was sent to a frame that no longer exists.
+    overlay.muteSent = null;
     try { clearTimeout(overlay.unmuteCheck); } catch { /* ignore */ }
     overlay.unmuteCheck = 0;
     overlay.lastStAt = 0;
@@ -1468,6 +1552,7 @@
         overlay.ready = true;
         if (overlay.badge) overlay.badge.textContent = 'sem anúncio · carregando…';
         overlaySend({ t: 'mute', m: true });
+        overlay.muteSent = true;
         overlaySend({ t: 'load', url: overlay.url });
         overlaySend({ t: 'play' });
         return;
@@ -1572,10 +1657,17 @@
           const latOk = !overlay.adActive
             || typeof m.st.lat !== 'number'
             || m.st.lat <= CLEAN_LAT_REVEAL_MAX;
-          const healthy = latOk
-            && (typeof m.st.rs !== 'number' || m.st.rs >= 3)
-            && (typeof m.st.buffered !== 'number' || m.st.buffered >= 4);
-          if (!healthy) {
+          const buffered = typeof m.st.buffered === 'number' ? m.st.buffered : undefined;
+          const rsOk = typeof m.st.rs !== 'number' || m.st.rs >= 3;
+          const healthy = latOk && rsOk && (buffered === undefined || buffered >= HEALTH_BUFFER_SEC);
+          // A player that is ALREADY on screen and still decoding is not torn
+          // down for a jitter dip: that cycle (unhealthy -> nudge 2s back ->
+          // still thin -> stall-stop -> native returns behind) is the owner's
+          // "voltou vários segundos" (ko.adlog 2026-11-08). Only a real drain
+          // below REVEALED_MIN_BUFFER_SEC or a loss of future data stops it.
+          const alive = overlay.playing && rsOk
+            && (buffered === undefined || buffered >= REVEALED_MIN_BUFFER_SEC);
+          if (!healthy && !alive) {
             // A single healthy heartbeat is not enough. The 2026-10-23 run
             // revealed at a healthy tick and lost the buffer one second later;
             // mark the frame not-playing so a standby cannot be adopted from
@@ -1625,6 +1717,7 @@
           overlay.autoplayRetry = true;
           overlay.autoplayMuted = true;
           overlaySend({ t: 'mute', m: true });
+          overlay.muteSent = true;
           overlaySend({ t: 'play' });
         }
       }
@@ -1651,6 +1744,7 @@
       overlay.autoplayMuted = false;
       overlay.unmuteTried = true;
       overlaySend({ t: 'mute', m: false });
+      overlay.muteSent = false;
       overlaySend({ t: 'play' });
       if (overlay.badge) overlay.badge.textContent = 'sem anúncio · qualidade reduzida';
       try { document.removeEventListener('pointerdown', overlay.unmuteHandler, true); } catch { /* ignore */ }
@@ -1702,6 +1796,7 @@
     setTimeout(() => {
       if (!overlay.frame) return;
       overlaySend({ t: 'mute', m: true });
+      overlay.muteSent = true;
       overlaySend({ t: 'load', url: overlay.url });
       overlaySend({ t: 'play' });
     }, 400);

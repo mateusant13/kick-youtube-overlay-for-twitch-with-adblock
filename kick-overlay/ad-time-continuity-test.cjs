@@ -41,7 +41,7 @@ const PRE_FIX_CATCHUP = [[
 ]];
 // 2. hand-off seeked to the buffered end - 0.5 (a free jump, never aligned).
 const PRE_FIX_HANDOFF = [[
-  'const target = se > 0 ? Math.max(0, se - cleanLatTarget()) : Math.max(0, nativeBufferedEnd(v) - 0.5);',
+  'const target = se > 0 ? Math.max(0, se - cleanHandoffLat()) : Math.max(0, nativeBufferedEnd(v) - 0.5);',
   'const be = v.buffered && v.buffered.length ? v.buffered.end(v.buffered.length - 1) : 0;\n      const target = be - 0.5;',
 ]];
 // 6. no sentinel guard: `seekable.end` is trusted as a position. Twitch reports
@@ -76,6 +76,26 @@ const PRE_FIX_POST_EARLY = [[
 const PRE_FIX_COVER = [[
   "            adLog('cold-cover-timeout', { ms: Date.now() - (overlay.coldCoverAt || Date.now()) });\n            stopAdOverlay('cold-cover-timeout');",
   "            void 0;",
+]];
+
+// 7. the stall guard rewound the clean player 2s per nudge (owner adlog
+//    2026-11-08: 14 `overlay-nudge` events, each one a visible rewind).
+const PRE_FIX_NUDGE = [[
+  "    const hold = Number(st.buffered);\n    const ahead = isFinite(hold) && hold > 0.5 ? hold - 0.3 : 0;\n    overlaySend({ t: 'seek', s: Math.max(0, pos + ahead) });\n    overlaySend({ t: 'play' });\n    adLog('overlay-nudge', { kind: String(kind || ''), pos: +pos.toFixed(2), to: +(pos + ahead).toFixed(2), hold: isFinite(hold) ? +hold.toFixed(2) : null, tries: overlay.nudgeTries });",
+  "    overlaySend({ t: 'seek', s: Math.max(0, pos - 2) });\n    overlaySend({ t: 'play' });\n    adLog('overlay-nudge', { kind: String(kind || ''), pos: +pos.toFixed(2), to: +(pos - 2).toFixed(2), tries: overlay.nudgeTries });",
+]];
+
+// 8. the 4s reveal floor with no liveness exception: unreachable behind a 3s
+//    live sync, so a decoding player was judged unhealthy on every tick.
+const PRE_FIX_HEALTH = [
+  ['const HEALTH_BUFFER_SEC = 3;', 'const HEALTH_BUFFER_SEC = 4;'],
+  ['const alive = overlay.playing && rsOk', 'const alive = false && rsOk'],
+];
+
+// 9. the reveal re-sent the mute on every heartbeat instead of on transition.
+const PRE_FIX_MUTE_SPAM = [[
+  'if (overlay.muteSent !== true) {',
+  'if (true) {',
 ]];
 
 const checks = [];
@@ -147,7 +167,26 @@ async function main() {
     await warmStandby(page, { pos: 100, lat: 12 });
     page.frameMsg(healthySt({ pos: 100, lat: 12 }));
     await settle(10);
-    check('a standby 12s behind live is seeked onto the edge (not left there)', () => {
+    check('a standby 12s behind live is pulled forward, never past the data it holds', () => {
+      const seeks = page.seeks();
+      assert(seeks.length >= 1, `no seek sent: ${JSON.stringify(page.sent)}`);
+      // lat 12 at pos 100 with 8s buffered: edge-3 is 109, i.e. 5s BEYOND the
+      // buffer. Seeking there is a download the player cannot finish, and the
+      // measured result was a starvation teardown (ko.adlog 2026-11-08), so the
+      // ceiling is the newest frame the element already holds.
+      assert(seeks[0] > 100, `seek ${seeks[0]} does not move the picture forward`);
+      assert(seeks[0] <= 100 + 8 - 1 + 0.001, `seek ${seeks[0]} left the buffered range (ceiling 107)`);
+    });
+  }
+  {
+    const page = makePage();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    page.bypass({ type: 'standby-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+    await settle(20);
+    page.frameMsg({ t: 'ready' });
+    page.frameMsg(healthySt({ pos: 100, lat: 12, buffered: 30 }));
+    await settle(10);
+    check('a standby with the buffer to reach the edge is seeked all the way to edge-3', () => {
       const seeks = page.seeks();
       assert(seeks.length >= 1, `no seek sent: ${JSON.stringify(page.sent)}`);
       assert(Math.abs(seeks[0] - (100 + 12 - 3)) < 0.6, `seek target ${seeks[0]} != edge-3 (109)`);
@@ -315,7 +354,8 @@ async function main() {
     page.bypass({ type: 'standby-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
     await settle(20);
     page.frameMsg({ t: 'ready' });
-    // Thin forward buffer: the reveal gate wants 4 s, this source never gives it.
+    // Thin forward buffer: the reveal gate wants the 3 s sync target, and this
+    // source never gives it (measured 2.45 s on the owner's own adlog).
     page.frameMsg(healthySt({ buffered: 2.45, lat: 30, pos: 30 }));
     page.bypass({ type: 'ad-hold' });
     await settle(40);
@@ -363,6 +403,81 @@ async function main() {
     check('the held commands are flushed once the frame loads', () => {
       assert(page.sent.length > 0, 'the held command was dropped instead of flushed');
       assert(page.sent.some((m) => m && m.t === 'load'), `the load command never reached the frame: ${JSON.stringify(page.sent)}`);
+    });
+  }
+
+  // ---- 8. the clean player is never pulled BACKWARD ----------------------
+  // Owner report 2026-11-08: "trocou o player, voltou vários segundos". The
+  // stall guard used to seek `pos - 2` twice before giving up, and the owner's
+  // ko.adlog carries 14 `overlay-nudge` events with the position going back
+  // 2s each time. A live picture only ever moves forward.
+  {
+    const page = makePage();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    await pod(page, { pos: 100, lat: 4 });
+    // A stalled tick: no future data, so the health gate cannot pass and the
+    // stall guard runs its nudge.
+    page.frameMsg(healthySt({ pos: 104, lat: 3, buffered: 0.2, rs: 2 }));
+    await settle(2700);
+    check('a stalled clean player is nudged FORWARD, never rewound', () => {
+      const nudges = page.logsOf('overlay-nudge');
+      assert(nudges.length >= 1, `the stall guard never ran: ${JSON.stringify(page.logs().map((l) => l.ev))}`);
+      for (const n of nudges) assert(n.d.to >= n.d.pos, `nudge moved backward: ${n.d.pos} -> ${n.d.to}`);
+      for (const s of page.seeks()) assert(s >= 100, `a seek went behind the picture: ${s}`);
+    });
+  }
+
+  // ---- 9. a thin buffer does not tear down a player that is decoding -----
+  // The 4s reveal floor was unreachable with `liveSyncDuration: 3`: every
+  // genuine tick sat at ~3.6s, so the overlay was judged unhealthy forever,
+  // nudged, and stopped (`overlay-stall-stop`) — the native came back behind.
+  {
+    const page = makePage();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    await pod(page, { pos: 100, lat: 3 });
+    assert(page.frame.style.opacity === '1', 'precondition: the overlay is revealed');
+    for (let i = 0; i < 4; i++) {
+      page.frameMsg(healthySt({ pos: 103 + i, lat: 3.6, buffered: 3.6, rs: 4 }));
+      await settle(5);
+    }
+    check('a revealed player at the sync target is not nudged or stopped', () => {
+      assert(page.logsOf('playing-not-healthy').length === 0, `still judged unhealthy at 3.6s of buffer: ${JSON.stringify(page.logsOf('playing-not-healthy').map((l) => l.d))}`);
+      assert(page.logsOf('overlay-nudge').length === 0, 'the thin buffer fired the nudge');
+      assert(page.logsOf('overlay-stall-stop').length === 0, 'the thin buffer tore the overlay down');
+      assert(page.frame.style.opacity === '1', 'the overlay was hidden');
+    });
+  }
+
+  // ---- 10. the heartbeat never re-sends the mute the user just changed ---
+  // Owner report 2026-11-08: "fica mutando quando eu desmuto o tempo inteiro".
+  // `revealOverlay()` runs on every `st` (1/s) and re-sent `mute:true` forever;
+  // his ko.adlog has 50 `reveal-muted` in 70s.
+  {
+    const page = makePage();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400, muted: true });
+    await pod(page);
+    const before = page.muteSent().filter((m) => m === true).length;
+    for (let i = 0; i < 5; i++) {
+      page.frameMsg(healthySt({ pos: 100 + i, lat: 3 }));
+      await settle(3);
+    }
+    check('a muted pod sends the mute once, not on every heartbeat', () => {
+      const after = page.muteSent().filter((m) => m === true).length;
+      assert(after - before <= 1, `the heartbeat re-sent the mute ${after - before} times over 5 ticks`);
+      assert(page.logsOf('reveal-muted').length <= 2, `reveal-muted logged ${page.logsOf('reveal-muted').length} times`);
+    });
+    // The user unmutes: the decision must survive the following heartbeats.
+    page.setNativeMuted(false, 0.97);
+    await settle(5);
+    const idx = page.muteSent().length;
+    for (let i = 0; i < 3; i++) {
+      page.frameMsg(healthySt({ pos: 105 + i, lat: 3, muted: false }));
+      await settle(3);
+    }
+    check('an unmute made during the pod is not overwritten by the heartbeat', () => {
+      const after = page.muteSent().slice(idx).filter((m) => m === true).length;
+      assert(after === 0, `the heartbeat re-muted the player ${after} times after the user unmuted`);
+      assert(page.video.paused === false || page.logsOf('mute-intent').length >= 1, 'the unmute never reached the page');
     });
   }
 
@@ -450,6 +565,40 @@ async function main() {
         caught: !covered || fired !== 1 || page.video.style.visibility === 'hidden',
         detail: `covered=${covered} timeouts=${fired} nativeVis=${page.video.style.visibility}`,
       };
+    }],
+    ['backward nudge', PRE_FIX_NUDGE, async () => {
+      const page = makePage(mutate(PRE_FIX_NUDGE));
+      setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+      await pod(page, { pos: 100, lat: 4 });
+      page.frameMsg(healthySt({ pos: 104, lat: 3, buffered: 0.2, rs: 2 }));
+      await settle(2700);
+      const backward = page.logsOf('overlay-nudge').filter((n) => n.d.to < n.d.pos);
+      return { caught: backward.length > 0, detail: `nudges=${JSON.stringify(page.logsOf('overlay-nudge').map((n) => [n.d.pos, n.d.to]))}` };
+    }],
+    ['reveal health floor', PRE_FIX_HEALTH, async () => {
+      const page = makePage(mutate(PRE_FIX_HEALTH));
+      setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+      await pod(page, { pos: 100, lat: 3 });
+      for (let i = 0; i < 4; i++) {
+        page.frameMsg(healthySt({ pos: 103 + i, lat: 3.6, buffered: 3.6, rs: 4 }));
+        await settle(5);
+      }
+      const bad = page.logsOf('playing-not-healthy').length > 0
+        || page.logsOf('overlay-nudge').length > 0
+        || page.logsOf('overlay-stall-stop').length > 0;
+      return { caught: bad, detail: `unhealthy=${page.logsOf('playing-not-healthy').length} nudges=${page.logsOf('overlay-nudge').length} stops=${page.logsOf('overlay-stall-stop').length}` };
+    }],
+    ['mute heartbeat', PRE_FIX_MUTE_SPAM, async () => {
+      const page = makePage(mutate(PRE_FIX_MUTE_SPAM));
+      setNative(page, { ct: 397, edge: 400, bufferedEnd: 400, muted: true });
+      await pod(page);
+      const before = page.muteSent().filter((m) => m === true).length;
+      for (let i = 0; i < 5; i++) {
+        page.frameMsg(healthySt({ pos: 100 + i, lat: 3 }));
+        await settle(3);
+      }
+      const after = page.muteSent().filter((m) => m === true).length;
+      return { caught: after - before > 1, detail: `re-sent mute ${after - before} times over 5 ticks` };
     }],
   ];
   for (const [label, pairs, run] of negatives) {
