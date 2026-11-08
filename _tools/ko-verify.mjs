@@ -407,10 +407,19 @@ const head = spawnSync('git', ['-C', ROOT, 'rev-parse', '--short', 'HEAD'], {
 const gitHead = String(head.stdout || '').trim() || 'unknown';
 const unverified = ledger.bugs.filter((b) => b.state === 'fixed' && b.verified !== true);
 const livePending = ledger.bugs.filter((b) => b.state === 'arm-verified');
+function installedVersion() {
+  try {
+    const m = JSON.parse(readFileSync(path.join(ROOT, 'kick-overlay', 'manifest.json'), 'utf8'));
+    return String(m.version || 'unknown');
+  } catch { return 'unknown'; }
+}
 const NOT_MEASURED = [
   'A Twitch-served ad that actually paints, on the owner own Chrome, across repeated runs and channels: the only way to time a real cold preroll and to confirm the cover against production timing. Measured 2026-10-26: 5 ad-net requests and 0 visible-ad samples over 150 s on live Caedrel, so no pod existed to time. The cold-cover branch itself is measured in a real browser with an injected ad-hold (_evidence/KO-20261023-01-reachability.txt); that is a different claim from a real pod.',
   'KO-20261026-04 behaviour on youtube.com itself: the guest profile is served a YouTube login/bot check, so the guard was proven on a real Twitch watch page through the shared page-player resume path. Confirming it on the owner own YouTube session needs his Chrome.',
-  'The installed 0.8.43 build in the owner Chrome while he watches: unit, gate and guest-Chrome evidence exist, the owner own live session has not been observed yet.',
+  // The version is read from the manifest, never written here: this line said
+  // 0.8.43 while the installed build was 0.8.52, which is the same stale-claim
+  // defect the receipt exists to prevent.
+  `The installed ${installedVersion()} build in the owner Chrome while he watches a real pod: unit, gate and guest-Chrome evidence exist, the owner own live session has not been observed for it yet.`,
 ];
 // Measured on a live channel, not in this static gate: the numbers come from
 // runs recorded here so the receipt stops claiming they were never taken.

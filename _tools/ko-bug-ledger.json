@@ -21,8 +21,8 @@
         "Gate: node _tools/ko-verify.mjs -> RESULT PASS checks=18 failed=0, new `ad-time-continuity` check"
       ],
       "verified": false,
-      "owner_validation": "pending: installed 0.8.44 in his Chrome. Watch a pod, confirm the picture returns at real time (badge does not show a visibly late stream) and that dragging the bar back does not reveal a further delay.",
-      "next": "Owner: with 0.8.44 installed, time the clean picture against the native edge on a real pod. Live pod not measured (no ad painted in the guest during the 2026-10-26 runs)."
+      "owner_validation": "pending: the installed build in his Chrome. Watch a pod, confirm the picture returns at real time (badge does not show a visibly late stream) and that dragging the bar back does not reveal a further delay.",
+      "next": "Owner: on the installed build, time the clean picture against the native edge on a real pod. Live pod not measured (no ad painted in the guest during the 2026-10-26 runs)."
     },
     {
       "id": "KO-20261107-02",
@@ -43,7 +43,7 @@
         "node kick-overlay/ad-time-continuity-test.cjs -> RESULT PASS checks=13 failed=0"
       ],
       "verified": false,
-      "owner_validation": "pending: installed 0.8.44. Watch an ad end while the native was covered for tens of seconds and confirm the picture continues instead of jumping.",
+      "owner_validation": "pending: the installed build. Watch an ad end while the native was covered for tens of seconds and confirm the picture continues instead of jumping.",
       "next": "Owner: confirm on a real pod end. The 300ms retry stays as a fallback for a native that Twitch unmounts mid-pod."
     },
     {
@@ -65,7 +65,7 @@
         "node kick-overlay/ad-time-continuity-test.cjs -> RESULT PASS checks=13 failed=0"
       ],
       "verified": false,
-      "owner_validation": "pending: installed 0.8.44. Unmute mid-pod and confirm sound appears on the clean picture and stays on after the pod; mute and confirm a page click does not restore sound.",
+      "owner_validation": "pending: the installed build. Unmute mid-pod and confirm sound appears on the clean picture and stays on after the pod; mute and confirm a page click does not restore sound.",
       "next": "Owner: confirm both directions during a real pod. Recorder-only pages and hidden tabs never reach the handler (own guard)."
     },
     {
@@ -87,7 +87,7 @@
         "node kick-overlay/ad-time-continuity-test.cjs -> RESULT PASS checks=13 failed=0"
       ],
       "verified": false,
-      "owner_validation": "pending: installed 0.8.44. Leave a Twitch tab paused in the background through an ad on another tab and confirm it stays paused.",
+      "owner_validation": "pending: the installed build. Leave a Twitch tab paused in the background through an ad on another tab and confirm it stays paused.",
       "next": "Owner: confirm on a real background tab. A cold preroll keeps its own exception so the first paint after a page load still starts."
     },
     {
