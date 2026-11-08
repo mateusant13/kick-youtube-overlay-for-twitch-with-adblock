@@ -48,6 +48,7 @@ Cap: one visible pane per canonical project across workspaces/worktrees. Create 
 - Install/update: `_tools\ko-auto-install.cmd` (debug profile `C:\ChromeDebugProfile`).
 - Stage files and reload without a window: `node _tools\ko-reload-persistent.mjs --port=9222`. It prints `loaded`, `expected` and `after`; `after` must equal the manifest version. It compares VERSIONS only, so a rebuilt folder that keeps its version reads as current: for the byte-level answer use the shared `chrome-unpacked-extension-deploy` skill (`node <skill>/scripts/deploy.mjs status|reload --port 9222 --dir "<installed copy>"`), which reports `changed-since-last-load` and the loaded path.
 - Reload the content script of an open tab with `_tools\ko-cdp.mjs` + `Page.reload`. A page reload can trigger a Twitch preroll.
+- Read `ko.adlog` without the worker noise: `node _tools\ko-adlog-window.mjs [port] [rows] [--keep a,b,c]` (opens a hidden extension page, because the service worker sleeps and cannot be asked directly).
 - Inspect the owner tab and the extension service worker (`ko.adlog`): `G:\Temp\opencode\ko-adlog-dump.mjs`, `ko-stats-poll.mjs` (both present). `ko-owner-probe.mjs` and `ko-one-soak.mjs` were cited here and no longer exist — the single-channel harness is `_tools\ko-harness.mjs`.
 - Gate: `node _tools\ko-verify.mjs`; require `RESULT PASS` and `failed=0` (19 checks as of 0.8.48; the count grows with the suite, so pin the verdict, not the number).
 - `kick-overlay/content-fix-test.cjs` is NOT wired into the gate and its H4 arm ('the re-pick re-mints exactly once') FAILS at HEAD; measured 2026-11-08 by running it against `git show HEAD:kick-overlay/content.js`, so it is drift from the 0.8.47 frame-ready gate, not a live defect. Run it from `kick-overlay/` (it reads `manifest.json` from the cwd). Do not read its red as a regression you caused.
@@ -88,6 +89,20 @@ gesture on the page's own volume control moved the published volume 0.50 → 0.3
 crosses the world boundary), and the native stayed unmuted for 2.4 s of the 400 ms tick (6/6 samples).
 **The pod swap itself is still owed**: it needs a real ad on a live channel with 0.8.50 loaded, and the
 row is NOT `verified` until that run exists.
+
+## A fix may not trade one visible defect for another (owner correction 2026-11-07/08)
+
+Verbatim, twice: *"tomei ad que a tela ficou inteira preta ate o ad acabar"* (2026-11-07) and, after
+0.8.48 answered it with an opaque panel, the screenshot *"sério que tu fez essa merda?"* (2026-11-08).
+0.8.48 replaced "a 30 s ad is visible" with "up to 9 s of a full black page", and the test suite was
+written to ENFORCE the panel (`nativeHiddenAtHold === true`), so the gate could never have caught it.
+
+- The screen is the owner's, not the code's: a hold freezes the picture (pause), it never hides the
+  surface the user is watching and never paints `inset:0`.
+- Before replacing one visible failure with another, name the two user-visible outcomes and pick with a
+  number (seconds of black vs seconds of ad), inside the same sentence as the change.
+- A test that asserts the NEW behaviour must also carry a mutation that restores the OLD defect. The
+  cold-cover suite now does: its RED-2 re-inserts `hideNativeVideos()` on the hold tick.
 
 ## Wave record — 2026-11-08, the black page ("sem anúncio · carregando a live…", 0.8.51)
 
