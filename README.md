@@ -18,9 +18,11 @@ O Twitch insere anúncios dentro da própria live. A extensão tenta bloquear o 
 
 Essa versão fica escondida e muda até ser necessária. Quando o intervalo termina, a extensão volta ao player normal da Twitch.
 
-Com a versão pronta, a troca é imediata e o tempo continua no mesmo ponto. A versão sem anúncio entra no atraso que a live já tinha (até 3 segundos do tempo real), e o player da Twitch volta no mesmo ponto em que ela parou, então a troca não adianta nem atrasa a transmissão. Se a versão sem anúncio falhar, o player normal continua no lugar, sem tela preta. A página não recarrega sozinha.
+Com a versão pronta, a troca é imediata e o tempo continua no mesmo ponto. A versão sem anúncio entra no mesmo atraso que a live já tinha (alguns segundos, no máximo 8), e o player da Twitch volta no mesmo ponto em que ela parou, então a troca não adianta nem atrasa a transmissão.
 
-O mudo que você escolher durante o intervalo vale para os dois players. Uma aba da Twitch que você pausou, ou que está em segundo plano, não é retomada pela extensão.
+Enquanto a versão sem anúncio ainda está carregando, o anúncio fica escondido atrás de uma tarja que diz que a live está carregando. Se ela não ficar pronta em 9 segundos, o player normal volta com o anúncio no ponto em que está. A página não recarrega sozinha.
+
+O mudo que você escolher durante o intervalo vale para os dois players, inclusive enquanto a versão sem anúncio carrega. Uma aba da Twitch que você pausou não é retomada pela extensão. Se o intervalo terminar com a aba em segundo plano, o player volta a tocar quando você voltar para a aba.
 
 ## Instalação
 

@@ -39,7 +39,7 @@ Cap: one visible pane per canonical project across workspaces/worktrees. Create 
 - Stage files and reload without a window: `node _tools\ko-reload-persistent.mjs --port=9222`. It prints `loaded`, `expected` and `after`; `after` must equal the manifest version. It compares VERSIONS only, so a rebuilt folder that keeps its version reads as current: for the byte-level answer use the shared `chrome-unpacked-extension-deploy` skill (`node <skill>/scripts/deploy.mjs status|reload --port 9222 --dir "<installed copy>"`), which reports `changed-since-last-load` and the loaded path.
 - Reload the content script of an open tab with `_tools\ko-cdp.mjs` + `Page.reload`. A page reload can trigger a Twitch preroll.
 - Inspect the owner tab and the extension service worker (`ko.adlog`): `G:\Temp\opencode\ko-adlog-dump.mjs`, `ko-stats-poll.mjs` (both present). `ko-owner-probe.mjs` and `ko-one-soak.mjs` were cited here and no longer exist — the single-channel harness is `_tools\ko-harness.mjs`.
-- Gate: `node _tools\ko-verify.mjs`; require `RESULT PASS` and `failed=0` (18 checks as of 0.8.45; the count grows with the suite, so pin the verdict, not the number).
+- Gate: `node _tools\ko-verify.mjs`; require `RESULT PASS` and `failed=0` (19 checks as of 0.8.48; the count grows with the suite, so pin the verdict, not the number).
 - agent-browser: `H:\env\npm-global\agent-browser.cmd`, `connect 9222`. Use it for page UI, not for the extension service worker or `ko.adlog`.
 
 ## Project notes

@@ -41,11 +41,13 @@ const PRE_FIX_MUTATION = [
   'if (overlay.frame && !overlay.revealed && !overlay.playing) {',
   'if (false) { // pre-fix: no cold cover',
 ];
-// Re-instates the behaviour the owner reported on 2026-11-07: an opaque frame
-// over a hidden native player is a black rectangle until the source is healthy.
+// Re-instates the 0.8.46 behaviour the owner reported on 2026-11-08: the hold
+// painted nothing, so the ad itself stayed on screen for the whole pod. The
+// mutant removes the cover block (hide + panel) and keeps the cold-cover event.
 const PAINT_MUTATION = [
-  'overlay.coldCover = true;',
-  "overlay.coldCover = true; try { overlay.frame.style.opacity = '1'; } catch { /* ignore */ } try { hideNativeVideos(); } catch { /* ignore */ }",
+  // both halves of the cover: hiding the ad and showing the panel
+  ['try { hideNativeVideos(); } catch { /* ignore */ }', '/* mutant: native left visible */'],
+  ["overlay.cover.style.display = 'flex';", '/* mutant: no panel */'],
 ];
 const LIVE_HOST = 'https://video-edge-a.playlist.ttvnw.net';
 const CHANNEL = 'rodil';
@@ -249,6 +251,8 @@ async function main() {
     const coveredAt = coverEvents.length ? Date.now() - t0 : null;
     const nativeHiddenAtHold = page.video.style.visibility === 'hidden';
     const frameOpacityAtHold = page.frame ? page.frame.style.opacity : null;
+    const coverAtHold = page.cover ? page.cover.style.display : null;
+    const coverText = page.cover ? page.cover.textContent : null;
 
     for (let i = 0; i < 3; i++) page.frameMsg(healthySt());
     await settle(30);
@@ -256,6 +260,7 @@ async function main() {
     const revealedAt = revealEvents.length ? Date.now() - t0 : null;
     const nativeHiddenAfterReveal = page.video.style.visibility === 'hidden';
     const frameOpacityAfterReveal = page.frame ? page.frame.style.opacity : null;
+    const coverAfterReveal = page.cover ? page.cover.style.display : null;
 
     return {
       label,
@@ -263,6 +268,9 @@ async function main() {
       revealedAt,
       nativeHiddenAtHold,
       frameOpacityAtHold,
+      coverAtHold,
+      coverText,
+      coverAfterReveal,
       nativeHiddenAfterReveal,
       frameOpacityAfterReveal,
       coverEvents,
@@ -277,9 +285,11 @@ async function main() {
     assert(green.coveredAt !== null && green.coveredAt <= 2000, `cover took ${green.coveredAt} ms, bound is 2000`);
     assert(green.coverEvents[0].d.reason === 'ad-hold', `reason=${green.coverEvents[0].d.reason}`);
   });
-  check('GREEN: the hold does not paint over the native (no black screen)', () => {
-    assert(green.nativeHiddenAtHold === false, 'the native player was hidden on the hold tick — that is the black screen');
-    assert(green.frameOpacityAtHold !== '1', `frame was raised to opacity ${green.frameOpacityAtHold} before the source played`);
+  check('GREEN: the hold covers the AD, and raises the frame only after the clean picture exists', () => {
+    assert(green.nativeHiddenAtHold === true, 'the ad stayed visible on the hold tick — that is the whole-30s-ad report');
+    assert(green.coverAtHold === 'flex', `cover panel display=${green.coverAtHold}`);
+    assert(/carregando/.test(String(green.coverText)), `cover says: ${green.coverText}`);
+    assert(green.frameOpacityAtHold !== '1', `frame was raised to opacity ${green.frameOpacityAtHold} before the source played — that is the black screen`);
   });
   check('GREEN: overlay-reveal lands inside the 12 s cold-cover window and swaps the surfaces', () => {
     assert(green.revealEvents.length >= 1, `no overlay-reveal; adlog=${JSON.stringify(green.events.map((e) => e.ev))}`);
@@ -287,6 +297,7 @@ async function main() {
     assert(green.revealedAt > green.coveredAt, 'reveal happened before the cover');
     assert(green.nativeHiddenAfterReveal === true, 'the native player stayed visible after the reveal');
     assert(green.frameOpacityAfterReveal === '1', `frame opacity after reveal = ${green.frameOpacityAfterReveal}`);
+    assert(green.coverAfterReveal === 'none', `the cover panel stayed up over the clean picture: ${green.coverAfterReveal}`);
   });
 
   const mutated = SOURCE.split(PRE_FIX_MUTATION[0]).join(PRE_FIX_MUTATION[1]);
@@ -298,15 +309,16 @@ async function main() {
     assert(red.coverEvents.length === 0, `pre-fix arm still emitted cold-cover: ${JSON.stringify(red.coverEvents)}`);
   });
 
-  const painted = SOURCE.split(PAINT_MUTATION[0]).join(PAINT_MUTATION[1]);
+  let painted = SOURCE;
+  for (const [from, to] of PAINT_MUTATION) painted = painted.split(from).join(to);
   check('the paint mutation applied', () => {
     assert(painted !== SOURCE, 'the black-screen mutation did not apply — the guard would be vacuous');
   });
   const black = await arm(painted, 'black');
-  check('RED-2 (2026-11-07 defect): painting on the hold tick hides the native, so the GREEN arm catches it', () => {
+  check('RED-2 (2026-11-08 defect): a hold that paints nothing shows the ad, so the GREEN arm catches it', () => {
     assert(black.coverEvents.length >= 1, 'the mutant did not reach the hold branch');
-    assert(black.nativeHiddenAtHold === true, 'the mutant did not hide the native — it is not the reported defect');
-    assert(black.frameOpacityAtHold === '1', 'the mutant did not raise the frame — it is not the reported defect');
+    assert(black.nativeHiddenAtHold === false, 'the mutant hid the native — it is not the reported defect');
+    assert(black.coverAtHold !== 'flex', `the mutant still showed the cover panel (${black.coverAtHold})`);
   });
 
   server.close();

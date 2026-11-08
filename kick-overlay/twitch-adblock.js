@@ -382,19 +382,42 @@
 
   // ---- live-time alignment helpers ----------------------------------------
   // The live edge of a native <video>. Twitch live reports duration=Infinity,
-  // so the seekable end is the only honest "now".
+  // so the seekable end is the only honest "now" -- but only when it IS a
+  // position. Twitch also reports `seekable.end = 1073741824` (2^30) as a
+  // "live, timeline unknown" sentinel, measured in the owner's own ko.adlog on
+  // 2026-11-08 (`native-handoff {se: 1073741824}`): trusting it made the
+  // hand-back seek the native to 1e9 seconds, i.e. a frozen player.
+  const EDGE_MAX_SEC = 1e6; // ~11.5 days of stream: beyond this it is a sentinel
   function nativeEdge(v) {
     try {
       const s = v && v.seekable;
       if (s && s.length) {
         const e = s.end(s.length - 1);
-        return isFinite(e) && e > 0 ? e : 0;
+        if (!(isFinite(e) && e > 0 && e < EDGE_MAX_SEC)) return 0;
+        const d = Number(v.duration);
+        if (isFinite(d) && d > 0 && e > d + 1) return 0; // edge beyond the media
+        return e;
       }
     } catch {
       /* not ready */
     }
     return 0;
   }
+  // The newest frame the element actually holds. Safe where the live edge is a
+  // sentinel: a buffered range is always a real position.
+  function nativeBufferedEnd(v) {
+    try {
+      const b = v && v.buffered;
+      if (b && b.length) {
+        const e = b.end(b.length - 1);
+        return isFinite(e) && e > 0 && e < EDGE_MAX_SEC ? e : 0;
+      }
+    } catch {
+      /* not ready */
+    }
+    return 0;
+  }
+  stats.nativeEdge = nativeEdge;
   function nativeLatency(v) {
     const e = nativeEdge(v);
     if (!(e > 0)) return 0;
@@ -733,14 +756,23 @@
       // continuous. Failure paths still land in real time.
       const from = Number(v.currentTime || 0);
       const se = nativeEdge(v);
-      const target = se > 0 ? Math.max(0, se - cleanLatTarget()) : 0;
+      // No usable live edge (Twitch's 2^30 sentinel, or a timeline that is not
+      // seekable yet): fall back to the newest frame the element HOLDS, never to
+      // a computed position. That is the pre-2026-11-07 behaviour and it can
+      // only seek inside buffered data.
+      const target = se > 0 ? Math.max(0, se - cleanLatTarget()) : Math.max(0, nativeBufferedEnd(v) - 0.5);
+      // Say WHICH edge source the hand-back used: a sentinel that silently
+      // became "buffered" is indistinguishable from a healthy timeline, and
+      // that ambiguity is what hid the 1e9 seek for a whole pod.
+      if (se <= 0) adLog('native-edge-unusable', { from: +from.toFixed(1), rs: v.readyState });
       if (target > from + RESUME_GAP_SEC) {
         v.currentTime = target;
         adLog('native-catchup', {
           from: +from.toFixed(1),
           to: +target.toFixed(1),
-          lat: +(se - target).toFixed(1),
+          lat: +(se > 0 ? se - target : -1).toFixed(1),
           gap: +(target - from).toFixed(1),
+          edge: se > 0 ? 'seekable' : 'buffered',
         });
       }
       // readyState 2 with paused=false is still a frozen frame. Nudge behind
@@ -781,11 +813,35 @@
     return false;
   }
 
+  // A pod that ends while the tab is hidden leaves the native paused BY US.
+  // Refusing to start it in the background is right (that is the owner report),
+  // but leaving it paused when the user comes back is a defect of the same
+  // guard: it hands back a frozen player he never paused. One shot, on the next
+  // visible tick, and only when the user did not park it himself.
+  function armResumeWhenVisible(v, tag) {
+    if (!v || !v.isConnected) return;
+    if (overlay.pauseBeforeAd && !overlay.coldPreroll) return; // the user parked it
+    const onVisible = () => {
+      if (document.visibilityState && document.visibilityState !== 'visible') return;
+      try { document.removeEventListener('visibilitychange', onVisible, true); } catch { /* ignore */ }
+      if (!v.isConnected || overlay.adActive) return;
+      if (overlay.pauseBeforeAd && !overlay.coldPreroll) return;
+      if (!v.paused) return;
+      adLog('native-resume-visible', { tag, ct: +Number(v.currentTime || 0).toFixed(1) });
+      resumeNative(v, `${tag}+visible`);
+    };
+    try { document.addEventListener('visibilitychange', onVisible, true); } catch { /* ignore */ }
+  }
+
   function resumeNativeIfAllowed(v, tag) {
     if (!v || !v.isConnected) return;
     if (overlay.adActive) return;
     if (overlay.frame && !overlay.standby) return;
-    if (resumeRefusedByUser(v)) return;
+    if (resumeRefusedByUser(v)) {
+      // Only the visibility half is deferrable; a user-parked element never is.
+      if (!(overlay.pauseBeforeAd && !overlay.coldPreroll)) armResumeWhenVisible(v, tag);
+      return;
+    }
     resumeNative(v, tag);
   }
 
@@ -872,6 +928,7 @@
         overlay.switchPrev = null;
       }
       if (overlay.badge) { try { overlay.badge.remove(); } catch { /* ignore */ } overlay.badge = null; }
+      if (overlay.cover) { try { overlay.cover.remove(); } catch { /* ignore */ } overlay.cover = null; }
       if (overlay.unmuteHandler) {
         try { document.removeEventListener('pointerdown', overlay.unmuteHandler, true); } catch { /* ignore */ }
         overlay.unmuteHandler = null;
@@ -906,6 +963,10 @@
     if (overlay.badge) {
       try { overlay.badge.remove(); } catch { /* ignore */ }
       overlay.badge = null;
+    }
+    if (overlay.cover) {
+      try { overlay.cover.remove(); } catch { /* ignore */ }
+      overlay.cover = null;
     }
     if (overlay.switchPrev) {
       try { clearTimeout(overlay.switchPrev.timer); } catch { /* ignore */ }
@@ -950,6 +1011,7 @@
         // "player comes back and then jumps" half of the owner's report). Only
         // the user-intent guard applies here.
         if (!resumeRefusedByUser(v)) resumeNative(v, 'ad-end');
+        else if (!(overlay.pauseBeforeAd && !overlay.coldPreroll)) armResumeWhenVisible(v, 'ad-end');
         setTimeout(() => {
           // A new *hidden standby* must not block the native resume retries;
           // only a visible/held ad overlay should. Measured: starting the new
@@ -1081,6 +1143,9 @@
       overlay.coldCover = false;
     try { clearTimeout(overlay.coldTimer); } catch { /* ignore */ }
     overlay.coldTimer = 0;
+      // The clean picture is up: drop the notice panel in the same tick as the
+      // frame raise, so the user never sees the panel over a playing stream.
+      try { if (overlay.cover) overlay.cover.style.display = 'none'; } catch { /* ignore */ }
       try {
         overlay.frame.style.opacity = '1';
         overlay.frame.style.pointerEvents = 'auto';
@@ -1367,6 +1432,22 @@
       'padding:3px 7px;border-radius:4px;white-space:nowrap;';
     try { document.body.appendChild(badge); } catch { /* ignore */ }
     overlay.badge = badge;
+    // The cover: what the user sees while the clean source is still minting and
+    // the ad must not be watched. 0.8.46 answered the "17s of black" report by
+    // never painting at all, so a pod whose source never got healthy showed the
+    // WHOLE ad (owner report 2026-11-08: "abri a live e tomei um anúncio
+    // completo de 30 segundos"). Neither black nor the ad: an opaque panel that
+    // says what is happening, above the frame (the frame's own player is black
+    // until it decodes) and below nothing else.
+    const cover = document.createElement('div');
+    cover.id = 'ko-adfix-cover';
+    cover.textContent = 'sem anúncio · carregando a live…';
+    cover.style.cssText =
+      'position:fixed;z-index:2147483648;pointer-events:none;display:none;' +
+      'inset:0;background:#000;color:#c8c8c8;font:14px/1.4 system-ui,sans-serif;' +
+      'align-items:center;justify-content:center;text-align:center;';
+    try { document.body.appendChild(cover); } catch { /* ignore */ }
+    overlay.cover = cover;
     // Do NOT hide the native video here. Measured: hiding it immediately is
     // what produced the black/buffering frame while the clean source started.
     // Keep it visible until revealOverlay() (overlay Playing or the 2.5s
@@ -1720,9 +1801,23 @@
         // there, the bound below restores the native and nothing was ever black.
         if (overlay.frame && !overlay.revealed && !overlay.playing) {
           overlay.coldCover = true;
+          // Cover the ad, not the screen: hide the native videos and raise the
+          // notice panel. An iframe with no decoded picture is a black
+          // rectangle, so the frame is NOT raised here — the panel is, and
+          // revealOverlay() swaps in the frame the moment the clean player is
+          // playing. If it never gets there, the bound below (or the watchdog's
+          // no-source stop) restores the native and nothing unexplained stays
+          // on screen.
+          try { hideNativeVideos(); } catch { /* ignore */ }
+          try {
+            if (overlay.cover) {
+              overlay.cover.textContent = 'sem anúncio · carregando a live…';
+              overlay.cover.style.display = 'flex';
+            }
+          } catch { /* ignore */ }
           adLog('cold-cover', {
             reason: 'ad-hold',
-            painted: false,
+            painted: true,
             ct: +Number(v.currentTime || 0).toFixed(1),
           });
           overlay.coldCoverAt = Date.now();

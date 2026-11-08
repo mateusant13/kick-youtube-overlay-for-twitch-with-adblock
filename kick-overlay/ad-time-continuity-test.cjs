@@ -41,8 +41,16 @@ const PRE_FIX_CATCHUP = [[
 ]];
 // 2. hand-off seeked to the buffered end - 0.5 (a free jump, never aligned).
 const PRE_FIX_HANDOFF = [[
-  'const target = se > 0 ? Math.max(0, se - cleanLatTarget()) : 0;',
+  'const target = se > 0 ? Math.max(0, se - cleanLatTarget()) : Math.max(0, nativeBufferedEnd(v) - 0.5);',
   'const be = v.buffered && v.buffered.length ? v.buffered.end(v.buffered.length - 1) : 0;\n      const target = be - 0.5;',
+]];
+// 6. no sentinel guard: `seekable.end` is trusted as a position. Twitch reports
+//    1073741824 (2^30) on a live element whose timeline it does not know, and
+//    the hand-back then seeks the native a billion seconds forward (owner
+//    adlog 2026-11-08: `native-handoff {se: 1073741824}`).
+const PRE_FIX_SENTINEL = [[
+  'if (!(isFinite(e) && e > 0 && e < EDGE_MAX_SEC)) return 0;',
+  '',
 ]];
 // 3. no continuous intent tracking (mute captured once at take-over).
 const PRE_FIX_INTENT = [[
@@ -189,6 +197,44 @@ async function main() {
     });
   }
 
+  // ---- 2b. Twitch's live sentinel is not a position ----------------------
+  {
+    const page = makePage();
+    // The owner's own adlog: `native-handoff {se: 1073741824}` on buzzyi_.
+    setNative(page, { ct: 30, edge: 40, bufferedEnd: 40 });
+    page.video.seekable = { length: 1, start: () => 0, end: () => 1073741824 };
+    page.video.duration = Infinity;
+    await pod(page);
+    page.video.currentTime = 30;
+    page.video.paused = false;
+    page.bypass({ type: 'ad-end' });
+    await settle(30);
+    check('a 2^30 seekable end is not used as the live edge', () => {
+      const v = page.video;
+      assert(v.currentTime < 1000, `the hand-back seeked the native to ${v.currentTime}`);
+      assert(page.logsOf('native-edge-unusable').length === 1, 'the sentinel was not reported in the adlog');
+    });
+  }
+  {
+    const page = makePage();
+    // The same element, but the pod parked it far behind: the fallback must be
+    // the newest BUFFERED frame, never a computed position.
+    setNative(page, { ct: 100, edge: 40, bufferedEnd: 400 });
+    page.video.seekable = { length: 1, start: () => 0, end: () => 1073741824 };
+    page.video.duration = Infinity;
+    await pod(page);
+    page.video.currentTime = 100;
+    page.bypass({ type: 'ad-end' });
+    await settle(30);
+    check('with no usable edge the hand-back lands inside buffered data', () => {
+      const v = page.video;
+      const logs = page.logsOf('native-catchup');
+      assert(logs.length === 1, `expected one catch-up seek, got ${logs.length}`);
+      assert(logs[0].d.edge === 'buffered', `edge source=${logs[0].d.edge}`);
+      assert(v.currentTime === 399.5, `currentTime ${v.currentTime} != bufferedEnd-0.5`);
+    });
+  }
+
   // ---- 3. the user's sound decision wins ----------------------------------
   {
     const page = makePage();
@@ -221,6 +267,13 @@ async function main() {
     check('a pod that ends while the tab is hidden never starts playback', () => {
       assert(page.video.paused === true, 'the ad path resumed a player in a background tab');
       assert((page.video.plays || 0) === 0, `play() called ${page.video.plays} time(s)`);
+    });
+    page.showTab();
+    await settle(30);
+    check('...and it resumes once the tab is visible again', () => {
+      assert(page.video.paused === false, 'the native stayed paused after the user returned to the tab');
+      assert((page.video.plays || 0) >= 1, 'play() was never called on the visible tick');
+      assert(page.logsOf('native-resume-visible').length === 1, 'the deferred resume was not recorded');
     });
   }
   {
@@ -373,6 +426,21 @@ async function main() {
       return {
         caught: page.sent.length > 0,
         detail: `pre-load posts=${JSON.stringify(page.sent)}`,
+      };
+    }],
+    ['sentinel edge', PRE_FIX_SENTINEL, async () => {
+      const page = makePage(mutate(PRE_FIX_SENTINEL));
+      setNative(page, { ct: 30, edge: 40, bufferedEnd: 40 });
+      page.video.seekable = { length: 1, start: () => 0, end: () => 1073741824 };
+      page.video.duration = Infinity;
+      await pod(page);
+      page.video.currentTime = 30;
+      page.video.paused = false;
+      page.bypass({ type: 'ad-end' });
+      await settle(30);
+      return {
+        caught: page.video.currentTime > 1e6,
+        detail: `ct=${page.video.currentTime} (the sentinel became a seek target)`,
       };
     }],
     ['cover deadline', PRE_FIX_COVER, async () => {

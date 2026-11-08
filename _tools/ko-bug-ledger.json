@@ -325,6 +325,60 @@
       "verified": false,
       "owner_validation": "pending: 0.8.47 loaded in his Chrome; the console must stay clean on YouTube videos and the mute/play commands must still land.",
       "next": "Owner: open a few YouTube videos. Expect zero kick.com lines in the console and the same overlay behaviour."
+    },
+    {
+      "id": "KO-20261108-01",
+      "title": "0.8.46 turned the cold cover into a hold that painted nothing, so a pod with a slow source showed the whole 30s ad",
+      "state": "fixed",
+      "author": "lane",
+      "reported": "2026-11-08",
+      "fixed_in": "0.8.48",
+      "commit": null,
+      "hypothesis": "The 2026-11-07 black-screen report (17s of black while the clean source answered no-source) was answered by removing the paint from the ad-hold tick entirely: nothing hidden, nothing raised. That traded one defect for another, because the hold is the only thing standing between the user and the ad. When the clean player cannot become healthy inside the readiness gate (the owner's adlog 2026-11-08 shows buffered 0.47-1.0s against a gate that needs 4s, on an ad-stitched playlist that re-chunks every ~2s), the ad plays to its end with no cover at all: 'abri a live e acabei de tomar um anuncio completo de 30 segundos'. The cover has to hide the AD without pretending the clean picture exists: hide the native, show an extension-owned panel that says what is happening, raise the frame only when the clean player is actually playing, and fall back inside the 9s bound (or immediately on the watchdog's no-source stop).",
+      "falsifier": "cold-cover-fixture green arm with a real stitched ad playlist: on the hold tick the native must be hidden AND the panel visible AND the frame still unraised. Passing that while the 0.8.46 mutant (hide removed, panel removed) fails the same arm is the proof the cover is what is measured, not the log line.",
+      "evidence": [
+        "Owner report 2026-11-08: opened https://www.twitch.tv/buzzyi_ and took a complete 30s ad with 0.8.47 installed.",
+        "His ko.adlog, same session: ad-start bypass.switch=true, worker-playlist adExtinf 16..25 with changed=true every ~2s, playing-not-healthy buffered 0.4749/0.9957/1.0152/0.5772 against the 4s gate, overlay-nudge firstframe-not-playing tries 1-2, then native-handoff and bypass.overlayStop reason=no-source. The overlay never became healthy, so nothing was ever revealed and nothing was painted."
+      ],
+      "verified": false,
+      "owner_validation": "pending: his next pod. Expect the ad replaced by the notice panel, and the panel gone once the clean picture plays.",
+      "next": "Owner: next pod, confirm no ad is watched and no unexplained black remains. If the panel stays up for the full 9s bound, the source is the problem (check ko.adlog overlay-catchup/no-source), not the cover."
+    },
+    {
+      "id": "KO-20261108-02",
+      "title": "The hand-back trusted Twitch's 2^30 seekable end as a live edge and seeked the native a billion seconds forward",
+      "state": "fixed",
+      "author": "lane",
+      "reported": "2026-11-08",
+      "fixed_in": "0.8.48",
+      "commit": null,
+      "hypothesis": "nativeEdge() returned seekable.end for a live element, and Twitch reports 1073741824 (2^30) as a 'live, timeline unknown' sentinel. cleanLatTarget() then clamped it to 8 and resumeNative() computed `se - cleanLatTarget()` = 1073741816, which is a seek far past the end of any stream. The same sentinel poisoned cleanLatTarget at take-over, so the clean player was pulled 8s behind the edge instead of 3. The fix rejects any end that is not a plausible position (< 1e6s, and not past a finite duration) and falls back to the newest BUFFERED frame, which is a real position by construction; the branch used is logged as native-edge-unusable with edge=seekable|buffered.",
+      "falsifier": "A stub element whose seekable.end is 1073741824 and duration Infinity: ad-end must not move currentTime past 1000, and with the element parked behind the pod the hand-back must land at bufferedEnd-0.5 and log edge=buffered. The same arm with the sentinel guard removed must be caught (ct > 1e6).",
+      "evidence": [
+        "Owner ko.adlog 2026-11-08: native-handoff {buf: 34.2, cleanLat: 0.6, cleanPos: 29.4, ct: 30.2, replaced: false, se: 1073741824} on buzzyi_ - the sentinel is in the record, not inferred.",
+        "ad-time-continuity-test: 'a 2^30 seekable end is not used as the live edge' and 'with no usable edge the hand-back lands inside buffered data' pass; the PRE_FIX_SENTINEL negative arm is caught with ct > 1e6."
+      ],
+      "verified": false,
+      "owner_validation": "pending: his next pod. Expect no freeze/jump at the hand-back on a channel whose seekable end reads 2^30.",
+      "next": "Owner: if a hand-back still freezes, read ko.adlog native-edge-unusable/native-catchup (edge=...) before touching the target."
+    },
+    {
+      "id": "KO-20261108-03",
+      "title": "A pod that ended while the tab was hidden handed back a player paused by us, and nothing resumed it when the user returned",
+      "state": "fixed",
+      "author": "lane",
+      "reported": "2026-11-08",
+      "fixed_in": "0.8.48",
+      "commit": null,
+      "hypothesis": "The 2026-11-07 fix refused to start playback in a hidden tab, which is right - a player starting in a background tab is what the user complained about. But the refusal left no path back: the ad-end hand-back and every 300/1000ms retry returned early, so the user returned to a frozen native he never paused himself. The rules are separable: a USER-PARKED element is never resumed (pauseBeforeAd without coldPreroll), while a hidden tab only defers the resume. The deferral is one shot on visibilitychange.",
+      "falsifier": "ad-time-continuity-test: with the tab hidden at ad-end, play() must not be called while hidden; after page.showTab() fires visibilitychange, the native must be playing and native-resume-visible must be logged exactly once. A user-parked element (paused at ct=120 before the pod) must stay paused through the same path.",
+      "evidence": [
+        "Guard introduced in 0.8.45 (resumeRefusedByUser) and its retries: resumeNativeIfAllowed returned on visibility alone, so the element stayed paused after the pod.",
+        "ad-time-continuity-test checks 22/22 pass, including the new deferred-resume arm and the unchanged user-parked arm."
+      ],
+      "verified": false,
+      "owner_validation": "pending: a pod that ends while the tab is in the background, then returning to the tab.",
+      "next": "Owner: if a background tab still starts playing on its own, read ko.adlog native-resume-visible - its presence means the resume was deferred, its absence with a frozen player means the deferral never armed."
     }
   ]
 }

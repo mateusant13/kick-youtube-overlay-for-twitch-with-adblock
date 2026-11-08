@@ -18,9 +18,11 @@ Twitch inserts ads into the live stream. The extension tries to block the ad bef
 
 That version stays hidden and muted until it is needed. When the break ends, the extension returns to the normal Twitch player.
 
-With the version ready, the switch is immediate and the playback point stays the same. The ad-free version starts at the latency the live stream already had (within 3 seconds of real time), and the Twitch player returns at the point the ad-free version stopped at, so the switch does not move the stream forward or back. If the ad-free version fails, the normal player stays in place, instead of a black screen. The page does not reload by itself.
+With the version ready, the switch is immediate and the playback point stays the same. The ad-free version starts at the latency the live stream already had (a few seconds, at most 8), and the Twitch player returns at the point the ad-free version stopped at, so the switch does not move the stream forward or back.
 
-The mute you set during a break applies to both players. A Twitch tab you paused, or that is in the background, is not resumed by the extension.
+While the ad-free version is still loading, the ad is hidden behind a panel that says the live is loading. If it is not ready within 9 seconds, the normal player returns with the ad where it is. The page does not reload by itself.
+
+The mute you set during a break applies to both players, including while the ad-free version loads. A Twitch tab you paused is not resumed by the extension. If the break ends while the tab is in the background, playback resumes when you come back to the tab.
 
 ## Installation
 

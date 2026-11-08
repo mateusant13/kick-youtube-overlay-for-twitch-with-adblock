@@ -72,6 +72,7 @@ function makePage(source = SOURCE, { autoLoad = true } = {}) {
   const frameWindow = { postMessage: (payload) => { sent.push(payload && payload.__koKick); } };
   let createdFrame = null;
   let createdBadge = null;
+  const createdDivs = [];
 
   const video = {
     tagName: 'VIDEO',
@@ -113,7 +114,10 @@ function makePage(source = SOURCE, { autoLoad = true } = {}) {
           }, 0);
         }
       }
-      if (t === 'div') createdBadge = n;
+      // Every div the ad path creates is kept: the badge and the cold-cover
+      // panel are both divs, so "the last div created" stopped being the badge
+      // when the cover was added (0.8.48).
+      if (t === 'div') createdDivs.push(n);
       return n;
     },
     querySelectorAll: (sel) => (sel === 'video' ? [video] : []),
@@ -190,7 +194,10 @@ function makePage(source = SOURCE, { autoLoad = true } = {}) {
     video,
     location,
     get frame() { return createdFrame; },
-    get badge() { return createdBadge; },
+    // Resolved by id, not by creation order: the badge is #ko-adfix-badge and
+    // the cold cover is #ko-adfix-cover, and both are divs.
+    get badge() { return createdDivs.find((d) => d.id === 'ko-adfix-badge') || createdBadge; },
+    get cover() { return createdDivs.find((d) => d.id === 'ko-adfix-cover') || null; },
     document,
     bcInstances,
     listeners: pageListeners,
@@ -216,11 +223,19 @@ function makePage(source = SOURCE, { autoLoad = true } = {}) {
       const page = (window.__koTwitchAdblockStats && window.__koTwitchAdblockStats.pageId) || '';
       if (ch && ch.onmessage) ch.onmessage({ data: { page, ...msg } });
     },
+    // The tab comes back to the foreground: visibilitychange, as Chrome fires it.
+    showTab() {
+      document.visibilityState = 'visible';
+      document.hidden = false;
+      for (const f of (pageListeners.visibilitychange || []).slice()) f({ type: 'visibilitychange' });
+    },
     clickDocument() {
       for (const f of pageListeners.pointerdown.slice()) f({ type: 'pointerdown' });
     },
     clickBadge() {
-      const b = createdBadge;
+      // The badge, resolved the same way the getter does: creation order
+      // stopped identifying it when the cold-cover panel was added.
+      const b = createdDivs.find((d) => d.id === 'ko-adfix-badge') || createdBadge;
       for (const f of ((b && b.listeners.click) || []).slice()) f({ type: 'click' });
     },
     muteSent() {
