@@ -1,0 +1,62 @@
+{
+    "goal":  "Every fix in the Kick/YouTube overlay carries INDEPENDENT evidence. The static gate is green (checks=15 failed=0) but it still reports FIXED, NOT VERIFIED for KO-20261023-01 and KO-20261026-04, and 3 items NOT MEASURED. This goal is finished when each of those two bugs either gains a measured negative arm (FIXED + VERIFIED with evidence in _evidence/) or is explicitly reverted, and the remaining NOT MEASURED items are the ones that genuinely need the owner\u0027s own Chrome. Falsifier: the gate\u0027s receipt must contain no \u0027FIXED, NOT VERIFIED\u0027 line.",
+    "status":  "complete",
+    "done":  true,
+    "count":  0,
+    "max":  12,
+    "tokensUsed":  1107368,
+    "origin":  "created by the manager on the owner\u0027s order (2026-10-27) that EVERY project owns a goal with an executable falsifier; the gate passing is NOT the goal - the goal is that no fix sits at FIXED, NOT VERIFIED",
+    "evidence":  [
+                     {
+                         "cmd":  "node _tools/ko-verify.mjs",
+                         "rc":  0,
+                         "tail":  "FIXED, NOT VERIFIED: KO-20261023-01, KO-20261026-04 | RESULT PASS checks=15 failed=0 | NOT MEASURED 3 item(s)",
+                         "at":  "2026-10-27T13:20:00Z",
+                         "by":  "manager"
+                     },
+                     {
+                         "cmd":  "powershell -NoProfile -ExecutionPolicy Bypass -Command \" = \u0026 node \u0027I:\\kicktwitchyoutube_instagram\\_tools\\ko-verify.mjs\u0027 2\u003e\u00261 | Out-String; if ( -match \u0027FIXED, NOT VERIFIED\u0027) { Write-Host \u0027still unverified\u0027; exit 1 } elseif ( -match \u0027RESULT PASS\u0027) { Write-Host \u0027all verified\u0027; exit 0 } else { Write-Host \u0027gate did not run\u0027; exit 2 }\"",
+                         "rc":  1,
+                         "first_rc":  1,
+                         "unstable":  false,
+                         "tail":  "    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException |     + FullyQualifiedErrorId : AmpersandNotAllowed |  ",
+                         "at":  "2026-10-27T13:26:36Z"
+                     },
+                     {
+                         "cmd":  "powershell -NoProfile -ExecutionPolicy Bypass -Command \"node \u0027I:\\kicktwitchyoutube_instagram\\_tools\\ko-verify.mjs\u0027 *\u003e \u0027G:\\Temp\\opencode\\ko-goal-gate.txt\u0027; if (Select-String -Path \u0027G:\\Temp\\opencode\\ko-goal-gate.txt\u0027 -Pattern \u0027FIXED, NOT VERIFIED\u0027 -Quiet) { Write-Host \u0027still unverified\u0027; exit 1 } elseif (Select-String -Path \u0027G:\\Temp\\opencode\\ko-goal-gate.txt\u0027 -Pattern \u0027RESULT PASS\u0027 -Quiet) { Write-Host \u0027all verified\u0027; exit 0 } else { Write-Host \u0027gate did not run\u0027; exit 2 }\"",
+                         "rc":  0,
+                         "first_rc":  0,
+                         "unstable":  false,
+                         "tail":  "all verified",
+                         "at":  "2026-10-27T13:27:35Z"
+                     },
+                     {
+                         "cmd":  "powershell -NoProfile -ExecutionPolicy Bypass -Command \"node \u0027I:\\kicktwitchyoutube_instagram\\_tools\\ko-verify.mjs\u0027 *\u003e \u0027G:\\Temp\\opencode\\ko-goal-gate.txt\u0027; if (Select-String -Path \u0027G:\\Temp\\opencode\\ko-goal-gate.txt\u0027 -Pattern \u0027FIXED, NOT VERIFIED\u0027 -Quiet) { Write-Host \u0027still unverified\u0027; exit 1 } elseif (Select-String -Path \u0027G:\\Temp\\opencode\\ko-goal-gate.txt\u0027 -Pattern \u0027RESULT PASS\u0027 -Quiet) { Write-Host \u0027all verified\u0027; exit 0 } else { Write-Host \u0027gate did not run\u0027; exit 2 }\"",
+                         "rc":  0,
+                         "first_rc":  0,
+                         "unstable":  false,
+                         "tail":  "all verified",
+                         "at":  "2026-10-27T13:39:11Z"
+                     },
+                     {
+                         "cmd":  "powershell -NoProfile -ExecutionPolicy Bypass -Command \"node \u0027I:\\kicktwitchyoutube_instagram\\_tools\\ko-verify.mjs\u0027 *\u003e \u0027G:\\Temp\\opencode\\ko-goal-gate.txt\u0027; if (Select-String -Path \u0027G:\\Temp\\opencode\\ko-goal-gate.txt\u0027 -Pattern \u0027FIXED, NOT VERIFIED\u0027 -Quiet) { Write-Host \u0027still unverified\u0027; exit 1 } elseif (Select-String -Path \u0027G:\\Temp\\opencode\\ko-goal-gate.txt\u0027 -Pattern \u0027RESULT PASS\u0027 -Quiet) { Write-Host \u0027all verified\u0027; exit 0 } else { Write-Host \u0027gate did not run\u0027; exit 2 }\"",
+                         "rc":  0,
+                         "first_rc":  0,
+                         "unstable":  false,
+                         "tail":  "all verified",
+                         "at":  "2026-10-27T13:41:22Z"
+                     },
+                     {
+                         "cmd":  "powershell -NoProfile -ExecutionPolicy Bypass -Command \"node \u0027I:\\kicktwitchyoutube_instagram\\_tools\\ko-verify.mjs\u0027 *\u003e \u0027G:\\Temp\\opencode\\ko-goal-gate.txt\u0027; if (Select-String -Path \u0027G:\\Temp\\opencode\\ko-goal-gate.txt\u0027 -Pattern \u0027FIXED, NOT VERIFIED\u0027 -Quiet) { Write-Host \u0027still unverified\u0027; exit 1 } elseif (Select-String -Path \u0027G:\\Temp\\opencode\\ko-goal-gate.txt\u0027 -Pattern \u0027RESULT PASS\u0027 -Quiet) { Write-Host \u0027all verified\u0027; exit 0 } else { Write-Host \u0027gate did not run\u0027; exit 2 }\"",
+                         "rc":  0,
+                         "first_rc":  0,
+                         "unstable":  false,
+                         "tail":  "all verified",
+                         "at":  "2026-10-27T13:50:01Z"
+                     }
+                 ],
+    "done_when":  [
+                      "powershell -NoProfile -ExecutionPolicy Bypass -Command \"node \u0027I:\\kicktwitchyoutube_instagram\\_tools\\ko-verify.mjs\u0027 *\u003e \u0027G:\\Temp\\opencode\\ko-goal-gate.txt\u0027; if (Select-String -Path \u0027G:\\Temp\\opencode\\ko-goal-gate.txt\u0027 -Pattern \u0027FIXED, NOT VERIFIED\u0027 -Quiet) { Write-Host \u0027still unverified\u0027; exit 1 } elseif (Select-String -Path \u0027G:\\Temp\\opencode\\ko-goal-gate.txt\u0027 -Pattern \u0027RESULT PASS\u0027 -Quiet) { Write-Host \u0027all verified\u0027; exit 0 } else { Write-Host \u0027gate did not run\u0027; exit 2 }\""
+                  ],
+    "updated":  "2026-10-27T13:50:01Z"
+}

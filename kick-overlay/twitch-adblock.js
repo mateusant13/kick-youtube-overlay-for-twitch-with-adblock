@@ -510,7 +510,14 @@
     // of the gap belongs to hls.js's own maxLiveSyncPlaybackRate, not to a skip
     // the user sees as the picture jumping.
     const hold = Number(st.buffered);
-    const ceiling = isFinite(hold) && hold > 0 ? pos + hold - 1 : want;
+    // NOTHING in hand means nothing to nudge: an empty-buffer player is being
+    // placed by hls.js's own live sync, and seeking it to the playlist edge makes
+    // it fetch a segment it has no runway for. Measured in the headless guest on
+    // kaicenat 2026-11-08: `overlay-catchup {hold:0, lat:30, pos:27, to:54}` was
+    // followed 2 s later by `playing-not-healthy {buffered:0.019, rs:2}` and the
+    // standby never played — the clean source was dead for the whole pod.
+    if (!(hold > 0)) return false;
+    const ceiling = pos + hold - 1;
     const target = Math.min(want, ceiling);
     // A seek that leaves under 1.5s of buffer is worse than the drift it fixes.
     if (!(target - pos >= RESUME_GAP_SEC)) return false;

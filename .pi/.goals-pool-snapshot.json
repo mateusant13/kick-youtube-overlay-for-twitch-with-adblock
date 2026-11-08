@@ -1,0 +1,20 @@
+{
+ "v": 1,
+ "writtenBy": "pi-goal-bridge",
+ "goals": [
+  {
+   "id": "g-kicktwitchyoutube_instagram-f761614ccfdef8c5",
+   "status": "complete",
+   "title": "Every fix in the Kick/YouTube overlay carries INDEPENDENT evidence. The static gate is green (checks=15 failed=0) but it still reports FIXED, NOT VERIFIED for KO-20261023-01 and KO-20261026-04, and 3 items NOT MEASURED. This goal is finished when each of those two bugs either gains a measured negative arm (FIXED + VERIFIED with evidence in _evidence/) or is explicitly reverted, and the remaining NOT MEASURED items are the ones that genuinely need the owner's own Chrome. Falsifier: the gate's receipt must contain no 'FIXED, NOT VERIFIED' line.",
+   "done_when": [
+    "powershell -NoProfile -ExecutionPolicy Bypass -Command \"node 'I:\\kicktwitchyoutube_instagram\\_tools\\ko-verify.mjs' *> 'G:\\Temp\\opencode\\ko-goal-gate.txt'; if (Select-String -Path 'G:\\Temp\\opencode\\ko-goal-gate.txt' -Pattern 'FIXED, NOT VERIFIED' -Quiet) { Write-Host 'still unverified'; exit 1 } elseif (Select-String -Path 'G:\\Temp\\opencode\\ko-goal-gate.txt' -Pattern 'RESULT PASS' -Quiet) { Write-Host 'all verified'; exit 0 } else { Write-Host 'gate did not run'; exit 2 }\""
+   ],
+   "lane": "kicktwitchyoutube_instagram",
+   "harness": "opencode",
+   "count": 0,
+   "max": 12,
+   "source": "I:\\kicktwitchyoutube_instagram\\.opencode\\goal.json",
+   "source_updated": "2026-10-27T13:50:01Z"
+  }
+ ]
+}

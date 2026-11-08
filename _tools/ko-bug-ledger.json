@@ -434,6 +434,23 @@
       "verified": false,
       "owner_validation": "Pending his next pod.",
       "next": "Owner: at ad-end the picture must not jump. Expect native-catchup {lat: 2..4} and the clean player revealed at <= 4s behind the edge."
+    },
+    {
+      "id": "KO-20261108-07",
+      "title": "The catch-up seeked the clean player to the playlist edge with an EMPTY buffer, and the player stalled for the whole pod",
+      "state": "fixed",
+      "author": "lane",
+      "reported": "2026-11-08",
+      "fixed_in": "0.8.52",
+      "commit": null,
+      "hypothesis": "catchUpClean() computed its ceiling as pos+buffered-1 only when buffered>0 and otherwise seeked straight to the wanted edge. A standby at pos=27 with lat=30 and buffered=0 was seeked to 54 - a position it had no segment for - so the element sat at readyState 2 while hls.js fetched. Measured in the headless guest on kaicenat: overlay-catchup {hold:0,lat:30,pos:27,to:54}, then 2s later playing-not-healthy {buffered:0.019,rs:2}; the clean source was dead for the pod.",
+      "falsifier": "A guest run on a live channel where catchUpClean is reached with buffered=0 must log no overlay-catchup with a target above pos, and must reach clean state=Playing with buf>0. Arm: remove the guard.",
+      "evidence": [
+        "_evidence/ko-look-2026-11-08T20-28-46-445Z.md"
+      ],
+      "verified": "2026-11-08",
+      "owner_validation": null,
+      "next": "Guest on kaicenat reached clean {state:Playing,lat:5.33,latSrc:hls,buf:2.31} with no empty-buffer seek. A real pod on the owner's channel is the confirmation that matters."
     }
   ]
 }

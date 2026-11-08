@@ -80,6 +80,10 @@ const args = [
   '--mute-audio',
   '--autoplay-policy=no-user-gesture-required',
   ...(HEADLESS ? ['--headless=new', '--disable-gpu'] : ['--window-position=-32000,-32000', '--window-size=1366,900']),
+  // A headless page has no user gesture, so Chrome's autoplay policy refuses
+  // every unmute and reports it as `unmute-blocked` (measured 2026-11-08):
+  // audio arms cannot be measured without this flag.
+  '--autoplay-policy=no-user-gesture-required',
   URL_,
 ];
 log('chrome args', args.join(' '));

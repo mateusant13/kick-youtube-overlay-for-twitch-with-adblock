@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "repos": {
+    "I:\\kicktwitchyoutube_instagram": {
+      "embeddings": {},
+      "repo_id": 1,
+      "graph_git_head": "e4fa5685c8753cc9d9e38879e6f636d34c6fb62b",
+      "graph_indexed_at": "2026-10-28T11:19:21.175041+00:00",
+      "last_graph_delta": {
+        "indexed": 30,
+        "removed": 0
+      },
+      "index_generation": 102,
+      "index_snapshot": {
+        "head_sha": "e4fa5685c8753cc9d9e38879e6f636d34c6fb62b",
+        "dirty_signature": "clean",
+        "index_mode": "tracked",
+        "generation": 102,
+        "recorded_at": "2026-10-28T11:19:21.295971+00:00"
+      }
+    }
+  }
+}

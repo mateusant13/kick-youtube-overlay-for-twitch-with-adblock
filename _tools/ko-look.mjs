@@ -54,7 +54,10 @@ async function attachToPage(cdp, re) {
 
 const PAGE_PROBE = `(() => {
   const st = window.__koTwitchAdblockStats || null;
-  const msg = (st && st.lastMsg) || {};
+  // The frame's last message lives on adBypass (stats.adBypass = bypassStats),
+  // NOT on stats itself: reading st.lastMsg made every snapshot report "no st
+  // from a clean player yet" while overlay-catchup logs proved the opposite.
+  const msg = (st && ((st.adBypass && st.adBypass.lastMsg) || st.lastMsg)) || {};
   const w = (st && st.adBypass) || {};
   const v = document.querySelector('video');
   const cover = document.getElementById('ko-adfix-cover');
@@ -216,8 +219,20 @@ async function channels() {
 
 // ---- 3. the guest: a real live channel, off the owner's screen ---------------
 async function live(channel) {
+  // A guest left over from an earlier run keeps the code it loaded THEN: bg_29
+  // reused bg_28's page and measured a build two edits old. --live restarts the
+  // guest unless --reuse says otherwise.
   let cdp = null;
-  try { cdp = await connect(GUEST_PORT); } catch { cdp = null; }
+  if (!opt('--reuse')) {
+    try {
+      const { spawn } = await import('node:child_process');
+      const st = spawn(process.execPath, [path.join(ROOT, 'ko-harness.mjs'), 'stop'],
+                       { stdio: 'ignore', windowsHide: true });
+      await new Promise((r) => st.on('exit', r));
+    } catch { /* no guest to stop */ }
+  } else {
+    try { cdp = await connect(GUEST_PORT); } catch { cdp = null; }
+  }
   if (!cdp) {
     say(`guest     starting an off-screen Chrome (profile under G:/Temp/ko-harness) on ${channel}`);
     await new Promise((res) => {
@@ -259,11 +274,23 @@ async function live(channel) {
         await delay(300);
         const h = await page.evalIn(PAGE_PROBE);
         out.sections.hold = { at: sec, page: h };
+        // Two holds exist and they owe DIFFERENT things. A COLD hold (page just
+        // loaded, preroll) must freeze the picture without hiding it or painting
+        // the surface, because there is no ad to show yet -- that is the 0.8.51
+        // contract. An AD hold must hide the native under the ad frame: the user
+        // is watching the real ad, and the panel is the only thing on screen.
         const frozen = h.native && h.native.paused === true;
-        const notHidden = await page.evalIn(`(()=>{const v=document.querySelector('video');return v?getComputedStyle(v).visibility:'none';})()`);
+        const vis = await page.evalIn(`(()=>{const v=document.querySelector('video');return v?getComputedStyle(v).visibility:'none';})()`);
         const panel = h.cover ? h.cover.css : '';
-        out.sections.hold_verdict = { native_paused: frozen, native_visibility: notHidden, panel_fullscreen: /inset:\s*0/.test(panel), frame_opaque: h.frame && h.frame.opacity === '1' };
-        say(`hold      posted at ${sec}s -> native paused=${frozen} visibility=${notHidden} panel_fullscreen=${/inset:\s*0/.test(panel)} frame_opaque=${h.frame && h.frame.opacity === '1'}`);
+        const fullscreen = /inset:\s*0/.test(panel);
+        const opaque = h.frame && h.frame.opacity === '1';
+        const lastLog = (h.lastAdLog && h.lastAdLog.kind) || '';
+        const cold = /cold-cover|hold-arm-cold/.test(lastLog);
+        const verdict = cold
+          ? { kind: 'cold', pass: frozen && vis !== 'hidden' && !fullscreen && !opaque }
+          : { kind: 'ad', pass: opaque, note: 'native hidden under the ad frame is the design' };
+        out.sections.hold_verdict = { cold, native_paused: frozen, native_visibility: vis, panel_fullscreen: fullscreen, frame_opaque: opaque, ...verdict };
+        say(`hold      ${cold ? 'COLD' : 'AD'} (last ${lastLog || '?'}) at ${sec}s -> native paused=${frozen} visibility=${vis} panel_fullscreen=${fullscreen} frame_opaque=${opaque} => ${verdict.pass ? 'PASS' : 'FAIL'}`);
       }
       // A pod that really arrives ends the watch with the reveal timing.
       if (p.bypass && p.bypass.reveals > 0 && i > 4) { say(`reveal    ${p.bypass.reveals} reveal(s); last st ${JSON.stringify(p.clean)}`); break; }
