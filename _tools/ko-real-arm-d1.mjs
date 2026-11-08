@@ -1,10 +1,12 @@
 // Reachability arm for KO-20261023-01 (cold cover) in real Chrome.
 //
 // What it proves: on a real Twitch page with the shipped extension, an ad-hold that
-// arrives while the clean source has not yet been healthy (the cold state) takes the
-// HOLD on the ad-hold tick without painting over the native player (2026-11-07: an
-// opaque frame over a hidden native is the black screen the owner saw), and resolves
-// inside the bound either by revealing a healthy player or by restoring the native.
+// arrives while the clean source has not yet been healthy (the cold state) COVERS the
+// ad on the ad-hold tick: native videos hidden, the notice panel up, and the clean
+// frame NOT raised (an opaque frame with no decoded picture is the black screen the
+// owner saw on 2026-11-07; a hold that painted nothing at all is the whole-30s-ad
+// report of 2026-11-08). It must resolve inside the bound, either by revealing a
+// healthy player or by restoring the native.
 //
 // Why "early": overlay.playing turns true only after three consecutive healthy
 // heartbeats (twitch-adblock.js:1288-1293) and the health test ignores the video's
@@ -61,8 +63,10 @@ if (!ctx) {
 const evalPage = (expr) => s.evalRaw(expr, { contextId: ctx.id });
 
 const PROBE = `(()=>{const f=document.getElementById('ko-adfix');const vids=[...document.querySelectorAll('video')];
+  const c=document.getElementById('ko-adfix-cover');
   return {at:Math.round(performance.now()),
     frame:f?{opacity:f.style.opacity}:null,
+    cover:c?{display:c.style.display,text:c.textContent}:null,
     native:vids.map(v=>({vis:v.style.visibility,paused:v.paused,ct:+Number(v.currentTime||0).toFixed(1)})),
     last:(window.__koTwitchAdblockStats||{}).lastAdLog||null};})()`;
 
@@ -113,6 +117,7 @@ out.cover = {
   frame_opaque_at_ms: (fast.find((x) => x.frame && x.frame.opacity === '1') || {}).at ?? null,
   native_hidden_when_held: cover ? cover.native.length > 0 && cover.native.every((v) => v.vis === 'hidden') : null,
   frame_opaque_when_held: cover ? cover.frame && cover.frame.opacity === '1' : null,
+  cover_shown_when_held: cover ? !!(cover.cover && cover.cover.display === 'flex') : null,
   samples: fast.slice(0, 4),
 };
 
@@ -148,9 +153,14 @@ out.verdict = {
     resolved.ms - coverAt <= 12000 &&
     /cold-cover-timeout|overlay-stop|overlay-reveal/.test(String(resolved.ev)),
 };
-out.verdict.no_black_hold = out.verdict.native_hidden_when_held === false && out.verdict.frame_opaque_when_held === false;
-out.pass = out.verdict.no_black_hold && out.verdict.within_bound;
+// 0.8.48 contract: the ad is COVERED (native hidden) but the screen is not an
+// unexplained black rectangle (the notice panel is up) and the picture is not
+// raised before it exists (frame not opaque).
+out.verdict.covered_not_black = out.verdict.native_hidden_when_held === true
+  && out.verdict.cover_shown_when_held === true
+  && out.verdict.frame_opaque_when_held === false;
+out.pass = out.verdict.covered_not_black && out.verdict.within_bound;
 console.log(JSON.stringify(out, null, 2));
-console.log(out.pass ? 'RESULT PASS d1-early-arm (cold cover on the hold tick, native hidden, resolved in bound)' : 'RESULT FAIL d1-early-arm');
+console.log(out.pass ? 'RESULT PASS d1-early-arm (ad covered, notice panel up, frame raised only with a picture, resolved in bound)' : 'RESULT FAIL d1-early-arm');
 cdp.close();
 process.exit(out.pass ? 0 : 1);
