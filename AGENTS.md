@@ -89,6 +89,64 @@ crosses the world boundary), and the native stayed unmuted for 2.4 s of the 400 
 **The pod swap itself is still owed**: it needs a real ad on a live channel with 0.8.50 loaded, and the
 row is NOT `verified` until that run exists.
 
+## Wave record — 2026-11-08, the black page ("sem anúncio · carregando a live…", 0.8.51)
+
+Owner paste: a screenshot of `twitch.tv/pinnkpawz`, whole viewport black, one centred
+line of text. Three separate mechanisms produced that screen, all measured in his own
+`ko.adlog` (read with `_tools/ko-adlog-window.mjs`, which filters the worker noise out
+of `chrome.storage.local['ko.adlog']` from a hidden extension page):
+
+1. **The hold painted the screen.** `ad-hold` with the clean source not yet playing
+   entered the cold-cover branch, which called `hideNativeVideos()` and raised a panel
+   with `inset:0;background:#000`, bounded by `COLD_COVER_BOUND_MS = 9000`. With the
+   native hidden and the frame still at opacity 0.01, the panel WAS the entire page.
+2. **The health gate counted a heartbeat it could not have.** The frame publishes `st`
+   from `setInterval(sendSt, 1000)` inside a hidden iframe; in a background tab Chrome
+   throttles that timer. His log shows `playing-not-healthy` samples **18 s, 32 s and
+   10 s apart** while `pos` advanced at 1× — a healthy player, reported far too slowly.
+   The gate required **three consecutive** healthy samples, so it could never qualify
+   there, and the 12 s bound stopped a player that was fine.
+3. **The latency number was wrong.** The frame measured `lat = seekable.end - pos`. On
+   Twitch that end includes the stitched ad segments still listed ahead of the live
+   content, and on the native element it is the literal sentinel `1073741824`
+   (`native-handoff {se: 1073741824}`, repeatedly). Measured consequence in his log: a
+   clean player holding **3.6 s** of buffer read as **8.6-8.7 s** behind
+   (`overlay-catchup {lat:8.6, pos:29.5}`), which is above `CLEAN_LAT_MAX = 8`, so
+   `revealOverlay()` forced `playing = false` and re-armed a 12 s timeout on every
+   attempt — the churn behind "a live volta vários segundos".
+
+0.8.51, one fix per mechanism:
+
+- `player-bridge.js`: `lat` in the order of honesty — `h.latency` (what hls.js measures
+  against the edge it knows), else `buffered.end - pos`, else `seekable.end` **only**
+  when it is a real position (`< 1e6 s`). The payload carries `latSrc`, so the next log
+  says which instrument answered. The heartbeat is now also driven by the element's own
+  events (`playing, timeupdate, progress, waiting, canplay, seeked, pause,
+  volumechange`, coalesced to 200 ms) and the page can pull a sample with `{t:'state'}`
+  on the visibility edge.
+- `twitch-adblock.js`: the gate asks for **two** consecutive healthy samples on a dense
+  heartbeat and **one** when the measured gap exceeds 1.5 s; the tab returning to
+  visible pulls a fresh sample instead of waiting for the next tick.
+- The hold now freezes instead of covering: `pauseNativeForHold(v)` pauses the native
+  (a paused video keeps its last decoded frame), the native is **not** hidden, the
+  notice is a small centred panel (`translate(-50%,-50%)`, no `inset:0`, no opaque
+  background), and the bound is **3000 ms**. Past the bound it fails open: the handoff
+  seeks the native to the live edge, which also skips the rest of the pod.
+
+Contract change, stated because a test used to enforce the old one:
+`cold-cover-fixture-test.cjs` asserted `nativeHiddenAtHold === true` and now asserts the
+opposite (frozen, not hidden; the notice is a panel). Its RED-2 mutation is the defect
+itself — restoring `hideNativeVideos()` in the hold — and a new SPARSE arm drives one
+healthy sample after a 1.7 s gap, with SPARSE-RED proving the old count-based gate fails
+it. Suite: 11 → **15 checks**.
+
+Verification: gate `RESULT PASS checks=19 failed=0`. Not verified: the frame's new
+payload in a live browser — the guest Chrome on this machine produced no clean source
+(`standbyReady: 0` on two live channels, so no frame ever published `st`), so `latSrc`
+and the event-driven heartbeat are proven by parse + the page-side contract only. The
+first live pod with 0.8.51 must show `lat` in the 3-4 s range with `latSrc: 'hls'`, no
+`overlay-catchup` churn, and no full-screen panel in `ko.adlog`.
+
 ## Audio ownership — one rule, one writer (0.8.50, 2026-11-08)
 
 `kick-overlay/ko-audio.js` is the only code in this extension allowed to write a mute or a volume.

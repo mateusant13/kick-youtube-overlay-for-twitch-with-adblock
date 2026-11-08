@@ -341,10 +341,39 @@ if (HLS_MODE) {
     if (!isFinite(dur) || dur < 0 || dur >= 1e15) dur = 0;
     let pos = V.currentTime || 0;
     if (!isFinite(pos) || pos < 0 || pos >= 1e15) pos = 0;
+    // Distance to the live edge, in the order of honesty:
+    //   1. `h.latency` — what hls.js itself measures against the edge it knows
+    //      about. The element's own seekable range is NOT that: on Twitch it
+    //      ends at the stitched ad segments still listed ahead of the live
+    //      content (measured 2026-11-08: a clean player holding 3.6s of buffer
+    //      read as 8.6s behind, `overlay-catchup` fired on every tick and the
+    //      reveal gate held it back forever), and on the native element it is
+    //      the literal sentinel 1073741824 (`native-handoff {se: 1073741824}`
+    //      in the owner's ko.adlog).
+    //   2. buffered end - pos: the newest frame actually in hand.
+    //   3. the seekable end, only when it is a real position (< 1e6 s).
     let lat = 0;
+    let latSrc = 'none';
     try {
-      if (V.seekable && V.seekable.length) lat = V.seekable.end(V.seekable.length - 1) - pos;
-    } catch { /* not ready */ }
+      const hl = typeof h.latency === 'number' ? h.latency : NaN;
+      if (isFinite(hl) && hl >= 0 && hl < 1e6) { lat = hl; latSrc = 'hls'; }
+    } catch { /* older hls.js */ }
+    if (latSrc === 'none') {
+      try {
+        if (V.buffered && V.buffered.length) {
+          const b = V.buffered.end(V.buffered.length - 1) - pos;
+          if (isFinite(b) && b >= 0) { lat = b; latSrc = 'buffered'; }
+        }
+      } catch { /* not ready */ }
+    }
+    if (latSrc === 'none') {
+      try {
+        if (V.seekable && V.seekable.length) {
+          const e = V.seekable.end(V.seekable.length - 1);
+          if (isFinite(e) && e > 0 && e < 1e6) { lat = e - pos; latSrc = 'seekable'; }
+        }
+      } catch { /* not ready */ }
+    }
     if (!isFinite(lat) || lat < 0) lat = 0;
     const levels = h.levels || [];
     let q = null;
@@ -385,6 +414,7 @@ if (HLS_MODE) {
       buffered: isFinite(buffered) ? Math.max(0, buffered) : 0,
       pos,
       lat,
+      latSrc,
       dur,
       q,
       qcount: qualities.length,
@@ -420,6 +450,12 @@ if (HLS_MODE) {
         break;
       case 'play':
         V.play().catch(() => { /* ignore */ });
+        break;
+      case 'state':
+        // On-demand sample. A background tab's heartbeat can be throttled to
+        // one message a minute, so the page pulls a fresh one when it becomes
+        // visible instead of waiting for the next tick.
+        sendSt();
         break;
       case 'pause':
         V.pause();
@@ -495,6 +531,22 @@ if (HLS_MODE) {
       }
     }
   });
+  // The heartbeat is a TIMER, and a timer inside an iframe of a background tab
+  // is throttled by Chrome (measured in the owner's ko.adlog 2026-11-08:
+  // `playing-not-healthy` samples up to 32s apart while `pos` advanced at 1x).
+  // The ad path's health gate counted ticks, so a sparse heartbeat made a
+  // healthy clean player read as "never playing" and the 12s bound stopped the
+  // overlay — the black panel he pasted with the tab in the background.
+  // Publishing from the element's own events keeps the state fresh whenever
+  // the media pipeline moves; the 200ms coalescing keeps it one message.
+  let stQueued = 0;
+  const sendStSoon = () => {
+    if (stQueued) return;
+    stQueued = setTimeout(() => { stQueued = 0; sendSt(); }, 200);
+  };
+  for (const ev of ['playing', 'timeupdate', 'progress', 'waiting', 'canplay', 'seeked', 'pause', 'volumechange']) {
+    try { V.addEventListener(ev, sendStSoon); } catch { /* not ready */ }
+  }
   setInterval(sendSt, 1000);
   // Report the first real frame immediately. The 1/s `st` heartbeat can lag
   // up to a second; the content script uses this to swap surfaces exactly when

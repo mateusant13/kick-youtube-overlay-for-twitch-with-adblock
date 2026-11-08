@@ -189,7 +189,11 @@
   // requires resolution at <= 12000 ms, so the timer branch always measured as
   // a violation (guest run 2026-11-07T13:40Z: cold-cover 3410 ms, hand-off
   // 15294 ms, `buffered=2.450291` never reaching the 4 s reveal gate).
-  const COLD_COVER_BOUND_MS = 9000;
+  // A hold that lasts longer than this is worse than the ad: at 9s the owner
+  // photographed a full black page. The clean source normally reveals in
+  // 1-2s; past 3s the honest move is to hand the native back (the handoff
+  // seeks to the live edge, which also skips the rest of the pod).
+  const COLD_COVER_BOUND_MS = 3000;
   const RESUME_GAP_SEC = 1.5; // a smaller native/clean difference is not worth a seek
   const bypassStats = {
     starts: 0,
@@ -470,6 +474,19 @@
     return cleanLatTarget();
   }
   stats.cleanHandoffLat = cleanHandoffLat;
+  // Freeze what is on screen without erasing it. A paused <video> keeps its
+  // last decoded frame, which is why this exists: the alternative (hide the
+  // video and paint a panel) is the black screen the owner reported.
+  function pauseNativeForHold(v) {
+    try {
+      if (!v || v.paused) return false;
+      if (resumeRefusedByUser(v)) return false; // a user-parked player stays parked
+      v.pause();
+      return true;
+    } catch {
+      return false;
+    }
+  }
   // Pull the clean player back onto the live edge. Bounded to one seek per 2s
   // so a stalling manifest cannot turn into a seek storm. This replaces the
   // old "only when 20s+ behind" gate: the picture is revealed at real time,
@@ -1400,6 +1417,7 @@
     overlay.audioSent = switchSource ? prevAudioSent : null;
     overlay.held = false;
     overlay.startedAt = Date.now();
+    overlay.stGapMs = 0;
     overlay.ready = false;
     overlay.autoplayRetry = false;
     overlay.adEndTries = 0;
@@ -1474,10 +1492,21 @@
     cover.textContent = 'sem anúncio · carregando a live…';
     cover.style.cssText =
       'position:fixed;z-index:2147483648;pointer-events:none;display:none;' +
-      'inset:0;background:#000;color:#c8c8c8;font:14px/1.4 system-ui,sans-serif;' +
+      'left:50%;top:50%;transform:translate(-50%,-50%);padding:8px 14px;border-radius:8px;' +
+      'background:rgba(0,0,0,.72);color:#c8c8c8;font:14px/1.4 system-ui,sans-serif;' +
       'align-items:center;justify-content:center;text-align:center;';
     try { document.body.appendChild(cover); } catch { /* ignore */ }
     overlay.cover = cover;
+    // A throttled tab comes back with stale state. Pull one sample on the
+    // visibility edge instead of waiting for the next (possibly 30s-away) tick.
+    if (!overlay.onVisible) {
+      overlay.onVisible = () => {
+        if (document.visibilityState !== 'visible') return;
+        if (!overlay.frame || !overlay.frameReady) return;
+        overlaySend({ t: 'state' });
+      };
+      try { document.addEventListener('visibilitychange', overlay.onVisible); } catch { /* ignore */ }
+    }
     // Do NOT hide the native video here. Measured: hiding it immediately is
     // what produced the black/buffering frame while the clean source started.
     // Keep it visible until revealOverlay() (overlay Playing or the 2.5s
@@ -1585,8 +1614,15 @@
         return;
       }
       if (m.t === 'st' && m.st) {
+        // How dense the heartbeat is: in a background tab Chrome throttles the
+        // frame's timer (measured gaps up to 32s in the owner's ko.adlog), so a
+        // gate that COUNTS samples can never pass there. The gate below asks
+        // for less evidence exactly when the evidence arrives slowly.
+        const nowSt = Date.now();
+        const gap = overlay.lastStAt ? nowSt - overlay.lastStAt : 0;
+        if (gap > 0) overlay.stGapMs = gap;
         overlay.lastSt = m.st;
-        overlay.lastStAt = Date.now();
+        overlay.lastStAt = nowSt;
         // A clean player that drifted behind live must not be revealed: the
         // user would see a delayed stream and a jump at ad-end. Seek forward
         // inside the live window, at most every 2s, and let the healthy gate
@@ -1633,10 +1669,13 @@
           clearOverlayStall();
           const wasPlaying = overlay.playing;
           if (!overlay.playing) {
-            // Require three consecutive healthy heartbeats before covering the
-            // native surface. The clean source can report rs=4 once and then
-            // drain to 0.04s while a hidden standby is still starting.
-            if (overlay.healthyTicks < 3) return;
+            // Two consecutive healthy samples on a dense heartbeat (the clean
+            // source can report rs=4 once and then drain to 0.04s while a
+            // hidden standby is still starting); ONE on a sparse one, because
+            // a background tab delivers the next sample 10-30s later and the
+            // fallback bound would stop a player that is perfectly fine.
+            const need = (overlay.stGapMs || 0) > 1500 ? 1 : 2;
+            if (overlay.healthyTicks < need) return;
             overlay.playing = true;
           }
           try { clearTimeout(overlay.watchdogTimer); } catch { /* ignore */ }
@@ -1849,7 +1888,12 @@
           // playing. If it never gets there, the bound below (or the watchdog's
           // no-source stop) restores the native and nothing unexplained stays
           // on screen.
-          try { hideNativeVideos(); } catch { /* ignore */ }
+          // The native is PAUSED, not hidden (owner screenshot 2026-11-08:
+          // an all-black page reading "sem anúncio · carregando a live…").
+          // A paused video keeps its last decoded frame on screen, so the hold
+          // freezes the live picture instead of replacing it with black, and
+          // the ad is not watched because the player is stopped.
+          try { pauseNativeForHold(v); } catch { /* ignore */ }
           try {
             if (overlay.cover) {
               overlay.cover.textContent = 'sem anúncio · carregando a live…';
@@ -1858,7 +1902,8 @@
           } catch { /* ignore */ }
           adLog('cold-cover', {
             reason: 'ad-hold',
-            painted: true,
+            painted: 'panel',
+            paused: !!v.paused,
             ct: +Number(v.currentTime || 0).toFixed(1),
           });
           overlay.coldCoverAt = Date.now();

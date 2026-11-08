@@ -18,9 +18,12 @@
 //
 // Arms:
 //   GREEN  real source: cold-cover fires ON the ad-hold tick, the native player
-//          is NOT hidden and the frame is NOT painted (a hold, not a black
-//          screen), and overlay-reveal lands well inside the bound, at which
-//          point the native IS hidden and the frame IS opaque.
+//          is PAUSED and NOT hidden (a hold freezes the last live frame instead
+//          of replacing the screen with black), the notice is a small panel and
+//          not a full-screen rectangle, and overlay-reveal lands inside the
+//          bound, at which point the native IS hidden and the frame IS opaque.
+//   SPARSE a throttled tab (one healthy sample after a >1.5s gap) still
+//          reveals: a background tab's heartbeat cannot starve the health gate.
 //   RED    pre-fix mutation (`if (overlay.frame && ...)` -> `if (false)`,
 //          i.e. no cold cover): no cold-cover event. The detector must catch
 //          this or it measures nothing.
@@ -41,13 +44,12 @@ const PRE_FIX_MUTATION = [
   'if (overlay.frame && !overlay.revealed && !overlay.playing) {',
   'if (false) { // pre-fix: no cold cover',
 ];
-// Re-instates the 0.8.46 behaviour the owner reported on 2026-11-08: the hold
-// painted nothing, so the ad itself stayed on screen for the whole pod. The
-// mutant removes the cover block (hide + panel) and keeps the cold-cover event.
+// The black-screen defect the owner photographed on 2026-11-08: the hold hid
+// the native video, so with the clean frame still hidden there was nothing on
+// screen but the panel. The mutant restores the hide and the GREEN assertion on
+// "the native is not hidden" must catch it.
 const PAINT_MUTATION = [
-  // both halves of the cover: hiding the ad and showing the panel
-  ['try { hideNativeVideos(); } catch { /* ignore */ }', '/* mutant: native left visible */'],
-  ["overlay.cover.style.display = 'flex';", '/* mutant: no panel */'],
+  ['try { pauseNativeForHold(v); } catch { /* ignore */ }', 'try { hideNativeVideos(); } catch { /* ignore */ }'],
 ];
 const LIVE_HOST = 'https://video-edge-a.playlist.ttvnw.net';
 const CHANNEL = 'rodil';
@@ -223,7 +225,7 @@ async function main() {
   // ---- page arms -----------------------------------------------------------
   // A prewarmed standby frame exists before the pod, which is what the cold
   // cover path needs (twitch-adblock.js:1468).
-  async function arm(source, label) {
+  async function arm(source, label, opts) {
     const page = makePage(source);
     const events = [];
     page.document.dispatchEvent = (e) => {
@@ -250,12 +252,23 @@ async function main() {
     const coverEvents = at('cold-cover');
     const coveredAt = coverEvents.length ? Date.now() - t0 : null;
     const nativeHiddenAtHold = page.video.style.visibility === 'hidden';
+    const pausedAtHold = page.video.paused === true;
     const frameOpacityAtHold = page.frame ? page.frame.style.opacity : null;
     const coverAtHold = page.cover ? page.cover.style.display : null;
     const coverText = page.cover ? page.cover.textContent : null;
+    const coverCss = page.cover ? page.cover.style.cssText : '';
 
-    for (let i = 0; i < 3; i++) page.frameMsg(healthySt());
-    await settle(30);
+    if (opts && opts.sparse) {
+      // A background tab: the frame's timer is throttled to one sample every
+      // 10-30s. The gate must reveal on that single healthy sample instead of
+      // counting to three and letting the bound stop a healthy player.
+      await settle(1700);
+      page.frameMsg(healthySt());
+      await settle(60);
+    } else {
+      for (let i = 0; i < 3; i++) page.frameMsg(healthySt());
+      await settle(30);
+    }
     const revealEvents = at('overlay-reveal');
     const revealedAt = revealEvents.length ? Date.now() - t0 : null;
     const nativeHiddenAfterReveal = page.video.style.visibility === 'hidden';
@@ -267,9 +280,11 @@ async function main() {
       coveredAt,
       revealedAt,
       nativeHiddenAtHold,
+      pausedAtHold,
       frameOpacityAtHold,
       coverAtHold,
       coverText,
+      coverCss,
       coverAfterReveal,
       nativeHiddenAfterReveal,
       frameOpacityAfterReveal,
@@ -285,15 +300,20 @@ async function main() {
     assert(green.coveredAt !== null && green.coveredAt <= 2000, `cover took ${green.coveredAt} ms, bound is 2000`);
     assert(green.coverEvents[0].d.reason === 'ad-hold', `reason=${green.coverEvents[0].d.reason}`);
   });
-  check('GREEN: the hold covers the AD, and raises the frame only after the clean picture exists', () => {
-    assert(green.nativeHiddenAtHold === true, 'the ad stayed visible on the hold tick — that is the whole-30s-ad report');
+  check('GREEN: the hold freezes the picture instead of hiding it (no black screen)', () => {
+    assert(green.nativeHiddenAtHold !== true, 'the native video was hidden on the hold tick — with the frame still hidden that is the black screen the owner photographed');
+    assert(green.pausedAtHold === true, 'the native was not paused on the hold tick — the ad keeps playing under the notice');
+    assert(green.frameOpacityAtHold !== '1', `frame was raised to opacity ${green.frameOpacityAtHold} before the source played — that is the second half of the black screen`);
+  });
+  check('GREEN: the notice is a panel, not a full-screen rectangle', () => {
     assert(green.coverAtHold === 'flex', `cover panel display=${green.coverAtHold}`);
     assert(/carregando/.test(String(green.coverText)), `cover says: ${green.coverText}`);
-    assert(green.frameOpacityAtHold !== '1', `frame was raised to opacity ${green.frameOpacityAtHold} before the source played — that is the black screen`);
+    assert(!/inset:\s*0/.test(green.coverCss), `the panel is painted full-screen: ${green.coverCss}`);
+    assert(/translate\(-50%,\s*-50%\)/.test(green.coverCss), `the panel is not a centred box: ${green.coverCss}`);
   });
-  check('GREEN: overlay-reveal lands inside the 12 s cold-cover window and swaps the surfaces', () => {
+  check('GREEN: overlay-reveal lands inside the cold-cover window and swaps the surfaces', () => {
     assert(green.revealEvents.length >= 1, `no overlay-reveal; adlog=${JSON.stringify(green.events.map((e) => e.ev))}`);
-    assert(green.revealedAt !== null && green.revealedAt < 12000, `reveal at ${green.revealedAt} ms`);
+    assert(green.revealedAt !== null && green.revealedAt < 3000, `reveal at ${green.revealedAt} ms, the hold bound is 3000`);
     assert(green.revealedAt > green.coveredAt, 'reveal happened before the cover');
     assert(green.nativeHiddenAfterReveal === true, 'the native player stayed visible after the reveal');
     assert(green.frameOpacityAfterReveal === '1', `frame opacity after reveal = ${green.frameOpacityAfterReveal}`);
@@ -315,10 +335,36 @@ async function main() {
     assert(painted !== SOURCE, 'the black-screen mutation did not apply — the guard would be vacuous');
   });
   const black = await arm(painted, 'black');
-  check('RED-2 (2026-11-08 defect): a hold that paints nothing shows the ad, so the GREEN arm catches it', () => {
+  check('RED-2 (2026-11-08 defect): a hold that hides the native is caught by the GREEN arm', () => {
     assert(black.coverEvents.length >= 1, 'the mutant did not reach the hold branch');
-    assert(black.nativeHiddenAtHold === false, 'the mutant hid the native — it is not the reported defect');
-    assert(black.coverAtHold !== 'flex', `the mutant still showed the cover panel (${black.coverAtHold})`);
+    assert(black.nativeHiddenAtHold === true, 'the mutant did not hide the native — it is not the reported defect');
+    assert(black.coverAtHold === 'flex', `the mutant also lost the panel (${black.coverAtHold}); it must differ ONLY in hiding the native`);
+  });
+
+  // A background tab throttles the frame's heartbeat to one sample every
+  // 10-30s (measured: `playing-not-healthy` 32s apart in the owner's
+  // ko.adlog). The gate used to count three consecutive samples, so a healthy
+  // clean player could never qualify there and the bound stopped it — the
+  // black panel he photographed with the tab in the background.
+  const sparse = await arm(SOURCE, 'sparse', { sparse: true });
+  check('SPARSE: a throttled tab reveals on the single healthy sample it gets', () => {
+    assert(sparse.revealEvents.length >= 1, `no overlay-reveal after one healthy sample; adlog=${JSON.stringify(sparse.events.map((e) => e.ev))}`);
+    assert(sparse.frameOpacityAfterReveal === '1', `frame opacity after the sparse reveal = ${sparse.frameOpacityAfterReveal}`);
+    assert(sparse.nativeHiddenAfterReveal === true, 'the native stayed over the revealed clean player');
+  });
+
+  // The sparse arm must FAIL with the old count-based gate, or it measures
+  // nothing: put the three-tick requirement back and re-run it.
+  const counted = SOURCE.replace(
+    'const need = (overlay.stGapMs || 0) > 1500 ? 1 : 2;',
+    'const need = 3; // pre-fix: count ticks',
+  );
+  check('the count-based mutation applied', () => {
+    assert(counted !== SOURCE, 'the tick-count mutation did not apply');
+  });
+  const sparseRed = await arm(counted, 'sparse-red', { sparse: true });
+  check('SPARSE-RED (pre-fix): a count-based gate never reveals on a throttled tab', () => {
+    assert(sparseRed.revealEvents.length === 0, `the count-based gate still revealed: ${JSON.stringify(sparseRed.revealEvents)}`);
   });
 
   server.close();
