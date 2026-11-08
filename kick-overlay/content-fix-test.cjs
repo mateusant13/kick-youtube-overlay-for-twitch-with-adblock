@@ -259,7 +259,12 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
   assert.ok(!styleEl.textContent.includes('top:-28px'), 'seek bar no longer extends above bar');
   assert.ok(src.includes("document.addEventListener('keydown', onOverlayKeydown, true)"), 'F key capture listener present');
   assert.ok(src.includes('e.stopImmediatePropagation()'), 'overlay F handler wins over Twitch fullscreen');
-  assert.ok(src.includes('iframe.allowFullscreen = true') && src.includes('fr.allowFullscreen = true'), 'both iframe fullscreen permissions present');
+  // 0.8.47: the property is GONE from every builder. With an `allow` attribute
+  // present Chrome logs "Allow attribute will take precedence over
+  // 'allowfullscreen'" on each frame, and the attribute already carries
+  // fullscreen (owner console 2026-11-07).
+  assert.ok(!src.includes('allowFullscreen = true'), 'no builder sets the redundant allowFullscreen property');
+  assert.ok(src.includes("allow', 'autoplay; fullscreen; encrypted-media'") || src.includes("allow', 'autoplay; fullscreen"), 'the allow attribute carries fullscreen');
   assert.ok(src.includes('if (!v.paused)') && src.includes('v.pause();'), 'native Twitch video is paused under overlay');
   assert.ok(bridgeSrc.includes("case 'quality':") && bridgeSrc.includes('setAutoQualityMode'), 'quality command reaches both player engines');
   console.log('A injectStyles: style appended, bar/seek/offline CSS — OK');
@@ -322,6 +327,16 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
   KO.ytLoadedUrl = 'https://hls.example/u0'; // frame holds a STALE url
 
   badge.length = 0;
+  // A real frame reports in with a token-valid message (and Chrome fires its
+  // `load`); that is the ready gate ytSend() queues behind (0.8.47). Deliver it
+  // the way the page receives it, or every command stays held and this arm
+  // measures the stub instead of the product.
+  const ytf = document.getElementById('ko-yt');
+  msgListeners.forEach((listener) => listener({
+    source: ytf.contentWindow,
+    origin: new URL(chromeStub.runtime.getURL('player.html')).origin,
+    data: { __koKick: { t: 'ready', _koToken: ytf.dataset.koToken } },
+  }));
   await api.probe();
   const bD = lastBadge();
   assert.strictEqual(bD.text, 'YT', 'the running yt layer badges YT');
@@ -461,6 +476,14 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
   assert.strictEqual(bH.color, '#6b7280', 'gray = failed, distinct from amber connecting');
   assert.strictEqual(KO.wrap.style.display, 'none', 'wrap stays hidden while the layer is dead');
   // 30s backoff expires -> the probe loop re-enters the youtube branch and re-mints.
+  // The mint needs a channel to mint FOR: with no ref at all ensureYtHls()
+  // records a failure without ever calling the background (its refs list is
+  // empty), which is a fixture gap, not the behaviour under test.
+  // ...and a RESOLVED channel: the probe bails at 'yt-unresolved' before it ever
+  // reaches the mint when ytId is null and ytRaw is not a bare video id.
+  KO.ytRaw = '@x';
+  KO.slug = 'rodil';
+  KO.ytId = 'UCxxxxxxxxxxxxxxxxxxxxxx';
   KO.ytHlsFailedAt = Date.now() - 31000;
   badge.length = 0;
   await api.probe();
@@ -510,8 +533,13 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
       newValue: { enabled: true, player: 'youtube', playerAt: 2000, mappings: h4Mappings },
     },
   }, 'local');
-  // Async fire(apply) -> probe() -> probeYtLayer -> ensureYtHls mint.
-  await settle(80);
+  // Async fire(apply) -> probe() -> probeYtLayer -> ensureYtHls mint. The probe
+  // is throttled by ytProbeAt, and the H arm above just spent that throttle, so
+  // the re-pick is measured from a clean probe clock (the popup click is a later
+  // user action, not the same tick).
+  KO.ytProbeAt = 0;
+  KO.ytNoEvidence = 0;
+  await settle(120);
   const pH4After = swCalls.filter((m) => m && m.type === 'ko-yt-play').length;
   assert.strictEqual(KO.ytHlsFailed, false, 'retry intent with expired backoff must clear the stale mint failure');
   assert.strictEqual(KO.player, 'youtube', 'retry intent must return the active layer to youtube (not keep kicking)');

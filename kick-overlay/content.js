@@ -1247,6 +1247,16 @@ function enforceOverlayRendering(shown) {
   }
 }
 
+// A mute WE wrote, so the user's own click can be told apart from it.
+const muteWrites = new WeakMap(); // el -> { at, muted }
+function markMuteWrite(v) {
+  try {
+    muteWrites.set(v, { at: Date.now(), muted: !!v.muted });
+  } catch {
+    /* detached */
+  }
+}
+
 function syncMute() {
   const overlaySelected = KO.player !== 'twitch' && !!KO.wrap
     && (KO.wrap.style.display !== 'none' || KO.twDeleted);
@@ -1257,8 +1267,15 @@ function syncMute() {
         KO.twWasPlaying = true;
         KO.twPaused.add(v); // ownership: only an element we paused is ours to resume
       }
-      if (!v.muted) {
+      // Only a video that is actually PLAYING needs muting; a paused element is
+      // silent. Re-assigning `muted = true` on a paused one is what fought the
+      // user's own volume button: Twitch's control writes to THIS element, so
+      // the click was reverted every 400 ms and the sound never came back
+      // (owner report 2026-11-08: "fica mutando quando eu desmuto o tempo
+      // inteiro"). The same rule as the ad path's silenceNative().
+      if (!v.paused && !v.muted) {
         v.muted = true;
+        markMuteWrite(v);
         KO.muted.add(v);
       }
     } else if (KO.muted.has(v) && v.muted) {
@@ -1266,6 +1283,42 @@ function syncMute() {
       KO.muted.delete(v);
     }
   }
+}
+
+// While another layer is selected the page's volume button still writes to the
+// native element, which is where its own control is bound. That write is the
+// user talking about the sound he hears, so an UNMUTE is applied to the SELECTED
+// layer instead of being reverted by syncMute(). Narrow on purpose:
+//  - only the unmute direction. The extension mutes natives constantly; an
+//    unmute is the only transition it never produces by itself while a layer is
+//    playing, and forwarding a mute would let our own echo silence the layer.
+//  - never while the ad path's own frame exists: it covers the native surface
+//    and has its own intent tracker (twitch-adblock.js onNativeVolumeChange).
+//  - never while the native IS the selected surface.
+function onUserVolumeChange(ev) {
+  const v = ev && ev.target;
+  if (!v || v.tagName !== 'VIDEO') return;
+  if (v.muted) return; // still muted: a mute, not an unmute
+  const w = muteWrites.get(v);
+  if (w && Date.now() - w.at < 700 && w.muted === false) return; // our own restore
+  if (document.getElementById('ko-adfix')) return; // the ad path owns this surface
+  const shown = !!KO.wrap && (KO.wrap.style.display !== 'none' || KO.twDeleted);
+  if (!shown || KO.player === 'twitch') return; // the native IS the surface
+  const vol = Number.isFinite(v.volume) && v.volume > 0 ? v.volume : null;
+  if (KO.player === 'kick') {
+    if (!KO.kickMuted && !vol) return; // already audible at this volume
+    KO.kickMuted = false;
+    if (vol) KO.kickVol = vol;
+    kickSend({ t: 'mute', m: false });
+    kickSend({ t: 'volume', v: KO.kickVol || 1 });
+  } else {
+    if (!KO.ytMuted && !vol) return;
+    KO.ytMuted = false;
+    if (vol) KO.ytVol = vol;
+    ytCmd('mute', false);
+    ytCmd('setVolume', KO.ytVol || 1);
+  }
+  saveState(false);
 }
 
 function unmuteAll() {
@@ -2529,6 +2582,10 @@ function startWatchers() {
     true,
   );
   document.addEventListener('keydown', onOverlayKeydown, true);
+  // The user's sound decision reaches the layer he is hearing, even though the
+  // page's own control writes to the paused native element (see
+  // onUserVolumeChange).
+  document.addEventListener('volumechange', onUserVolumeChange, true);
 }
 
 // The 400ms geometry tick alone makes a position:fixed overlay lag behind
