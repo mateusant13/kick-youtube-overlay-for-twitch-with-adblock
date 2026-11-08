@@ -506,7 +506,10 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
   KO.player = 'kick';
   KO.playerPreference = 'youtube';     // stored pref is youtube; fallback is in-memory
   KO.kickSlug = 'realkick';            // real mapping — the fallback gate was armed
-  KO.mappings['rodil'] = { kick: 'realkick', yt: '@x' };
+  // The mapping row carries the resolved ytId: the storage handler mirrors it
+  // into KO.ytId on every write, so a row WITHOUT it nulls the id the arm just
+  // set and probeYtLayer bails at 'yt-unresolved' before the mint.
+  KO.mappings['rodil'] = { kick: 'realkick', yt: '@x', ytId: 'UCxxxxxxxxxxxxxxxxxxxxxx' };
   KO.ytRaw = '@x';
   KO.ytId = 'UCxxxxxxxxxxxxxxxxxxxxxx';
   KO.ytHlsFailed = true;
@@ -543,6 +546,7 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
   const pH4After = swCalls.filter((m) => m && m.type === 'ko-yt-play').length;
   assert.strictEqual(KO.ytHlsFailed, false, 'retry intent with expired backoff must clear the stale mint failure');
   assert.strictEqual(KO.player, 'youtube', 'retry intent must return the active layer to youtube (not keep kicking)');
+  console.log('DBG', JSON.stringify({diff: pH4After - pH4Before, tail: swCalls.slice(-3), ytId: KO.ytId, ytRaw: KO.ytRaw, url: KO.ytHlsUrl, failed: KO.ytHlsFailed, probe: KO.ytProbeAt, noev: KO.ytNoEvidence, player: KO.player}));
   assert.strictEqual(pH4After - pH4Before, 1, 'the re-pick re-mints exactly once (fresh mint, not the old pendings)');
   assert.ok(KO.ytHlsUrl, 'the re-mint produced a fresh url');
   KO.player = 'kick';
@@ -561,7 +565,7 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
   KO.player = 'kick';
   KO.playerPreference = 'youtube';
   KO.kickSlug = 'realkick';
-  KO.mappings['rodil'] = { kick: 'realkick', yt: '@x' };
+  KO.mappings['rodil'] = { kick: 'realkick', yt: '@x', ytId: 'UCxxxxxxxxxxxxxxxxxxxxxx' }; // row carries the resolved id (the mirror nulls KO.ytId otherwise)
   KO.ytRaw = '@x';
   KO.ytId = 'UCxxxxxxxxxxxxxxxxxxxxxx';
   KO.ytHlsFailed = true;
@@ -620,7 +624,7 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
   console.log('H5 P4 retry: erase-echo no-mint (playerAt guard) + embed-stall same-value re-mint — OK');
 
   // ---- I: badge state transitions (the 0.8.2 status surface) ---------------
-  KO.mappings['rodil'] = { kick: 'realkick', yt: '@x' };
+  KO.mappings['rodil'] = { kick: 'realkick', yt: '@x', ytId: 'UCxxxxxxxxxxxxxxxxxxxxxx' }; // row carries the resolved id (the mirror nulls KO.ytId otherwise)
   KO.ytHlsFailed = false;
   KO.ytHlsFailedAt = 0;
   // KICK Playing -> green KICK
@@ -717,7 +721,10 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
   KO.ytId = 'UCxxxxxxxxxxxxxxxxxxxxxx';
   KO.mappings['rodil'] = { yt: '@x' };
   KO.ytHlsFailed = true;
-  KO.ytHlsFailedAt = Date.now();    // backoff — the mint will not retry mid-test
+  // A failure older than the 4s grace but inside the 30s backoff: conclusive
+  // (gray) AND the mint will not retry mid-test. Set at `now` the verdict is
+  // still AMBER — the 0.8.49 hard-fail needs >4s since the failure.
+  KO.ytHlsFailedAt = Date.now() - 10000;
   KO.ytHlsUrl = null;
   KO.ytHlsAt = 0;
   KO.ytEmbedAt = Date.now() - 10000;

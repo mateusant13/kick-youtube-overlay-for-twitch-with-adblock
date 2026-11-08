@@ -1,41 +1,99 @@
-// Mute-decision regression harness for twitch-adblock.js.
+// Mute-decision regression harness. It runs THREE real files together:
 //
-// Owner report (2026-10-26): "when i mute, the ad comes, player swaps, it
-// unmutes. respect the last user decision." The ad path covers Twitch with a
-// separate clean hls.js player; that player is started muted (Chrome autoplay
-// policy) and revealOverlay() used to unmute it unconditionally, so a user who
-// had muted the native player got sound back on every ad pod. The native mute
-// was captured (wasMuted/holdWasMuted) but only ever used to restore the
-// native player at the END of the pod.
+//   ko-audio.js        the audio authority (extension world)
+//   adblock-bridge.js  the extension-world half of the DOM bridge
+//   twitch-adblock.js  the ad path (MAIN world)
 //
-// This harness runs the REAL twitch-adblock.js against a stubbed DOM and drives
-// the real ad path (ad-hold -> ad-start -> frame ready -> 3 healthy Playing
-// heartbeats -> reveal), then asserts the mute decision on the wire, at the
-// badge, and at ad-end. `node mute-decision-test.cjs` (no frameworks).
+// and stands in for the two pieces that are not under test here: content.js
+// registers the 'twitch' (page video) surface and the kick/yt layer writers,
+// exactly as it does at boot, and Chrome's world boundary is modelled by the
+// fact that the ad path only ever reads the two data-ko-audio-* attributes and
+// writes ko-audio-claim / ko-audio-intent CustomEvents.
 //
-// Negative arm: the same scenarios run against a copy with the reveal gate
-// removed (`if (overlay.muteIntent)` -> `if (false)`), which is exactly the
-// pre-fix behavior. The muted scenario MUST fail there; otherwise the detector
-// is not measuring anything.
+// The contract asserted here is ONE rule, not a mechanism:
+//
+//     muted(surface) = intent[surface].muted || policy || surface !== visible
+//
+// Owner reports behind it: "when i mute, the ad comes, player swaps, it unmutes"
+// (2026-10-26), "unmuting during the swap mutes the clean player, or vice versa"
+// (2026-11-07), "fica mutando quando eu desmuto o tempo inteiro" (2026-11-08).
+//
+// Negative arm: the same run against a copy of ko-audio.js whose want() ignores
+// the user's intent. Every muted-user arm MUST fail there, or the detector is
+// measuring nothing.
 'use strict';
 const fs = require('fs');
 const path = require('path');
 
-const SOURCE = fs.readFileSync(path.join(__dirname, 'twitch-adblock.js'), 'utf8');
-const PRE_FIX_MUTATION = ['if (overlay.muteIntent) {', 'if (false) {'];
+const AD = fs.readFileSync(path.join(__dirname, 'twitch-adblock.js'), 'utf8');
+const AUDIO = fs.readFileSync(path.join(__dirname, 'ko-audio.js'), 'utf8');
+const BRIDGE = fs.readFileSync(path.join(__dirname, 'adblock-bridge.js'), 'utf8');
 
-// ---- stubs ----------------------------------------------------------------
-// `autoLoad` models Chrome: an iframe whose extension document loads a tick
-// after it is created. Tests that need a frame which has NOT navigated (the
-// ready gate) pass `{ autoLoad: false }`.
-function makePage(source = SOURCE, { autoLoad = true } = {}) {
-  const sent = []; // every {t,m,v} the page posts into the clean frame
-  const pageListeners = { message: [], pointerdown: [] };
-  const adLogs = []; // parsed ko-adlog decisions (see document.dispatchEvent)
+const PRE_FIX_MUTATION = [
+  'muted: !!(it.muted || policy.has(surface) || visibleNow() !== surface),',
+  'muted: !!(policy.has(surface) || visibleNow() !== surface),',
+];
+
+// ---- the world ------------------------------------------------------------
+// makeWorld({ audioSource, adSource, autoLoad }) — `adSource`/`autoLoad` exist so
+// the negative arms of ad-time-continuity-test.cjs can run mutated copies of the
+// ad path through the SAME world.
+function makeWorld(opts, extra) {
+  // Positional form (source, opts) is the historical makePage() signature.
+  const o = typeof opts === 'string' ? Object.assign({}, extra || {}, { adSource: opts }) : opts || {};
+  const audioSource = o.audioSource || AUDIO;
+  const adSource = o.adSource || AD;
+  const autoLoad = o.autoLoad !== false;
+  const sent = []; // commands the ad path posts into its clean frame
+  const layerSent = []; // commands the content-script stand-in posts to kick/yt
+  const adLogs = [];
+  const observers = [];
   const bcInstances = [];
 
+  // --- event target ---------------------------------------------------------
+  const makeTarget = (extra) => {
+    const t = Object.assign(
+      {
+        listeners: {},
+        addEventListener(type, fn) {
+          (this.listeners[type] = this.listeners[type] || []).push(fn);
+        },
+        removeEventListener(type, fn) {
+          const l = this.listeners[type] || [];
+          const i = l.indexOf(fn);
+          if (i >= 0) l.splice(i, 1);
+        },
+        fire(ev) {
+          for (const fn of (this.listeners[ev.type] || []).slice()) {
+            try {
+              fn(ev);
+            } catch {
+              /* a listener must not break the run */
+            }
+          }
+        },
+      },
+      extra || {},
+    );
+    return t;
+  };
+
+  // --- element -------------------------------------------------------------
+  const notifyAttrs = (el, key) => {
+    for (const o of observers) {
+      if (o.target !== el) continue;
+      const f = o.opts && o.opts.attributeFilter;
+      if (f && !f.includes(key)) continue;
+      try {
+        o.cb([{ attributeName: key }], o);
+      } catch {
+        /* observer callback must not break the run */
+      }
+    }
+  };
+
   const node = (tag) => {
-    const n = {
+    const n = makeTarget({
       tag,
       tagName: String(tag || 'div').toUpperCase(),
       id: '',
@@ -44,23 +102,28 @@ function makePage(source = SOURCE, { autoLoad = true } = {}) {
       style: {},
       dataset: {},
       attrs: {},
-      listeners: {},
       parentElement: null,
       isConnected: true,
       removed: false,
-      appendChild(c) { c.parentElement = this; return c; },
-      remove() { this.removed = true; this.isConnected = false; },
-      addEventListener(t, f) { (this.listeners[t] = this.listeners[t] || []).push(f); },
-      removeEventListener(t, f) {
-        const l = this.listeners[t] || [];
-        const i = l.indexOf(f);
-        if (i >= 0) l.splice(i, 1);
+      appendChild(c) {
+        c.parentElement = this;
+        return c;
       },
-      setAttribute(k, v) { this.attrs[k] = String(v); },
-      getAttribute(k) { return this.attrs[k] === undefined ? null : this.attrs[k]; },
+      remove() {
+        this.removed = true;
+        this.isConnected = false;
+      },
+      setAttribute(k, v) {
+        const changed = this.attrs[k] !== String(v);
+        this.attrs[k] = String(v);
+        if (changed) notifyAttrs(this, k);
+      },
+      getAttribute(k) {
+        return this.attrs[k] === undefined ? null : this.attrs[k];
+      },
       closest: () => null,
       getBoundingClientRect: () => ({ left: 0, top: 0, width: 1280, height: 720 }),
-    };
+    });
     return n;
   };
 
@@ -69,12 +132,13 @@ function makePage(source = SOURCE, { autoLoad = true } = {}) {
   docEl.setAttribute('data-ko-ext-id', 'test');
 
   const body = node('body');
-  const frameWindow = { postMessage: (payload) => { sent.push(payload && payload.__koKick); } };
+  const frameWindow = {
+    postMessage: (payload) => sent.push(payload && payload.__koKick),
+  };
   let createdFrame = null;
-  let createdBadge = null;
   const createdDivs = [];
 
-  const video = {
+  const video = makeTarget({
     tagName: 'VIDEO',
     style: {},
     isConnected: true,
@@ -91,11 +155,17 @@ function makePage(source = SOURCE, { autoLoad = true } = {}) {
     seekable: { length: 1, start: () => 0, end: () => 40 },
     closest: () => null,
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 1280, height: 720 }),
-    pause() { this.paused = true; },
-    play() { this.paused = false; this.plays = (this.plays || 0) + 1; return Promise.resolve(); },
-  };
+    pause() {
+      this.paused = true;
+    },
+    play() {
+      this.paused = false;
+      this.plays = (this.plays || 0) + 1;
+      return Promise.resolve();
+    },
+  });
 
-  const document = {
+  const document = makeTarget({
     documentElement: docEl,
     body,
     fullscreenElement: null,
@@ -106,49 +176,95 @@ function makePage(source = SOURCE, { autoLoad = true } = {}) {
       if (t === 'iframe') {
         n.contentWindow = frameWindow;
         createdFrame = n;
-        if (autoLoad) {
-          setTimeout(() => {
-            for (const f of (n.listeners.load || []).slice()) {
-              try { f(); } catch { /* a load handler must not break the run */ }
+        // Chrome: an extension frame's document loads a tick after creation.
+        if (!autoLoad) return n;
+        setTimeout(() => {
+          for (const f of (n.listeners.load || []).slice()) {
+            try {
+              f();
+            } catch {
+              /* a load handler must not break the run */
             }
-          }, 0);
-        }
+          }
+        }, 0);
       }
-      // Every div the ad path creates is kept: the badge and the cold-cover
-      // panel are both divs, so "the last div created" stopped being the badge
-      // when the cover was added (0.8.48).
       if (t === 'div') createdDivs.push(n);
       return n;
     },
     querySelectorAll: (sel) => (sel === 'video' ? [video] : []),
     getElementById: () => null,
-    addEventListener(t, f) {
-      (pageListeners[t] = pageListeners[t] || []).push(f);
-    },
-    removeEventListener(t, f) {
-      const l = pageListeners[t] || [];
-      const i = l.indexOf(f);
-      if (i >= 0) l.splice(i, 1);
-    },
-    dispatchEvent(e) {
-      // The real module records its decisions through `ko-adlog` CustomEvents;
-      // keeping them lets an arm assert on what the ad path DECIDED, not only
-      // on what it posted to the frame.
-      if (e && e.type === 'ko-adlog') {
-        try { adLogs.push(JSON.parse(e.detail)); } catch { /* malformed */ }
+    dispatchEvent(ev) {
+      if (ev && ev.type === 'ko-adlog') {
+        try {
+          adLogs.push(JSON.parse(ev.detail));
+        } catch {
+          /* malformed */
+        }
       }
+      this.fire(ev);
+      return true;
     },
-  };
+  });
 
-  const window = {
-    addEventListener(t, f) { (pageListeners[t] = pageListeners[t] || []).push(f); },
-    removeEventListener(t, f) {
-      const l = pageListeners[t] || [];
-      const i = l.indexOf(f);
-      if (i >= 0) l.splice(i, 1);
-    },
+  const window = makeTarget({
     fetch: undefined,
     Worker: undefined,
+    dispatchEvent: (ev) => document.dispatchEvent(ev),
+  });
+
+  // One registry for window and document: the ad path listens for `message` on
+  // the window and for pointerdown/visibilitychange on the document, and a
+  // harness that keeps them apart silently starves one of them.
+  window.listeners = document.listeners;
+  window.fire = (ev) => document.fire(ev);
+
+  class MutationObserver {
+    constructor(cb) {
+      this.cb = cb;
+    }
+    observe(target, opts) {
+      observers.push({ cb: this.cb, target, opts: opts || {}, mo: this });
+    }
+    disconnect() {
+      const i = observers.findIndex((o) => o.mo === this);
+      if (i >= 0) observers.splice(i, 1);
+    }
+  }
+  class CustomEvent {
+    constructor(type, init) {
+      this.type = type;
+      this.detail = init && init.detail;
+    }
+  }
+  class BroadcastChannel {
+    constructor(name) {
+      this.name = name;
+      this.onmessage = null;
+      bcInstances.push(this);
+    }
+    postMessage() {}
+  }
+  class XMLHttpRequest {
+    open() {}
+    send() {}
+    setRequestHeader() {}
+    overrideMimeType() {}
+  }
+  class URLStub extends URL {
+    static createObjectURL() {
+      return 'blob:https://www.twitch.tv/ko-test';
+    }
+  }
+  const chromeStub = {
+    runtime: { id: 'test', lastError: null },
+    storage: {
+      local: {
+        get: (k, cb) => {
+          if (typeof cb === 'function') cb({});
+        },
+        set: () => {},
+      },
+    },
   };
   const location = {
     href: 'https://www.twitch.tv/rodil',
@@ -157,97 +273,97 @@ function makePage(source = SOURCE, { autoLoad = true } = {}) {
     hash: '',
     hostname: 'www.twitch.tv',
   };
-  const navigator = { userAgent: 'node' };
-  const performance = { now: () => Date.now() };
-  class BroadcastChannel {
-    constructor(name) { this.name = name; this.sent = []; this.onmessage = null; bcInstances.push(this); }
-    postMessage(msg) { this.sent.push(msg); }
-  }
-  class CustomEvent {
-    constructor(type, init) { this.type = type; this.detail = init && init.detail; }
-  }
-  class XMLHttpRequest {
-    open() {}
-    send() {}
-    setRequestHeader() {}
-    overrideMimeType() {}
-  }
-  // A real URL parser (overlaySend builds new URL(frame.src).origin) plus the
-  // static createObjectURL the worker hook would use.
-  class URLStub extends URL {
-    static createObjectURL() { return 'blob:https://www.twitch.tv/ko-test'; }
-  }
 
-  const factory = new Function(
-    'window', 'document', 'location', 'navigator', 'performance', 'BroadcastChannel',
-    'CustomEvent', 'XMLHttpRequest', 'Blob', 'URL', 'btoa', 'console',
-    source,
-  );
-  factory(
-    window, document, location, navigator, performance, BroadcastChannel,
-    CustomEvent, XMLHttpRequest, class Blob {}, URLStub,
-    (s) => Buffer.from(String(s)).toString('base64'), console,
-  );
+  const run = (source, name) => {
+    const factory = new Function(
+      'window', 'document', 'location', 'navigator', 'performance', 'BroadcastChannel',
+      'CustomEvent', 'MutationObserver', 'XMLHttpRequest', 'Blob', 'URL', 'btoa', 'chrome',
+      'console', 'setTimeout', 'clearTimeout',
+      `${source}\n//# sourceURL=${name}`,
+    );
+    factory(
+      window, document, location, { userAgent: 'node' }, { now: () => Date.now() },
+      BroadcastChannel, CustomEvent, MutationObserver, XMLHttpRequest, class Blob {}, URLStub,
+      (s) => Buffer.from(String(s)).toString('base64'), chromeStub, console, setTimeout, clearTimeout,
+    );
+  };
+
+  // 1. the authority, 2. the extension-world bridge, 3. content.js's stand-in,
+  // 4. the MAIN-world ad path — the real injection order.
+  run(audioSource, 'ko-audio.js');
+  const audio = window.KOAudio;
+  for (const m of ['intent', 'wanted', 'setIntent', 'setVisible', 'claim', 'apply', 'register', 'registerNative']) {
+    if (!audio || typeof audio[m] !== 'function') throw new Error(`ko-audio.js did not expose ${m}()`);
+  }
+  run(BRIDGE, 'adblock-bridge.js');
+
+  // What content.js does at boot: the page video is the 'twitch' surface, and
+  // the two overlay layers are command surfaces.
+  audio.registerNative('twitch', { elements: () => [video], main: () => video });
+  audio.register('kick', { write: (s) => layerSent.push({ surface: 'kick', ...s }) });
+  audio.register('yt', { write: (s) => layerSent.push({ surface: 'yt', ...s }) });
+  audio.setVisible('twitch');
+  audio.apply();
+
+  run(adSource, 'twitch-adblock.js');
 
   const api = {
+    audio,
     sent,
+    layerSent,
     video,
-    location,
-    get frame() { return createdFrame; },
-    // Resolved by id, not by creation order: the badge is #ko-adfix-badge and
-    // the cold cover is #ko-adfix-cover, and both are divs.
-    get badge() { return createdDivs.find((d) => d.id === 'ko-adfix-badge') || createdBadge; },
-    get cover() { return createdDivs.find((d) => d.id === 'ko-adfix-cover') || null; },
     document,
+    docEl,
     bcInstances,
-    listeners: pageListeners,
-    stats: () => window.__koTwitchAdblockStats,
+    get frame() {
+      return createdFrame;
+    },
+    get badge() {
+      return createdDivs.find((d) => d.id === 'ko-adfix-badge') || null;
+    },
+    get cover() {
+      return createdDivs.find((d) => d.id === 'ko-adfix-cover') || null;
+    },
+    location,
     frameToken() {
       const m = /token=([^&]+)/.exec((createdFrame && createdFrame.src) || '');
       return m ? decodeURIComponent(m[1]) : '';
     },
-    // Drive the real frame -> page message path.
     frameMsg(msg) {
       const token = api.frameToken();
-      for (const f of pageListeners.message) {
-        f({ origin: 'chrome-extension://test', data: { __koKick: { ...msg, _koToken: token } }, source: frameWindow });
-      }
-    },
-    pageMsg(msg) {
-      for (const f of pageListeners.message) {
-        f({ origin: 'https://www.twitch.tv', data: { __koKick: { ...msg, _koToken: api.frameToken() } }, source: frameWindow });
-      }
+      document.fire({
+        type: 'message',
+        origin: 'chrome-extension://test',
+        data: { __koKick: { ...msg, _koToken: token } },
+        source: frameWindow,
+      });
     },
     bypass(msg) {
       const ch = bcInstances.find((c) => c.name === 'ko-adblock-bypass');
-      const page = (window.__koTwitchAdblockStats && window.__koTwitchAdblockStats.pageId) || '';
-      if (ch && ch.onmessage) ch.onmessage({ data: { page, ...msg } });
+      // The real handler refuses a message that is not addressed to this page.
+      const pageId = (window.__koTwitchAdblockStats && window.__koTwitchAdblockStats.pageId) || '';
+      if (ch && ch.onmessage) ch.onmessage({ data: { page: pageId, ...msg } });
     },
-    // The tab comes back to the foreground: visibilitychange, as Chrome fires it.
-    showTab() {
-      document.visibilityState = 'visible';
-      document.hidden = false;
-      for (const f of (pageListeners.visibilitychange || []).slice()) f({ type: 'visibilitychange' });
-    },
-    clickDocument() {
-      for (const f of pageListeners.pointerdown.slice()) f({ type: 'pointerdown' });
+    stats: () => window.__koTwitchAdblockStats,
+    // A USER gesture on the page's own volume control: the element changes, the
+    // browser fires volumechange, and the authority is the only reader.
+    userSetsNative(muted, volume) {
+      if (typeof muted === 'boolean') video.muted = muted;
+      if (Number.isFinite(volume)) video.volume = volume;
+      document.fire({ type: 'volumechange', target: video });
     },
     clickBadge() {
-      // The badge, resolved the same way the getter does: creation order
-      // stopped identifying it when the cold-cover panel was added.
-      const b = createdDivs.find((d) => d.id === 'ko-adfix-badge') || createdBadge;
+      const b = api.badge;
       for (const f of ((b && b.listeners.click) || []).slice()) f({ type: 'click' });
+    },
+    clickDocument() {
+      for (const f of (document.listeners.pointerdown || []).slice()) f({ type: 'pointerdown' });
     },
     muteSent() {
       return sent.filter((m) => m && m.t === 'mute').map((m) => m.m);
     },
-    // Drive the real document-level volumechange path (the ad path's intent
-    // tracker) exactly as a user click on Twitch's volume button would.
-    setNativeMuted(muted, volume) {
-      if (typeof muted === 'boolean') video.muted = muted;
-      if (Number.isFinite(volume)) video.volume = volume;
-      const ev = { type: 'volumechange', target: video };
-      for (const f of (pageListeners.volumechange || []).slice()) f(ev);
+    seeks() {
+      return sent.filter((m) => m && m.t === 'seek').map((m) => m.s);
     },
     logs() {
       return adLogs;
@@ -255,9 +371,23 @@ function makePage(source = SOURCE, { autoLoad = true } = {}) {
     logsOf(ev) {
       return adLogs.filter((l) => l && l.ev === ev);
     },
-    seeks() {
-      return sent.filter((m) => m && m.t === 'seek').map((m) => m.s);
+    pageMsg(msg) {
+      document.fire({
+        type: 'message',
+        origin: 'https://www.twitch.tv',
+        data: { __koKick: { ...msg, _koToken: api.frameToken() } },
+        source: frameWindow,
+      });
     },
+    showTab() {
+      document.visibilityState = 'visible';
+      document.hidden = false;
+      document.fire({ type: 'visibilitychange' });
+    },
+    attrMuted() {
+      return docEl.getAttribute('data-ko-audio-m');
+    },
+    logs: () => adLogs,
   };
   return api;
 }
@@ -274,9 +404,8 @@ function healthySt(overrides) {
   };
 }
 
-// ad-hold -> ad-start -> ready -> 3 healthy Playing ticks -> reveal.
 async function runPod(page, { mutedBeforeAd, autoStart = true }) {
-  page.video.muted = mutedBeforeAd;
+  page.userSetsNative(!!mutedBeforeAd, 1);
   page.bypass({ type: 'ad-hold' });
   if (autoStart) page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
   await settle(20);
@@ -301,85 +430,155 @@ function assert(cond, msg) {
 }
 
 async function main() {
-  // ---- 1: the owner's report. Muted user, an ad swaps the player. --------
+  // ---- 1: the report. A muted user, an ad swaps the player. --------------
   {
-    const page = makePage();
+    const page = makeWorld();
     await runPod(page, { mutedBeforeAd: true });
-    const afterReveal = page.muteSent();
-    check('muted user is NOT unmuted when the clean player reveals', () => {
-      assert(page.frame.removed === false, 'clean frame was removed instead of revealed');
-      assert(page.sent.some((m) => m && m.t === 'load'), 'frame never received the clean url');
-      assert(!afterReveal.includes(false), `sent mute:false -> ${JSON.stringify(page.sent)}`);
-      assert(afterReveal.includes(true), 'the clean player was never told to stay muted');
+    check('a muted user is not unmuted at reveal', () => {
+      assert(page.frame && page.frame.removed === false, 'clean frame was removed instead of revealed');
+      assert(page.attrMuted() === '1', `authority published muted=${page.attrMuted()} for a muted user`);
+      assert(!page.muteSent().includes(false), `sent mute:false -> ${JSON.stringify(page.muteSent())}`);
     });
-    check('muted user sees a click-to-sound badge', () => {
+    check('a muted user sees the click-to-sound badge', () => {
       assert(/clique para som/.test(page.badge.textContent), `badge text: ${page.badge.textContent}`);
     });
-    check('a click anywhere else on the page does NOT unmute a muted user', () => {
+    check('a click elsewhere on the page does not unmute a muted user', () => {
       page.clickDocument();
       assert(!page.muteSent().includes(false), 'a generic page click restored the audio');
     });
-    check('an explicit badge click still restores sound', () => {
+    check('an explicit badge click unmutes the player and persists the choice', () => {
       page.clickBadge();
       assert(page.muteSent().includes(false), 'the badge click did not unmute');
+      assert(page.audio.intent('twitch').muted === false, 'the unmute was not recorded as intent');
     });
-    check('ad-end restores the mute the user asked for during the pod', () => {
+    check('ad-end hands the native back at the intent the user set DURING the pod', () => {
       page.bypass({ type: 'ad-end' });
       assert(page.video.muted === false, `native restored muted=${page.video.muted} after an explicit unmute`);
     });
   }
 
-  // ---- 2: muted user, ad ends without an unmute: native stays muted. -----
+  // ---- 2: muted user, ad ends with no gesture: still silent. -------------
   {
-    const page = makePage();
+    const page = makeWorld();
     await runPod(page, { mutedBeforeAd: true });
     page.bypass({ type: 'ad-end' });
-    check('ad-end keeps the native player muted for a muted user', () => {
+    check('ad-end keeps a muted user muted', () => {
       assert(page.video.muted === true, `native restored muted=${page.video.muted}`);
     });
   }
 
-  // ---- 3: sound-on user keeps the existing autoplay path. ----------------
+  // ---- 3: a sound-on user gets sound, from the right surface. ------------
   {
-    const page = makePage();
+    const page = makeWorld();
     await runPod(page, { mutedBeforeAd: false });
-    check('an unmuted user still gets sound restored at reveal', () => {
-      assert(page.muteSent().includes(false), `sent mute values: ${JSON.stringify(page.muteSent())}`);
-      assert(page.muteSent().indexOf(false) > page.muteSent().lastIndexOf(true), 'unmute came before the initial mute');
+    check('an unmuted user is audible at reveal', () => {
+      assert(page.attrMuted() === '0', `authority published muted=${page.attrMuted()} for an unmuted user`);
+      const m = page.muteSent();
+      assert(m.includes(false), `sent mute values: ${JSON.stringify(m)}`);
+      assert(m.indexOf(false) > m.lastIndexOf(true), 'the unmute came before the frame existed');
+    });
+    check('the covered native is silenced by the claim, not by a hand-written mute', () => {
+      assert(page.video.muted === true, `native muted=${page.video.muted} while the clean player covers it`);
     });
   }
 
-  // ---- 4: mute made AFTER a warm standby was minted (standby adoption) ---
+  // ---- 4: mute made AFTER a warm standby was minted. No snapshot to go bad.
   {
-    const page = makePage();
-    // Standby minted at page load, while the user still had sound on.
-    page.video.muted = false;
+    const page = makeWorld();
+    page.userSetsNative(false, 1);
     page.bypass({ type: 'standby-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
     await settle(20);
     page.frameMsg({ t: 'ready' });
-    for (let i = 0; i < 3; i++) page.frameMsg(healthySt()); // healthy but hidden
-    // The user mutes Twitch later, then the ad arrives.
-    page.video.muted = true;
+    for (let i = 0; i < 3; i++) page.frameMsg(healthySt());
+    page.userSetsNative(true, 1); // the user mutes Twitch AFTER the standby exists
     page.bypass({ type: 'ad-hold' });
     page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
     await settle(20);
     for (let i = 0; i < 3; i++) page.frameMsg(healthySt());
-    check('a standby minted before the mute does not unmute at reveal', () => {
-      assert(page.muteSent().includes(true), 'no mute was ever sent');
-      assert(!page.muteSent().includes(false), 'stale standby mute state overruled the user');
+    check('a standby minted before the mute does not overrule it', () => {
+      assert(page.attrMuted() === '1', `authority published muted=${page.attrMuted()}`);
+      const m = page.muteSent();
+      if (m.includes(false)) {
+        // A mute:false is only acceptable BEFORE the user's mute reached the
+        // authority; after it, the last word must be muted.
+        assert(m[m.length - 1] === true, `last mute sent was ${m[m.length - 1]}`);
+      }
     });
   }
 
-  // ---- 5: negative arm. Same scenario against the pre-fix gate. ----------
+  // ---- 5: the user's gesture on the HIDDEN native reaches the layer. ------
   {
-    const mutated = SOURCE.split(PRE_FIX_MUTATION[0]).join(PRE_FIX_MUTATION[1]);
-    check('negative arm: the pre-fix mutation applied', () => {
-      assert(mutated !== SOURCE, 'the pre-fix mutation did not apply');
+    const page = makeWorld();
+    page.audio.setIntent('kick', { muted: true, volume: 1 }, { persist: false });
+    page.audio.setVisible('kick'); // the overlay layer is the audible surface
+    page.userSetsNative(false, 0.4); // he unmutes Twitch's own control
+    check('an unmute on the covered native surface reaches the layer he hears', () => {
+      assert(page.audio.intent('kick').muted === false, 'the layer was left muted');
+      assert(Math.abs(page.audio.intent('kick').volume - 0.4) < 0.01, `layer volume=${page.audio.intent('kick').volume}`);
+      const last = page.layerSent.filter((s) => s.surface === 'kick').pop();
+      assert(last && last.muted === false, `layer command: ${JSON.stringify(last)}`);
     });
-    const page = makePage(mutated);
+    check('the hidden native stays silent even though its intent is "sound"', () => {
+      assert(page.video.muted === true, `native muted=${page.video.muted}`);
+    });
+  }
+
+  // ---- 6: the extension's own write is never read back as intent. --------
+  {
+    const page = makeWorld();
+    page.audio.setIntent('twitch', { muted: true, volume: 1 }, { persist: false });
+    page.audio.apply(); // we mute the element ourselves...
+    check('our own mute does not overwrite the intent it came from', () => {
+      assert(page.video.muted === true, 'the element was not muted');
+      assert(page.audio.intent('twitch').muted === true, 'intent drifted');
+    });
+    // ...and the echo of that write must not be treated as a user gesture.
+    page.document.fire({ type: 'volumechange', target: page.video });
+    check('the echo of our own write is not read as a user decision', () => {
+      assert(page.audio.intent('twitch').muted === true, 'our write was read back as a user mute');
+    });
+  }
+
+  // ---- 7: policy silence is not intent, and it is cleared by a gesture. ---
+  {
+    const page = makeWorld();
+    page.audio.setIntent('twitch', { muted: false, volume: 1 }, { persist: false });
+    page.audio.claim('ad');
+    page.audio.setPolicy('ad', true); // Chrome refused audible autoplay
+    check('a policy silence silences the surface without touching the intent', () => {
+      assert(page.attrMuted() === '1', `published muted=${page.attrMuted()}`);
+      assert(page.audio.intent('twitch').muted === false, 'the policy mute was written into the intent');
+    });
+    page.audio.setPolicy('ad', false); // the gesture arrived
+    check('clearing the policy gives the sound back at the intent', () => {
+      assert(page.attrMuted() === '0', `published muted=${page.attrMuted()} after the policy cleared`);
+      assert(page.audio.intent('twitch').muted === false, 'the intent drifted while clearing the policy');
+    });
+  }
+
+  // ---- 8: an external choice (popup, storage, second tab) lands. ---------
+  {
+    const page = makeWorld();
+    page.audio.setVisible('kick');
+    page.audio.setIntent('kick', { muted: false, volume: 0.5 }, { persist: false });
+    check('a popup/storage choice reaches the layer the user hears', () => {
+      const last = page.layerSent.filter((s) => s.surface === 'kick').pop();
+      assert(last && last.muted === false, `kick command: ${JSON.stringify(last)}`);
+      assert(Math.abs(last.volume - 0.5) < 0.01, `kick volume: ${last.volume}`);
+    });
+  }
+
+  // ---- 9: negative arm. The detector must see a broken authority. --------
+  {
+    const mutated = AUDIO.split(PRE_FIX_MUTATION[0]).join(PRE_FIX_MUTATION[1]);
+    check('negative arm: the pre-fix mutation applied', () => {
+      assert(mutated !== AUDIO, 'the pre-fix mutation did not apply — it measures nothing');
+    });
+    const page = makeWorld({ audioSource: mutated });
     await runPod(page, { mutedBeforeAd: true });
-    check('negative arm: the pre-fix code IS caught unmuting a muted user', () => {
-      assert(page.muteSent().includes(false), 'the detector accepted the pre-fix behavior — it measures nothing');
+    check('negative arm: an authority that ignores intent IS caught unmuting a muted user', () => {
+      const caught = page.attrMuted() === '0' || page.muteSent().includes(false);
+      assert(caught, 'the detector accepted a mute-ignoring authority');
     });
   }
 
@@ -395,5 +594,6 @@ if (require.main === module) {
     process.exit(1);
   });
 } else {
-  module.exports = { makePage, runPod, settle, healthySt };
+  // makePage is the historical name used by ad-time-continuity-test.cjs.
+  module.exports = { makeWorld, makePage: makeWorld, runPod, settle, healthySt };
 }

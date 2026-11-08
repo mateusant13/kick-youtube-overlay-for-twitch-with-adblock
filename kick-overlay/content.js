@@ -243,7 +243,7 @@ const NOT_CHANNEL = new Set([
 
 // Build marker for the diag stream — lets us tell which code a tab runs
 // (content scripts of pre-reload tabs survive extension reloads).
-const KO_VER = '0.8.49';
+const KO_VER = '0.8.50';
 // ONE canonical yt state object: every reset site (boot, teardown, the
 // frame-death watchdog) must agree, or a drained/live flag survives a rebuild.
 function freshYtState() {
@@ -308,7 +308,6 @@ const KO = {
   pollTimer: null,
   rectTimer: null,
   spaTimer: null,
-  muted: new Set(), // twitch videos we muted (restored)
   hideTicks: 0,
   stallTicks: 0,
   lastTickT: 0,
@@ -318,16 +317,37 @@ const KO = {
 
 // ---- storage ----------------------------------------------------------------
 
+// Storage -> intent. The arbiter is the store; KO.kickMuted/ytMuted are its UI
+// mirror and are refreshed by the onChange hook installed in audioBoot().
 function applyVols(vols) {
   vols = vols || {};
+  const audio = window.KOAudio;
   const kv = vols.kick || {};
   const yv = vols.yt || {};
-  if (typeof kv.v === 'number') KO.kickVol = Math.max(0, Math.min(1, kv.v));
-  if (typeof kv.m === 'boolean') KO.kickMuted = kv.m;
-  if (typeof yv.v === 'number') {
-    const volume = yv.v > 1 ? yv.v / 100 : yv.v;
-    KO.ytVol = Math.max(0, Math.min(1, volume));
+  const tv = vols.twitch || {};
+  const pv = vols.page || {};
+  const norm = (v) => Math.max(0, Math.min(1, v > 1 ? v / 100 : v));
+  if (audio) {
+    audio.setIntent('kick', {
+      muted: typeof kv.m === 'boolean' ? kv.m : undefined,
+      volume: typeof kv.v === 'number' ? norm(kv.v) : undefined,
+    });
+    audio.setIntent('yt', {
+      muted: typeof yv.m === 'boolean' ? yv.m : undefined,
+      volume: typeof yv.v === 'number' ? norm(yv.v) : undefined,
+    });
+    audio.setIntent('twitch', {
+      muted: typeof tv.m === 'boolean' ? tv.m : undefined,
+      volume: typeof tv.v === 'number' ? norm(tv.v) : undefined,
+    });
+    audio.setIntent('page', {
+      muted: typeof pv.m === 'boolean' ? pv.m : undefined,
+      volume: typeof pv.v === 'number' ? norm(pv.v) : undefined,
+    });
   }
+  if (typeof kv.v === 'number') KO.kickVol = norm(kv.v);
+  if (typeof kv.m === 'boolean') KO.kickMuted = kv.m;
+  if (typeof yv.v === 'number') KO.ytVol = norm(yv.v);
   if (typeof yv.m === 'boolean') KO.ytMuted = yv.m;
 }
 
@@ -364,10 +384,22 @@ function saveState(persistPlayer = false) {
       mappings: KO.mappings,
       // The YouTube fallback changes KO.player for this session only.
       player: KO.playerPreference,
-      vols: {
-        kick: { v: KO.kickVol, m: KO.kickMuted },
-        yt: { v: KO.ytVol, m: KO.ytMuted },
-      },
+      vols: (() => {
+        const a = window.KOAudio;
+        const k = a ? a.intent('kick') : { muted: KO.kickMuted, volume: KO.kickVol };
+        const y = a ? a.intent('yt') : { muted: KO.ytMuted, volume: KO.ytVol };
+        const t = a ? a.intent('twitch') : { muted: false, volume: 1 };
+        const p = a ? a.intent('page') : { muted: false, volume: 1 };
+        // The page's own surface keeps its own row: without it the extension had
+        // no record of the user's choice on the Twitch player and had to guess
+        // by snapshotting the element at every swap.
+        return {
+          kick: { v: k.volume, m: k.muted },
+          yt: { v: y.volume, m: y.muted },
+          twitch: { v: t.volume, m: t.muted },
+          page: { v: p.volume, m: p.muted },
+        };
+      })(),
     };
     if (typeof KO.playerAt === 'number') rec.playerAt = KO.playerAt;
     chrome.storage.local.set({ [KEY]: rec }, () => {
@@ -794,7 +826,7 @@ function enableYtUnlock() {
     KO._ytUnlockDoc = null;
     document.removeEventListener('pointerdown', unlock, true);
     if (KO.player !== 'youtube' || !KO.wrap || KO.wrap.style.display === 'none') return;
-    ytCmd('unmute');
+    if (window.KOAudio) window.KOAudio.setPolicy('yt', false); // gesture: retry audible
     ytCmd('play');
   };
   // teardown() unbinds a never-fired arm (same contract as teardownHotBar).
@@ -824,7 +856,12 @@ window.addEventListener('message', (ev) => {
       ytFirstInfo = true;
       diag('yt_ready', {});
     }
-    ytCmd('setVolume', KO.ytVol); // restore the user's last yt volume on a fresh frame
+    // A fresh frame knows nothing: drop the command cache so the arbiter
+    // re-asserts the user's state instead of trusting the frame that died.
+    if (window.KOAudio) {
+      window.KOAudio.forget('yt');
+      window.KOAudio.apply();
+    }
     ytSend({ t: 'getLevels' }); // vertical menu = the frame's REAL levels
     if (KO.pendingYtUrl) {
       ytSend({ t: 'load', url: KO.pendingYtUrl });
@@ -867,13 +904,25 @@ window.addEventListener('message', (ev) => {
     updateKickVolUI();
     renderQualityMenu();
     updateKickBar();
-    if (typeof st.volume === 'number' && st.volume >= 0 && !st.muted && KO.ytVol !== st.volume) {
-      KO.ytVol = st.volume; // remember the user's yt volume slider
-      saveState();
+    // The frame's own slider is a user gesture; a value it reports that we did
+    // not command becomes the user's intent. Never the reverse: what we sent is
+    // already in the arbiter and comes back as an echo.
+    if (typeof st.volume === 'number' && st.volume >= 0 && !st.muted) {
+      const audio = window.KOAudio;
+      const want = audio ? audio.wanted('yt') : null;
+      if (audio && want && Math.abs(want.volume - st.volume) > 0.02) {
+        audio.setIntent('yt', { volume: st.volume }, { persist: true });
+      }
     }
     if (KO.player === 'youtube') throttledYtProbe();
     if (prevLive && !KO.ytState.live && KO.player === 'youtube') throttledYtProbe();
-    if (KO.player === 'youtube' && KO.ytState.live && KO.ytState.muted) enableYtUnlock();
+    if (KO.player === 'youtube' && KO.ytState.live && KO.ytState.muted) {
+      // The frame is muted although the user wants sound: the browser refused
+      // audible autoplay. That is POLICY (never read back as intent) and the
+      // first gesture clears it.
+      if (window.KOAudio && !window.KOAudio.wanted('yt').muted) window.KOAudio.setPolicy('yt', true);
+      enableYtUnlock();
+    }
     return;
   }
   // 0.8.6 pain 2: the yt frame relays overlay keys (f / arrows) when focus
@@ -1055,6 +1104,12 @@ window.addEventListener('message', (ev) => {
     KO.kickWin = ev.source;
     KO.kickReady = true;
     KO.lastKickSt = Date.now();
+    // A fresh frame knows nothing: drop the command cache so the arbiter
+    // re-asserts the user's state on the new one.
+    if (window.KOAudio) {
+      window.KOAudio.forget('kick');
+      window.KOAudio.apply();
+    }
     kickSend({ t: 'getLevels' }); // vertical menu = the frame's REAL levels
     if (KO.pendingUrl) {
       kickSend({ t: 'load', url: KO.pendingUrl });
@@ -1062,8 +1117,9 @@ window.addEventListener('message', (ev) => {
       if (KO.player !== 'kick') {
         // Eager mount while youtube shows: the frame autoplays on load, so
         // park it at once (the rect loop re-asserts this if IVS wins the race).
-        kickSend({ t: 'mute', m: true });
+        // The hidden layer is muted by the arbiter, not by a command here.
         kickSend({ t: 'pause' });
+        if (window.KOAudio) window.KOAudio.apply();
       }
     }
   } else if (m.t === 'st') {
@@ -1237,99 +1293,87 @@ function enforceOverlayRendering(shown) {
   const ytPlays = !!(KO.ytState.ready && KO.ytState.playing);
   const kickMay = shown && KO.player === 'kick';
   const ytMay = shown && KO.player === 'youtube';
-  if (kickPlays && !kickMay) {
-    kickSend({ t: 'pause' }); // one rendering: hidden kick player PAUSED
-    kickSend({ t: 'mute', m: true });
-  }
-  if (ytPlays && !ytMay) {
-    ytCmd('pause');
-    ytCmd('mute');
-  }
+  if (kickPlays && !kickMay) kickSend({ t: 'pause' }); // one rendering: hidden kick player PAUSED
+  if (ytPlays && !ytMay) ytCmd('pause');
 }
 
-// A mute WE wrote, so the user's own click can be told apart from it.
-const muteWrites = new WeakMap(); // el -> { at, muted }
-function markMuteWrite(v) {
-  try {
-    muteWrites.set(v, { at: Date.now(), muted: !!v.muted });
-  } catch {
-    /* detached */
-  }
+// ---- audio ownership (ko-audio.js) ------------------------------------------
+// This extension never writes `.muted` or sends a mute command on its own. It
+// registers the surfaces that can render the stream, says which ONE is being
+// listened to, and declares the user's intent; ko-audio.js derives the rest
+// (muted = intent || policy || not-visible). This replaced `muteWrites`,
+// `KO.muted`, `onUserVolumeChange` and every `kickSend({t:'mute'})` /
+// `ytCmd('mute')` that used to decide for itself — nine trackers, each holding
+// a frozen snapshot of the value, which is why a swap kept restoring an old
+// decision over the user's newer one.
+
+function audioBoot() {
+  const audio = window.KOAudio;
+  if (!audio) return false;
+  audio.setPersister(() => saveState(false));
+  // The page's own <video> is a surface of its OWN per host: a decision made on
+  // Twitch must never silence the YouTube page the extension happens to be
+  // overlaying (different player, different volume scale).
+  KO.audioNative = onYtHost() ? 'page' : 'twitch';
+  audio.registerNative(KO.audioNative, {
+    elements: () => document.querySelectorAll('video'),
+    main: () => twitchVideo(),
+  });
+  audio.register('kick', {
+    write: (s) => {
+      kickSend({ t: 'mute', m: s.muted });
+      kickSend({ t: 'volume', v: s.volume });
+    },
+  });
+  audio.register('yt', {
+    write: (s) => {
+      ytCmd('mute', s.muted);
+      ytCmd('setVolume', s.volume);
+    },
+  });
+  // KO.kickMuted/kickVol/ytMuted/ytVol stay as the UI mirror of the intent
+  // store (the bar, the popup and the badge read them); they are derived, never
+  // authoritative.
+  audio.onChange(() => {
+    const k = audio.intent('kick');
+    const y = audio.intent('yt');
+    if (KO.audioNative === 'page') {
+      const p = audio.intent('page');
+      KO.pageMuted = p.muted;
+      KO.pageVol = p.volume;
+    }
+    KO.kickMuted = k.muted;
+    KO.kickVol = k.volume;
+    KO.ytMuted = y.muted;
+    KO.ytVol = y.volume;
+    updateKickVolUI();
+  });
+  return true;
 }
 
+// Which surface is being LISTENED to — one answer, from the same predicate that
+// decides which layer is on screen.
+function visibleSurface() {
+  const page = KO.audioNative || 'twitch';
+  if (KO.player === 'twitch' || !KO.wrap) return page;
+  if (KO.wrap.style.display === 'none' && !KO.twDeleted) return page;
+  return KO.player === 'youtube' ? 'yt' : 'kick';
+}
+
+// The 400 ms enforcement tick: PLAYBACK ownership only. Audio follows from
+// declaring which surface is visible; there is no mute write here any more.
 function syncMute() {
   const overlaySelected = KO.player !== 'twitch' && !!KO.wrap
     && (KO.wrap.style.display !== 'none' || KO.twDeleted);
-  for (const v of document.querySelectorAll('video')) {
-    if (overlaySelected) {
-      if (!v.paused) {
-        v.pause();
-        KO.twWasPlaying = true;
-        KO.twPaused.add(v); // ownership: only an element we paused is ours to resume
-      }
-      // Only a video that is actually PLAYING needs muting; a paused element is
-      // silent. Re-assigning `muted = true` on a paused one is what fought the
-      // user's own volume button: Twitch's control writes to THIS element, so
-      // the click was reverted every 400 ms and the sound never came back
-      // (owner report 2026-11-08: "fica mutando quando eu desmuto o tempo
-      // inteiro"). The same rule as the ad path's silenceNative().
-      if (!v.paused && !v.muted) {
-        v.muted = true;
-        markMuteWrite(v);
-        KO.muted.add(v);
-      }
-    } else if (KO.muted.has(v) && v.muted) {
-      v.muted = false;
-      KO.muted.delete(v);
+  if (overlaySelected) {
+    for (const v of document.querySelectorAll('video')) {
+      if (v.paused) continue;
+      v.pause();
+      KO.twWasPlaying = true;
+      KO.twPaused.add(v); // ownership: only an element we paused is ours to resume
     }
   }
-}
-
-// While another layer is selected the page's volume button still writes to the
-// native element, which is where its own control is bound. That write is the
-// user talking about the sound he hears, so an UNMUTE is applied to the SELECTED
-// layer instead of being reverted by syncMute(). Narrow on purpose:
-//  - only the unmute direction. The extension mutes natives constantly; an
-//    unmute is the only transition it never produces by itself while a layer is
-//    playing, and forwarding a mute would let our own echo silence the layer.
-//  - never while the ad path's own frame exists: it covers the native surface
-//    and has its own intent tracker (twitch-adblock.js onNativeVolumeChange).
-//  - never while the native IS the selected surface.
-function onUserVolumeChange(ev) {
-  const v = ev && ev.target;
-  if (!v || v.tagName !== 'VIDEO') return;
-  if (v.muted) return; // still muted: a mute, not an unmute
-  const w = muteWrites.get(v);
-  if (w && Date.now() - w.at < 700 && w.muted === false) return; // our own restore
-  if (document.getElementById('ko-adfix')) return; // the ad path owns this surface
-  const shown = !!KO.wrap && (KO.wrap.style.display !== 'none' || KO.twDeleted);
-  if (!shown || KO.player === 'twitch') return; // the native IS the surface
-  const vol = Number.isFinite(v.volume) && v.volume > 0 ? v.volume : null;
-  if (KO.player === 'kick') {
-    if (!KO.kickMuted && !vol) return; // already audible at this volume
-    KO.kickMuted = false;
-    if (vol) KO.kickVol = vol;
-    kickSend({ t: 'mute', m: false });
-    kickSend({ t: 'volume', v: KO.kickVol || 1 });
-  } else {
-    if (!KO.ytMuted && !vol) return;
-    KO.ytMuted = false;
-    if (vol) KO.ytVol = vol;
-    ytCmd('mute', false);
-    ytCmd('setVolume', KO.ytVol || 1);
-  }
-  saveState(false);
-}
-
-function unmuteAll() {
-  for (const v of KO.muted) {
-    try {
-      v.muted = false;
-    } catch {
-      /* detached */
-    }
-  }
-  KO.muted.clear();
+  if (window.KOAudio) window.KOAudio.setVisible(visibleSurface());
 }
 
 function resumeTwitchIfOurs() {
@@ -1441,7 +1485,7 @@ function setKickFill(frac) {
 function updateKickVolUI() {
   if (!KO.wrap) return;
   const isYt = KO.player === 'youtube';
-  const muted = isYt ? (KO.ytState.muted || KO.ytVol === 0) : (KO.kickMuted || KO.kickVol === 0);
+  const muted = isYt ? (KO.ytMuted || KO.ytVol === 0) : (KO.kickMuted || KO.kickVol === 0);
   const v = muted ? 0 : (isYt ? KO.ytVol : KO.kickVol);
   const fillEl = KO.wrap.querySelector('#ko-volfill');
   const thumbEl = KO.wrap.querySelector('#ko-volthumb');
@@ -1624,21 +1668,15 @@ function mount() {
     qualityWrap.classList.toggle('ko-open');
     qualityBtn.setAttribute('aria-expanded', String(qualityWrap.classList.contains('ko-open')));
   });
+  // The bar is a user gesture: declare intent, let ko-audio.js write it to the
+  // layer the user hears (and persist it once).
   muteBtn.addEventListener('click', () => {
-    if (KO.player === 'youtube') {
-      const muted = !KO.ytState.muted;
-      KO.ytMuted = muted;
-      if (!muted && KO.ytVol === 0) KO.ytVol = 1;
-      ytCmd('mute', muted);
-      if (!muted) ytCmd('setVolume', KO.ytVol);
-    } else {
-      KO.kickMuted = !KO.kickMuted;
-      if (!KO.kickMuted && KO.kickVol === 0) KO.kickVol = 1;
-      kickSend({ t: 'mute', m: KO.kickMuted });
-      if (!KO.kickMuted) kickSend({ t: 'volume', v: KO.kickVol });
-    }
+    const audio = window.KOAudio;
+    const surface = KO.player === 'youtube' ? 'yt' : 'kick';
+    const cur = audio ? audio.intent(surface) : { muted: KO.player === 'youtube' ? KO.ytMuted : KO.kickMuted, volume: KO.player === 'youtube' ? KO.ytVol : KO.kickVol };
+    const muted = !cur.muted;
+    if (audio) audio.setIntent(surface, { muted, volume: !muted && cur.volume === 0 ? 1 : cur.volume }, { persist: true });
     updateKickVolUI();
-    saveState(); // remember the user's player mute choice
   });
   const volwrap = bar.querySelector('#ko-volwrap');
   const volTrack = bar.querySelector('#ko-voltrack');
@@ -1649,17 +1687,9 @@ function mount() {
   let volDrag = false;
   const setVolFrom = (e) => {
     const v = volFrac(e);
-    if (KO.player === 'youtube') {
-      KO.ytVol = v;
-      KO.ytMuted = v === 0;
-      ytCmd('setVolume', v);
-      ytCmd('mute', KO.ytMuted);
-    } else {
-      KO.kickVol = v;
-      KO.kickMuted = v === 0;
-      kickSend({ t: 'volume', v: KO.kickVol });
-      kickSend({ t: 'mute', m: KO.kickMuted });
-    }
+    const audio = window.KOAudio;
+    const surface = KO.player === 'youtube' ? 'yt' : 'kick';
+    if (audio) audio.setIntent(surface, { volume: v, muted: v === 0 });
     updateKickVolUI();
   };
   volwrap.addEventListener('pointerdown', (e) => {
@@ -1821,7 +1851,7 @@ function teardown() {
   KO.lastKickSt = 0;
   KO.twLive = false;
   KO.twWasPlaying = false;
-  unmuteAll();
+  if (window.KOAudio) window.KOAudio.setVisible(KO.audioNative || 'twitch');
 }
 
 function showWrap() {
@@ -1836,11 +1866,9 @@ function hideWrap() {
   KO.wrap.style.display = 'none';
   if (KO.kickFrame && KO.kickState && KO.kickState.state === 'Playing') {
     kickSend({ t: 'pause' }); // one rendering: hidden kick player PAUSED
-    kickSend({ t: 'mute', m: true });
   }
   if (KO.ytState.ready && KO.ytState.playing) ytCmd('pause');
-  ytCmd('mute');
-  syncMute();
+  syncMute(); // declares the page surface; the arbiter mutes both layers
 }
 
 // probe()'s wrap-hide sites: with the Twitch player deleted, hiding the wrap
@@ -1907,10 +1935,7 @@ function showKickLayer() {
   KO.wrap.classList.add('ko-kick');
   showWrap();
   if (KO.ytState.ready && KO.ytState.playing) ytCmd('pause');
-  ytCmd('mute');
   if (KO.kickFrame) {
-    kickSend({ t: 'mute', m: KO.kickMuted });
-    kickSend({ t: 'volume', v: KO.kickVol });
     kickSend({ t: 'play' });
     // Freshest edge ONLY when re-showing the layer after a hide — probe()
     // re-shows every poll and a per-poll seek would stall live playback.
@@ -1926,11 +1951,8 @@ function showYtLayer() {
   showWrap();
   if (KO.kickFrame && KO.kickState && KO.kickState.state === 'Playing') {
     kickSend({ t: 'pause' }); // one rendering: hidden kick player PAUSED
-    kickSend({ t: 'mute', m: true });
   }
   ytCmd('play');
-  ytCmd('setVolume', KO.ytVol); // the user's last yt volume follows the player switch
-  ytCmd('mute', KO.ytMuted);
   setTimeout(() => {
     // Muted autoplay fallback: unmute on the first user gesture.
     if (KO.player === 'youtube' && KO.ytState.muted) enableYtUnlock();
@@ -2426,7 +2448,7 @@ async function ensureKickEager() {
   KO.kickStreamId = k.streamId || null;
   ensureKick(k.url);
   kickSend({ t: 'pause' });
-  kickSend({ t: 'mute', m: true });
+  // The muted state of a hidden kick layer is derived (visible !== 'kick').
 }
 
 // Entry point for everything that is NOT the 20s poll (storage.onChanged
@@ -2582,10 +2604,6 @@ function startWatchers() {
     true,
   );
   document.addEventListener('keydown', onOverlayKeydown, true);
-  // The user's sound decision reaches the layer he is hearing, even though the
-  // page's own control writes to the paused native element (see
-  // onUserVolumeChange).
-  document.addEventListener('volumechange', onUserVolumeChange, true);
 }
 
 // The 400ms geometry tick alone makes a position:fixed overlay lag behind
@@ -3072,6 +3090,7 @@ window.addEventListener('kick-overlay:status', () => {
 // ---- boot -------------------------------------------------------------------
 
 (async function init() {
+  audioBoot(); // surfaces + intent store must exist before the first state load
   await loadState();
   // URL-param setup (?koyt=<yt channel>&kokick=<slug>&koplayer=<player>):
   // write this channel's mapping by opening a twitch URL — no popup clicks

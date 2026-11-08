@@ -112,6 +112,67 @@
     /* document may be unavailable very early */
   }
 
+  // ---- audio bridge (the authority is ko-audio.js, in THIS world) -----------
+  // The ad path runs in the MAIN world on the same page and cannot reach the
+  // arbiter. Attributes carry the DERIVED state down (it applies them to its own
+  // iframe and nothing else); string-detail events carry the user's intent and
+  // the "I am covering the page" claim up. No mute decision crosses the
+  // boundary: that is how two independent policies used to fight over the same
+  // <video> element and revert the owner's unmute.
+  const attachAudioBridge = () => {
+    const audio = window.KOAudio;
+    const root = document.documentElement;
+    if (!audio || !root) {
+      document.addEventListener('DOMContentLoaded', attachAudioBridge, { once: true });
+      return;
+    }
+    audio.register('ad', {
+      shares: 'twitch', // the clean player renders the SAME stream as the page
+      write: (s) => {
+        try {
+          root.setAttribute('data-ko-audio-m', s.muted ? '1' : '0');
+          root.setAttribute('data-ko-audio-v', Number(s.volume).toFixed(2));
+        } catch {
+          /* document tearing down */
+        }
+      },
+    });
+    document.addEventListener(
+      'ko-audio-claim',
+      (ev) => {
+        const v = String((ev && ev.detail) || '');
+        audio.claim(v === 'ad' ? 'ad' : null);
+      },
+      true,
+    );
+    document.addEventListener(
+      'ko-audio-intent',
+      (ev) => {
+        try {
+          const d = JSON.parse(String(ev && ev.detail));
+          const target = audio.visible() || 'twitch';
+          audio.setIntent(
+            target,
+            {
+              muted: typeof d.muted === 'boolean' ? d.muted : undefined,
+              volume: Number.isFinite(Number(d.volume)) ? Number(d.volume) : undefined,
+            },
+            { persist: true },
+          );
+        } catch {
+          /* malformed intent */
+        }
+      },
+      true,
+    );
+    audio.apply();
+  };
+  try {
+    attachAudioBridge();
+  } catch {
+    /* document may be unavailable very early */
+  }
+
   const apply = (state) => {
     const on = !state || state.adblock !== false;
     const root = document.documentElement;

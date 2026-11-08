@@ -217,26 +217,26 @@
     url: null,
     channel: null,
     video: null,
-    wasMuted: false,
-    wasVolume: 1,
-    // The user's last mute decision for the surface this overlay replaces.
-    // true = muted. Seeded from the native <video> at takeover (ad-hold or
-    // standby adoption), flipped only by an explicit badge click, and used
-    // both at reveal (a muted user keeps a muted picture) and at ad-end
-    // (restore the decision, not the transient state of whichever element
-    // happened to be playing). Owner report 2026-10-26: mute, then an ad
-    // swapped the player and the audio came back.
-    muteIntent: true,
+    // AUDIO. This script runs in the MAIN world, so it cannot call the audio
+    // authority (ko-audio.js, extension world) directly: the DERIVED state
+    // arrives as the data-ko-audio-m / data-ko-audio-v attributes and the user's
+    // intent + the "I cover the page" claim leave as string-detail events
+    // (adblock-bridge.js is the other half). Two facts are kept here, both about
+    // THIS frame only:
+    //   audioSent    what we last told the iframe (spam/echo guard, no decision)
+    //   audioRefused the browser refused audible playback on the clean frame
+    //                (policy, cleared by an explicit gesture)
+    // Everything that used to live here (wasMuted, wasVolume, muteIntent,
+    // muteSent, autoplayMuted, muteWrite, holdWasMuted, holdVolume and the
+    // per-element snapshot in hiddenVideos) was a FROZEN COPY of a value, and a
+    // swap restored the copy over the user's newer decision.
+    audioSent: null,
+    audioRefused: false,
     // Live-time alignment + user-intent tracking (owner report 2026-11-07).
     nativeLat: 0, // native latency (edge - currentTime) captured at take-over
     pauseBeforeAd: false, // the native was PAUSED when the pod took over
     coldPreroll: false, // ...and it had never played (page had just loaded)
-    autoplayMuted: false, // we muted the clean player for autoplay, not the user
-    muteSent: null, // the mute state last SENT to the clean player (transition-only)
-    muteWrite: null, // last mute/volume write WE made (volumechange attribution)
     held: false,
-    holdWasMuted: false,
-    holdVolume: 1,
     hiddenVideos: [],
     startedAt: 0,
     positionTimer: 0,
@@ -512,41 +512,65 @@
   stats.cleanLatTarget = cleanLatTarget;
   stats.catchUpClean = catchUpClean;
 
-  // Every mute/volume write the ad path makes. `volumechange` is the only DOM
-  // signal that carries the USER's decision; a write we just made must never
-  // be read back as intent. Owner report 2026-11-07: unmuting during the swap
-  // made the extension mute the clean player instead (and the reverse).
-  function noteMuteWrite(v) {
-    overlay.muteWrite = v
-      ? { at: Date.now(), muted: !!v.muted, volume: Number(v.volume) }
-      : null;
+  // ---- audio, read from the authority across the world boundary ------------
+  // ko-audio.js derives (muted = intent || policy || not-visible) and publishes
+  // the state for THIS frame's surface as two attributes. This script applies
+  // it to its own iframe and nothing else: it never writes .muted/.volume on a
+  // page video, which is what two independent policies used to do to each
+  // other (owner reports 2026-11-07 / 2026-11-08).
+  function audioState() {
+    const root = document.documentElement;
+    const m = root ? root.getAttribute('data-ko-audio-m') : null;
+    const v = root ? root.getAttribute('data-ko-audio-v') : null;
+    return { muted: m === '1', volume: Number.isFinite(Number(v)) ? Number(v) : 1 };
   }
-  function onNativeVolumeChange(ev) {
-    const v = ev && ev.target;
-    if (!v || v.tagName !== 'VIDEO' || !v.isConnected) return;
-    if (!overlay.frame && !overlay.held && !overlay.adActive) return;
-    const w = overlay.muteWrite;
-    if (w && Date.now() - w.at < 400 && w.muted === !!v.muted && w.volume === Number(v.volume)) {
-      return; // our own write
-    }
-    const wasMuted = overlay.muteIntent;
-    overlay.muteIntent = !!v.muted;
-    if (Number.isFinite(v.volume) && v.volume > 0) overlay.wasVolume = v.volume;
-    if (overlay.frame && overlay.revealed) {
-      // Apply the user's decision to the surface they are looking at, now.
-      overlaySend({ t: 'mute', m: !!v.muted });
-      overlay.muteSent = !!v.muted;
-      if (Number.isFinite(v.volume)) overlaySend({ t: 'volume', v: v.volume });
-      if (!v.muted) {
-        overlay.autoplayMuted = false;
-        if (overlay.badge) overlay.badge.textContent = 'sem anúncio';
-      }
-    }
-    if (wasMuted !== overlay.muteIntent) {
-      adLog('mute-intent', { muted: !!v.muted, vol: v.volume, revealed: !!overlay.revealed });
+
+  // "I cover the page" / "I no longer do": the claim is what makes the native
+  // surface silent while the clean player is up.
+  function audioClaim(on) {
+    try {
+      document.dispatchEvent(new CustomEvent('ko-audio-claim', { detail: on ? 'ad' : '' }));
+    } catch {
+      /* ignore */
     }
   }
-  stats.onNativeVolumeChange = onNativeVolumeChange;
+
+  // A user gesture the authority cannot see (a click on OUR badge, inside our
+  // own UI) goes up as intent.
+  function audioIntent(muted, volume) {
+    try {
+      document.dispatchEvent(
+        new CustomEvent('ko-audio-intent', {
+          detail: JSON.stringify({ muted: !!muted, volume: Number(volume) }),
+        }),
+      );
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // ONE writer for the clean frame, diffed against what it was last told.
+  function applyOverlayAudio() {
+    if (!overlay.frame) return;
+    const a = audioState();
+    const muted = !!(a.muted || overlay.audioRefused);
+    const volume = a.volume;
+    const last = overlay.audioSent;
+    if (last && last.muted === muted && Math.abs(last.volume - volume) < 0.02) return;
+    overlay.audioSent = { muted, volume };
+    overlaySend({ t: 'mute', m: muted });
+    overlaySend({ t: 'volume', v: volume });
+  }
+
+  // The authority republishes the attributes on every change; a fresh frame
+  // must also be told, so the observer drives both.
+  try {
+    const mo = new MutationObserver(() => applyOverlayAudio());
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-ko-audio-m', 'data-ko-audio-v'] });
+    overlay.audioObserver = mo;
+  } catch {
+    /* document may be unavailable very early */
+  }
 
   function positionOverlay() {
     if (!overlay.frame) return;
@@ -630,54 +654,29 @@
     for (const msg of q) overlaySend(msg);
   }
 
-  // Mute a native video WITHOUT writing the value it already has. Twitch's own
-  // volume button controls this element, so re-assigning `muted = true` on every
-  // 500 ms position tick is what flipped the icon back on the user half a second
-  // after he unmuted: his click reached the clean player (intent forwarded) but
-  // the page kept showing "muted", and he clicked again, and again (owner report
-  // 2026-11-08: "fica mutando quando eu desmuto"). A paused element is silent
-  // anyway, so only a video that is actually PLAYING is muted here.
-  function silenceNative(v) {
-    try {
-      if (v.paused) return;
-      if (v.muted) return;
-      v.muted = true;
-      noteMuteWrite(v);
-    } catch {
-      /* ignore */
-    }
-  }
+  // The native element is NOT ours: ko-audio.js mutes it while this overlay
+  // claims the page, from the user's intent. Writing `.muted` here was the
+  // second writer that reverted his unmute half a second later.
 
   function hideNativeVideos() {
     for (const v of document.querySelectorAll('video')) {
       const known = overlay.hiddenVideos.find((x) => x.el === v);
       if (known) {
-        // Twitch can unmute/re-show a video after we hid it (measured as
-        // doubled audio ~1.5-2s behind the clean overlay). Re-apply on every
-        // position tick instead of trusting the first hide.
+        // Twitch can re-show a video after we hid it. Re-apply the CSS on every
+        // position tick instead of trusting the first hide. Sound is not part of
+        // the snapshot any more: the arbiter owns it for the whole claim.
         try { v.style.visibility = 'hidden'; } catch { /* ignore */ }
-        silenceNative(v);
         continue;
       }
-      overlay.hiddenVideos.push({ el: v, visibility: v.style.visibility, muted: v.muted, volume: v.volume });
+      overlay.hiddenVideos.push({ el: v, visibility: v.style.visibility });
       try { v.style.visibility = 'hidden'; } catch { /* ignore */ }
-      // Mute every native video, not just the main one: a PBP/ad video can
-      // keep playing audio behind the opaque overlay.
-      silenceNative(v);
     }
   }
 
   function restoreNativeVideos() {
-    for (const { el, visibility, muted, volume } of overlay.hiddenVideos) {
+    for (const { el, visibility } of overlay.hiddenVideos) {
       try {
-        if (el.isConnected) {
-          el.style.visibility = visibility;
-          if (typeof muted === 'boolean') {
-            el.muted = muted;
-            noteMuteWrite(el);
-          }
-          if (Number.isFinite(volume)) el.volume = volume;
-        }
+        if (el.isConnected) el.style.visibility = visibility;
       } catch { /* ignore */ }
     }
     overlay.hiddenVideos = [];
@@ -739,42 +738,22 @@
     requestStandby();
   }
 
-  // The ad path replaces the native surface; the user's mute decision belongs
-  // to that surface at the moment of the swap. Record it once per pod so
-  // reveal (never unmute a muted user) and ad-end (restore the decision) both
-  // read the same value. A warm standby was minted at page load, before any
-  // later mute, so its own capture can be stale.
+  // The mute decision is NOT captured here any more: the authority already
+  // holds it and keeps it, so a pod cannot restore a stale copy. What the swap
+  // still needs from this element is its latency, so the clean player and the
+  // hand-back happen on the same wall-clock second.
   function adoptNativeMute(v) {
     if (!v) return;
-    overlay.muteIntent = !!v.muted;
-    overlay.wasMuted = !!v.muted;
-    if (Number.isFinite(v.volume)) overlay.wasVolume = v.volume;
-    // The native latency at take-over is what the clean player must match, so
-    // the swap and the hand-back happen on the same wall-clock second.
     overlay.nativeLat = nativeLatency(v);
   }
 
   function restoreHeldMute() {
     if (!overlay.held) return;
-    const v = overlay.video && overlay.video.isConnected ? overlay.video : mainVideo();
-    // Restore visibility/first, then apply the pre-hold mute state. Doing it
-    // the other way round lets a stored `muted:true` (captured after ad-hold)
-    // overwrite the real original state.
     restoreNativeVideos();
-    if (v) {
-      try {
-        v.muted = overlay.holdWasMuted;
-        noteMuteWrite(v);
-      } catch { /* ignore */ }
-      // Twitch sets volume=0 when the element is muted. Restoring only
-      // `muted` left the icon unmuted but the video at volume 0, so the user
-      // heard nothing until clicking the volume button (real report). Restore
-      // the pre-hold volume too.
-      try {
-        if (Number.isFinite(overlay.holdVolume)) v.volume = overlay.holdVolume;
-      } catch { /* ignore */ }
-    }
+    // Releasing the claim hands the sound back to whatever the page shows, at
+    // the user's current intent — not at a value captured before the pod.
     overlay.held = false;
+    audioClaim(false);
   }
 
   // Hiding the native video does not normally pause it, but Twitch may pause
@@ -1060,20 +1039,13 @@
           cleanLat: overlay.lastSt ? +Number(overlay.lastSt.lat || 0).toFixed(1) : null,
         });
       } catch { /* ignore */ }
-      const v = overlay.video && overlay.video.isConnected ? overlay.video : mainVideo();
-      // restoreNativeVideos() restores every video's stored state, then the
-      // main video's mute decision wins (the stored value can be the mute we
-      // applied in ad-hold/after hiding). The decision, not wasMuted, so an
-      // unmute the user asked for during the pod survives the ad-end.
+      // CSS back (mute ownership never left the authority), then the claim is
+      // released so the page surface is audible again at the user's CURRENT
+      // intent — including an unmute made during the pod.
       restoreNativeVideos();
+      audioClaim(false);
+      const v = overlay.video && overlay.video.isConnected ? overlay.video : mainVideo();
       if (v) {
-        try {
-          v.muted = overlay.muteIntent;
-          noteMuteWrite(v);
-        } catch { /* ignore */ }
-        try {
-          if (Number.isFinite(overlay.wasVolume)) v.volume = overlay.wasVolume;
-        } catch { /* ignore */ }
         // Hand back NOW, not at the 300ms retry: the frame is still mounted and
         // adActive is still set at this point, so the lifecycle gate would
         // refuse this call and leave a frozen native for another 300ms (the
@@ -1238,47 +1210,32 @@
       hideNativeVideos();
       overlay.nativeHidden = true;
     }
-    // The clean player is started muted so Chrome can autoplay it. Sound is
-    // restored only when the user had sound on when the ad took over (or asked
-    // for it with the badge). A user who muted keeps a muted picture plus the
-    // click-to-sound badge, and if the browser refuses the unmute the muted
-    // player stays; never trade a visible ad for a frozen clean frame.
-    //
-    // This runs on EVERY `st` heartbeat (1/s) while the overlay is up, so it
-    // must be a TRANSITION and not an order: the old unconditional mute re-sent
-    // `mute:true` once a second forever, which is the owner's "fica mutando
-    // quando eu desmuto o tempo inteiro" (ko.adlog 2026-11-08: 50 `reveal-muted`
-    // in 70 s, and the unmute he made was overwritten on the next tick).
-    if (overlay.muteIntent) {
-      if (overlay.muteSent !== true) {
-        overlaySend({ t: 'mute', m: true });
-        overlay.muteSent = true;
-        adLog('reveal-muted', { reason });
-      }
-      overlaySend({ t: 'play' });
-      // The user wants silence: keep the volume the native surface had so the
-      // clean picture is not playing at 100% the next time it unmutes.
-      if (overlay.autoplayMuted) overlay.autoplayMuted = false;
-    } else if (!overlay.unmuteTried) {
+    // Claim the page even on the paths that never ran ad-hold (a standby that
+    // becomes the cover): the native surface must fall silent here, and it is
+    // the claim — not a hand-written mute — that does it.
+    audioClaim(true);
+    // Audio is applied from the authority's state, diffed against what this
+    // frame was last told — never re-sent on a heartbeat (the old code re-sent
+    // `mute:true` once a second forever: 50 `reveal-muted` in 70 s of the
+    // owner's ko.adlog, each one overwriting the unmute he had just made).
+    overlaySend({ t: 'play' });
+    applyOverlayAudio();
+    // Chrome can refuse audible playback on a fresh frame even though the
+    // gesture existed. That refusal is POLICY, not the user's decision: mute
+    // once, remember why, and let the badge / first click clear it.
+    if (!overlay.audioRefused && !overlay.unmuteTried) {
       overlay.unmuteTried = true;
-      overlaySend({ t: 'mute', m: false });
-      overlay.muteSent = false;
-      overlaySend({ t: 'play' });
       try { clearTimeout(overlay.unmuteCheck); } catch { /* ignore */ }
       overlay.unmuteCheck = setTimeout(() => {
         const st = overlay.lastSt;
         if (!overlay.frame || !st) return;
+        if (!st.muted || overlay.audioSent === null) return; // audible: nothing to do
         if (st.muted || st.paused) {
-          overlaySend({ t: 'mute', m: true });
-          overlay.muteSent = true;
-          overlaySend({ t: 'play' });
-          // Chrome refused the sound. This mute is OURS for autoplay reasons,
-          // not the user's decision: a click may still restore it, and it must
-          // never be read back as "the user wants silence".
-          overlay.autoplayMuted = true;
+          overlay.audioRefused = true;
+          overlay.audioSent = null; // force the next apply to re-send muted
+          applyOverlayAudio();
           adLog('unmute-blocked', { muted: !!st.muted, paused: !!st.paused });
         } else {
-          overlay.autoplayMuted = false;
           if (overlay.badge) overlay.badge.style.display = 'none';
           adLog('unmute-ok');
         }
@@ -1293,8 +1250,7 @@
   function startAdOverlay(url, channel, switchSource = false, standby = false) {
     if (!AD_OVERLAY_ENABLED) return;
     if (!url) return;
-    const prevWasMuted = overlay.wasMuted;
-    const prevWasVolume = overlay.wasVolume;
+    const prevAudioSent = overlay.audioSent;
     // A stall timer belongs to the previous frame/source. Starting a new
     // overlay/switch invalidates it; the new frame gets its own.
     clearOverlayStall();
@@ -1439,19 +1395,9 @@
     overlay.url = url;
     overlay.channel = channel || null;
     overlay.video = v;
-    overlay.wasMuted = switchSource && typeof prevWasMuted === 'boolean'
-      ? prevWasMuted
-      : (overlay.held ? overlay.holdWasMuted : (v ? v.muted : false));
-    overlay.wasVolume = switchSource && Number.isFinite(prevWasVolume)
-      ? prevWasVolume
-      : (overlay.held ? overlay.holdVolume : (v ? v.volume : 1));
-    // A source switch inside a pod keeps the decision the user already made; a
-    // new pod adopts it from the surface being replaced. ad-hold / the standby
-    // adoption path refresh it from the DOM, because a standby is minted at
-    // page load and can predate the user's mute.
-    overlay.muteIntent = switchSource
-      ? overlay.muteIntent
-      : (overlay.held ? overlay.holdWasMuted : (v ? !!v.muted : overlay.muteIntent));
+    // What the previous frame was told is only useful while the SAME frame
+    // keeps playing (a source switch); a new frame has been told nothing.
+    overlay.audioSent = switchSource ? prevAudioSent : null;
     overlay.held = false;
     overlay.startedAt = Date.now();
     overlay.ready = false;
@@ -1463,10 +1409,10 @@
     overlay.lastSt = null;
     overlay.catchupAt = 0;
     overlay.unmuteTried = false;
-    // A fresh frame starts unmuted (autoplay is muted by the 'ready' handler).
-    // Clearing this makes the reveal re-assert the user's state instead of
-    // trusting one that was sent to a frame that no longer exists.
-    overlay.muteSent = null;
+    // A fresh frame starts unmuted (autoplay is muted by the 'ready' handler),
+    // so the cache must be cleared: an unmute the user asked for has to be able
+    // to re-assert itself on the new frame.
+    if (!switchSource) overlay.audioSent = null;
     try { clearTimeout(overlay.unmuteCheck); } catch { /* ignore */ }
     overlay.unmuteCheck = 0;
     overlay.lastStAt = 0;
@@ -1551,8 +1497,10 @@
       if (m.t === 'ready') {
         overlay.ready = true;
         if (overlay.badge) overlay.badge.textContent = 'sem anúncio · carregando…';
+        // Start muted so Chrome can autoplay the frame, then hand it straight to
+        // the authority's state (which already includes the user's decision).
         overlaySend({ t: 'mute', m: true });
-        overlay.muteSent = true;
+        overlay.audioSent = { muted: true, volume: audioState().volume };
         overlaySend({ t: 'load', url: overlay.url });
         overlaySend({ t: 'play' });
         return;
@@ -1715,9 +1663,9 @@
           // Autoplay-with-audio was blocked. Retry muted; native controls let
           // the user unmute without losing the clean video.
           overlay.autoplayRetry = true;
-          overlay.autoplayMuted = true;
-          overlaySend({ t: 'mute', m: true });
-          overlay.muteSent = true;
+          overlay.audioRefused = true; // policy, not the user's decision
+          overlay.audioSent = null;
+          applyOverlayAudio();
           overlaySend({ t: 'play' });
         }
       }
@@ -1739,12 +1687,15 @@
       // user already asked for sound and Chrome refused it. It must never
       // overrule a mute — before 2026-11-07 every click on the page unmuted a
       // muted user again ("or the other way round": muted, and it unmuted).
-      if (!explicit && (overlay.muteIntent || !overlay.autoplayMuted)) return;
-      overlay.muteIntent = false;
-      overlay.autoplayMuted = false;
+      const a = audioState();
+      if (!explicit && (a.muted || !overlay.audioRefused)) return;
+      overlay.audioRefused = false;
       overlay.unmuteTried = true;
-      overlaySend({ t: 'mute', m: false });
-      overlay.muteSent = false;
+      // The click is the user's answer: it becomes intent in the authority (so
+      // it survives the pod, the next frame and a reload) and is applied here.
+      audioIntent(false, a.volume || 1);
+      overlay.audioSent = null;
+      applyOverlayAudio();
       overlaySend({ t: 'play' });
       if (overlay.badge) overlay.badge.textContent = 'sem anúncio · qualidade reduzida';
       try { document.removeEventListener('pointerdown', overlay.unmuteHandler, true); } catch { /* ignore */ }
@@ -1795,10 +1746,11 @@
     // iframe. Sending here too avoids a race on warm starts.
     setTimeout(() => {
       if (!overlay.frame) return;
-      overlaySend({ t: 'mute', m: true });
-      overlay.muteSent = true;
+      overlaySend({ t: 'mute', m: true }); // autoplay gate, corrected below
+      overlay.audioSent = { muted: true, volume: audioState().volume };
       overlaySend({ t: 'load', url: overlay.url });
       overlaySend({ t: 'play' });
+      applyOverlayAudio();
     }, 400);
   }
 
@@ -1852,8 +1804,6 @@
         const v = mainVideo();
         if (!v) return;
         overlay.held = true;
-        overlay.holdWasMuted = v.muted;
-        overlay.holdVolume = v.volume;
         // Live-time alignment: remember where the native sat relative to the
         // edge, and whether it was PLAYING. Both are used to (a) put the clean
         // player at the same offset so the swap is invisible, and (b) refuse to
@@ -1866,20 +1816,16 @@
         // stay parked (owner report 2026-11-07: "a paused Twitch tab gets
         // unpaused by the extension").
         overlay.coldPreroll = !!v.paused && Number(v.currentTime || 0) < 1;
-        // This is the takeover moment: whatever the user last decided about
-        // sound applies to the clean player too. Refreshed here because a warm
-        // standby was created at page load, before a later mute.
+        // This is the takeover moment: the clean player renders the same
+        // stream, so it inherits the user's decision from the authority.
         if (!overlay.revealed) adoptNativeMute(v);
-        // Mute immediately so the ad audio never plays. Do not hide the video
-        // yet: the clean source is still being probed, and a black frame is
-        // worse than one second of muted ad. startAdOverlay() covers it as
-        // soon as the source is ready.
-        try {
-          v.muted = true;
-          noteMuteWrite(v);
-        } catch {
-          /* ignore */
-        }
+        // Claim the page: the authority silences the native surface because this
+        // overlay now owns the sound, and it keeps doing so for every video the
+        // page spawns (PBP, previews). No element-level write here — that was
+        // the second writer. Do not hide the video yet: the clean source is
+        // still being probed, and a black frame is worse than one second of
+        // muted ad. startAdOverlay() covers it as soon as the source is ready.
+        audioClaim(true);
         overlay.adActive = true;
         // The clean source is still minting. Do NOT paint over the native yet:
         // raising the frame here (and hiding every native <video>) is exactly
@@ -2111,17 +2057,6 @@
     }
   } catch {
     /* recorder is best-effort */
-  }
-
-  // The user's sound decision, as it happens. A volume/mute change on a native
-  // video while the ad path owns playback (or is about to) is the user talking;
-  // it outranks the mute state captured at take-over and is forwarded to the
-  // clean player immediately. Hidden tabs, recorder-only pages and the pre-ad
-  // page state are ignored by the handler's own guard.
-  try {
-    document.addEventListener('volumechange', onNativeVolumeChange, true);
-  } catch {
-    /* intent tracking is best-effort */
   }
 
   // Resource timing catches the ad SDK / creative requests even when the

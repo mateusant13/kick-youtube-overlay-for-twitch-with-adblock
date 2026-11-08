@@ -27,7 +27,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { makePage, settle, healthySt } = require('./mute-decision-test.cjs');
+const { makeWorld, makePage, settle, healthySt } = require('./mute-decision-test.cjs');
 
 // The checkout is CRLF; every mutation below is written LF-only, so the source
 // is normalised once here and handed to the stub DOM already normalised.
@@ -52,10 +52,11 @@ const PRE_FIX_SENTINEL = [[
   'if (!(isFinite(e) && e > 0 && e < EDGE_MAX_SEC)) return 0;',
   '',
 ]];
-// 3. no continuous intent tracking (mute captured once at take-over).
+// 3. no continuous intent tracking: the frame is told a frozen "muted" instead
+//    of the authority's state, so an unmute never reaches the clean player.
 const PRE_FIX_INTENT = [[
-  "document.addEventListener('volumechange', onNativeVolumeChange, true);",
-  'void onNativeVolumeChange;',
+  '    const a = audioState();\n    const muted = !!(a.muted || overlay.audioRefused);',
+  '    const a = { volume: 1 };\n    const muted = true;',
 ]];
 // 4. resume any paused native, in any visibility.
 const PRE_FIX_RESUME = [[
@@ -94,8 +95,8 @@ const PRE_FIX_HEALTH = [
 
 // 9. the reveal re-sent the mute on every heartbeat instead of on transition.
 const PRE_FIX_MUTE_SPAM = [[
-  'if (overlay.muteSent !== true) {',
-  'if (true) {',
+  '    if (last && last.muted === muted && Math.abs(last.volume - volume) < 0.02) return;',
+  '    if (false) return;',
 ]];
 
 const checks = [];
@@ -128,7 +129,10 @@ function setNative(page, { ct, edge, bufferedEnd, paused = false, muted = false 
   v.currentTime = ct;
   v.paused = paused;
   v.readyState = 4;
-  v.muted = muted;
+  // The mute must arrive as a USER gesture: ko-audio.js records intent from a
+  // volumechange it did not write, and setting `.muted` behind its back leaves
+  // the intent untouched (the whole point of the new model).
+  page.userSetsNative(!!muted, 1);
   v.volume = 1;
   v.plays = 0;
   v.seekable = { length: 1, start: () => Math.max(0, edge - 3600), end: () => edge };
@@ -162,7 +166,7 @@ async function pod(page, { pos = 100, lat = 3 } = {}) {
 async function main() {
   // ---- 1. a hidden standby is pulled onto the live edge -------------------
   {
-    const page = makePage();
+    const page = makeWorld();
     setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 }); // nativeLat = 3
     await warmStandby(page, { pos: 100, lat: 12 });
     page.frameMsg(healthySt({ pos: 100, lat: 12 }));
@@ -179,7 +183,7 @@ async function main() {
     });
   }
   {
-    const page = makePage();
+    const page = makeWorld();
     setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
     page.bypass({ type: 'standby-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
     await settle(20);
@@ -193,7 +197,7 @@ async function main() {
     });
   }
   {
-    const page = makePage();
+    const page = makeWorld();
     setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
     await warmStandby(page, { pos: 200, lat: 6 });
     page.bypass({ type: 'ad-hold' }); // a warm playing standby is revealed here
@@ -208,7 +212,7 @@ async function main() {
 
   // ---- 2. ad-end hands the native back at the SAME offset -----------------
   {
-    const page = makePage();
+    const page = makeWorld();
     setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 }); // already at edge-3
     await pod(page);
     page.bypass({ type: 'ad-end' });
@@ -219,7 +223,7 @@ async function main() {
     });
   }
   {
-    const page = makePage();
+    const page = makeWorld();
     setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
     await pod(page);
     // Twitch parked the covered element while the clean player was on screen.
@@ -238,7 +242,7 @@ async function main() {
 
   // ---- 2b. Twitch's live sentinel is not a position ----------------------
   {
-    const page = makePage();
+    const page = makeWorld();
     // The owner's own adlog: `native-handoff {se: 1073741824}` on buzzyi_.
     setNative(page, { ct: 30, edge: 40, bufferedEnd: 40 });
     page.video.seekable = { length: 1, start: () => 0, end: () => 1073741824 };
@@ -255,7 +259,7 @@ async function main() {
     });
   }
   {
-    const page = makePage();
+    const page = makeWorld();
     // The same element, but the pod parked it far behind: the fallback must be
     // the newest BUFFERED frame, never a computed position.
     setNative(page, { ct: 100, edge: 40, bufferedEnd: 400 });
@@ -276,14 +280,14 @@ async function main() {
 
   // ---- 3. the user's sound decision wins ----------------------------------
   {
-    const page = makePage();
+    const page = makeWorld();
     setNative(page, { ct: 397, edge: 400, bufferedEnd: 400, muted: true });
     await pod(page); // muteIntent captured as TRUE at take-over
-    page.setNativeMuted(false); // the user unmutes while the pod owns the player
+    page.userSetsNative(false); // the user unmutes while the pod owns the player
     await settle(5);
     check('an unmute made during the pod reaches the clean player immediately', () => {
       assert(page.muteSent().includes(false), `clean player never unmuted: ${JSON.stringify(page.muteSent())}`);
-      assert(page.logsOf('mute-intent').length === 1, 'the intent change was not recorded');
+      assert(page.audio.intent('twitch').muted === false, 'the intent change was not recorded');
     });
     page.bypass({ type: 'ad-end' });
     await settle(20);
@@ -294,7 +298,7 @@ async function main() {
 
   // ---- 4. a paused player stays paused ------------------------------------
   {
-    const page = makePage();
+    const page = makeWorld();
     setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
     await pod(page);
     page.document.visibilityState = 'hidden'; // the user is in another tab
@@ -316,7 +320,7 @@ async function main() {
     });
   }
   {
-    const page = makePage();
+    const page = makeWorld();
     // The user parked the stream at 120s, THEN the pod took over.
     setNative(page, { ct: 120, edge: 400, bufferedEnd: 400, paused: true });
     await pod(page);
@@ -328,7 +332,7 @@ async function main() {
     });
   }
   {
-    const page = makePage();
+    const page = makeWorld();
     // Cold preroll: the native never played (it is at the very beginning), so
     // the hand-off must still be able to start it.
     setNative(page, { ct: 0.2, edge: 400, bufferedEnd: 40, paused: true });
@@ -412,7 +416,7 @@ async function main() {
   // ko.adlog carries 14 `overlay-nudge` events with the position going back
   // 2s each time. A live picture only ever moves forward.
   {
-    const page = makePage();
+    const page = makeWorld();
     setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
     await pod(page, { pos: 100, lat: 4 });
     // A stalled tick: no future data, so the health gate cannot pass and the
@@ -432,7 +436,7 @@ async function main() {
   // genuine tick sat at ~3.6s, so the overlay was judged unhealthy forever,
   // nudged, and stopped (`overlay-stall-stop`) — the native came back behind.
   {
-    const page = makePage();
+    const page = makeWorld();
     setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
     await pod(page, { pos: 100, lat: 3 });
     assert(page.frame.style.opacity === '1', 'precondition: the overlay is revealed');
@@ -453,7 +457,7 @@ async function main() {
   // `revealOverlay()` runs on every `st` (1/s) and re-sent `mute:true` forever;
   // his ko.adlog has 50 `reveal-muted` in 70s.
   {
-    const page = makePage();
+    const page = makeWorld();
     setNative(page, { ct: 397, edge: 400, bufferedEnd: 400, muted: true });
     await pod(page);
     const before = page.muteSent().filter((m) => m === true).length;
@@ -467,7 +471,7 @@ async function main() {
       assert(page.logsOf('reveal-muted').length <= 2, `reveal-muted logged ${page.logsOf('reveal-muted').length} times`);
     });
     // The user unmutes: the decision must survive the following heartbeats.
-    page.setNativeMuted(false, 0.97);
+    page.userSetsNative(false, 0.97);
     await settle(5);
     const idx = page.muteSent().length;
     for (let i = 0; i < 3; i++) {
@@ -505,10 +509,10 @@ async function main() {
       };
     }],
     ['mute intent tracking', PRE_FIX_INTENT, async () => {
-      const page = makePage(mutate(PRE_FIX_INTENT));
+      const page = makeWorld({ adSource: mutate(PRE_FIX_INTENT) });
       setNative(page, { ct: 397, edge: 400, bufferedEnd: 400, muted: true });
       await pod(page);
-      page.setNativeMuted(false);
+      page.userSetsNative(false);
       await settle(5);
       return {
         caught: !page.muteSent().includes(false) || page.logsOf('mute-intent').length === 0,
@@ -516,7 +520,7 @@ async function main() {
       };
     }],
     ['resume guard', PRE_FIX_RESUME, async () => {
-      const page = makePage(mutate(PRE_FIX_RESUME));
+      const page = makeWorld({ adSource: mutate(PRE_FIX_RESUME) });
       setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
       await pod(page);
       page.document.visibilityState = 'hidden';
@@ -589,7 +593,7 @@ async function main() {
       return { caught: bad, detail: `unhealthy=${page.logsOf('playing-not-healthy').length} nudges=${page.logsOf('overlay-nudge').length} stops=${page.logsOf('overlay-stall-stop').length}` };
     }],
     ['mute heartbeat', PRE_FIX_MUTE_SPAM, async () => {
-      const page = makePage(mutate(PRE_FIX_MUTE_SPAM));
+      const page = makeWorld({ adSource: mutate(PRE_FIX_MUTE_SPAM) });
       setNative(page, { ct: 397, edge: 400, bufferedEnd: 400, muted: true });
       await pod(page);
       const before = page.muteSent().filter((m) => m === true).length;
