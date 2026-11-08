@@ -15,7 +15,7 @@
 //
 // Exit 0 = PASS/SKIP/WARN only; 1 = FAIL or exception.
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -47,6 +47,25 @@ function parseArgs(argv) {
   return out;
 }
 
+// One declared root for every guest profile, and a cap so a day of runs cannot
+// pile up gigabytes (2026-11-08: 15 profiles = 1424 MiB, all disposable).
+const PROFILE_ROOT = process.env.KO_PROFILE_ROOT || 'G:/Temp/ko-harness';
+const KEEP_PROFILES = 2;
+
+function pruneProfiles(keep = KEEP_PROFILES) {
+  let names = [];
+  try {
+    names = readdirSync(PROFILE_ROOT, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && e.name !== 'profile' && e.name !== 'manual')
+      .map((e) => e.name)
+      .sort();
+  } catch (e) { console.log(`[harness] profile prune skipped: ${String(e && e.message).slice(0, 60)}`); return; }
+  const drop = names.slice(0, Math.max(0, names.length - keep));
+  for (const name of drop) {
+    try { rmSync(path.join(PROFILE_ROOT, name), { recursive: true, force: true }); } catch { /* in use */ }
+  }
+}
+
 async function guestUp(timeout = 1500) {
   try {
     const r = await fetch(`http://127.0.0.1:${PORT}/json/version`, { signal: AbortSignal.timeout(timeout) });
@@ -65,9 +84,15 @@ async function ensureGuest({ fresh = false, url = DEFAULT_URL, quiet = false } =
     stopGuest();
     await delay(1200);
   }
+  // Every profile this project creates lives under ONE root so it can be
+  // declared to the disk census (`artifact-census.py --own G:/Temp/ko-harness`,
+  // owner order 2026-11-08). A per-run directory outside a declared root is
+  // invisible to a `du` of the checkout: 15 throwaway profiles measured
+  // 1424 MiB on G: while the project read as 41 MiB.
   const udd = fresh
-    ? `G:/Temp/ko-harness-${new Date().toISOString().replace(/[:.]/g, '-')}`
-    : (process.env.KO_GUEST_UDD || 'G:/Temp/ko-harness-profile');
+    ? path.join(PROFILE_ROOT, new Date().toISOString().replace(/[:.]/g, '-'))
+    : (process.env.KO_GUEST_UDD || path.join(PROFILE_ROOT, 'profile'));
+  if (fresh) pruneProfiles(KEEP_PROFILES);
   if (!quiet) console.log(`[harness] starting guest Chrome profile=${udd}`);
   const child = spawn(process.execPath, [GUEST, 'start', url], {
     env: { ...process.env, KO_GUEST_UDD: udd, KO_GUEST_PORT: String(PORT) },

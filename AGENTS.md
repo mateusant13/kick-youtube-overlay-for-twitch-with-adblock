@@ -2,6 +2,10 @@
 ## Owner rule — ship work without paperwork drag (2026-10-31T02:59:01-03:00)
 Keep useful behavior and its minimum proof/docs moving in the same fast delivery. Skip optional process artifacts when they cost more than the change. Before agent fan-out or disk-heavy builds/tests, use `fast-land-shared-artifacts`: measure total disk growth, share the sanctioned target/cache across lanes, and serialize instead of duplicating heavy artifacts when sharing is unsafe. This owner direction supersedes older process checklists that add optional work without protecting a concrete risk; keep only minimum proof for correctness, security, data integrity, or destructive work.
 
+## Disk: this project measures its own bytes (owner order 2026-11-08)
+
+`python I:/!watcher/tools/artifact-census.py --project I:/kicktwitchyoutube_instagram --own G:/Temp/ko-harness --budget-gib 0.6 --gate` — exit 2 = above the ceiling, exit 3 = the walk was cut (never a verdict). A `du` of the checkout cannot answer this: on 2026-11-08 the repo read 41 MiB while 1424 MiB of guest Chrome profiles sat in fifteen `G:/Temp/ko-harness-*` directories. Every profile this project creates now lives under the declared root `G:/Temp/ko-harness` (`KO_PROFILE_ROOT`), `ko-harness.mjs start --fresh` prunes to the two newest, and any new store (download, model, cache) MUST be created under a declared path and added to this command with `--own`. Measured after the cleanup: 174 MiB owned, 129 MiB of it the declared store, 0 UNPROVEN.
+
 ## Skill routing (mandatory)
 
 - **`task-resolver` is the entry point for every non-trivial task** in this project, defect, feature, refactor, performance, configuration or research. Load it first, before choosing any other skill, and re-run its classification when the objective, domain or scope changes. Trivial edits (typo, rename, single-line fix) do not need it.

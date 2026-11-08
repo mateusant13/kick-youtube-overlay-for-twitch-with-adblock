@@ -11,7 +11,9 @@ import { spawn, spawnSync } from 'node:child_process';
 import { rmSync, writeFileSync, appendFileSync, mkdirSync } from 'node:fs';
 
 const CHROME = process.env.KO_CHROME || 'C:/Program Files/Google/Chrome/Application/chrome.exe';
-const UDD = process.env.KO_GUEST_UDD || 'G:/Temp/ko-guest';
+// Under the harness's declared profile root (see ko-harness.mjs) so the disk
+// census can measure it: artifact-census.py --own G:/Temp/ko-harness.
+const UDD = process.env.KO_GUEST_UDD || 'G:/Temp/ko-harness/manual';
 const EXT = process.env.KO_EXT_DIR || 'I:/kicktwitchyoutube_instagram/kick-overlay';
 const PORT = process.env.KO_GUEST_PORT || '9333';
 const URL_ = process.argv[3] || process.env.KO_GUEST_URL || 'about:blank';
