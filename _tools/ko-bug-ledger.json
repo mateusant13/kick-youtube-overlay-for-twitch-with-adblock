@@ -231,7 +231,7 @@
     {
       "id": "KO-20261026-04",
       "title": "Overlay un-pauses the owner's own YouTube video (probe resumed a player the user paused)",
-      "state": "verified",
+      "state": "fixed",
       "author": "lane",
       "reported": "2026-10-26",
       "fixed_in": "0.8.24 / 0.8.45 (per-element pause ownership in content.js)",
@@ -249,15 +249,16 @@
         "Real Chrome, guest profile 9333, 0.8.43, live twitch.tv/rodil with the native video playing (rs=4): user pause through Twitch's own play/pause button via CDP input, then 50 s (two 20 s probe ticks) sampled every 5 s -> paused true in 10/10 samples, currentTime frozen at 69.98 (drift 0). Positive arm: KO.twWasPlaying set the way syncMute sets it -> the same probe resumed the video within 20 s (paused false, ct 73.64). _evidence/KO-20261026-04-real-browser.txt",
         "Re-arm attempt 2026-11-07: 0.8.44 changed kick-overlay/content.js (the per-element `KO.twPaused` ownership set, which is the same defect class on the Twitch side of this session's report), so the freshness rule in _tools/ko-verify.mjs:521-529 no longer accepts the 2026-10-26 reachability record. Re-arming needs `node _tools/ko-real-arm-d2.mjs` on a real youtube.com watch page with a user-session; the guest profile is served a YouTube login/bot check (recorded in the gate NOT MEASURED list since 2026-10-26), so the arm cannot be taken from a guest. NOT re-run tonight, and the row is demoted instead of carrying an artifact that predates the shipped source."
       ],
-      "verified": true,
-      "verified_by": "instrument record, not an independent reviewer: node _tools/ko-real-arm-d2.mjs on a fresh headless guest, 2026-11-07T17:04Z, with the stored player preference set to the native player so the page player really plays — arm A stayed paused across 50 s, arm B resumed through the same probe path (positive control).",
+      "verified": false,
+      "verified_by": "was instrument-verified 2026-11-07T17:0xZ against 0.8.45; content.js changed after that record (0.8.46: the yt frame ready gate and the yt route resolver), and this gate refuses a record older than the source it measured.",
       "owner_validation": "pending: the same guard on his own YouTube session, where a login/bot check blocks a guest profile. The shared page-player resume path it exercises is measured here.",
-      "next": "Owner: pause a YouTube video, let the overlay probe it, confirm it stays paused. The Twitch side of the same path is measured.",
+      "next": "Re-arm after 0.8.46. The two limbs to re-measure: a user-paused YouTube native stays paused across probe(), and a video we paused is still handed back through the same path.",
       "arms_artifact": "_evidence/KO-20261026-04-arms.md",
       "verified_at": "2026-11-07",
       "reachability_artifact": "_evidence/KO-20261026-04-reachability.txt",
       "reachability_verdict": "PASS",
-      "reachability_note": "Regenerated after 0.8.45 changed content.js. The first attempt in a fresh guest returned NO-VERDICT because the overlay's own player leaves the native <video> paused by design; the arm needs the stored preference set to the native player, which the record documents as a measurement precondition."
+      "reachability_note": "Regenerated after 0.8.45 changed content.js. The first attempt in a fresh guest returned NO-VERDICT because the overlay's own player leaves the native <video> paused by design; the arm needs the stored preference set to the native player, which the record documents as a measurement precondition.",
+      "rearm_note": "re-arm: set ko.v2.player='twitch', reload the tab, then node _tools/ko-real-arm-d2.mjs. The arm's precondition (a native page player really playing) needs the guest to reach a real stream; guest prewarm was failing (prewarm.fail) on 2026-11-07T17:2xZ."
     },
     {
       "id": "KO-20261107-05",
@@ -301,6 +302,29 @@
       "verified": false,
       "owner_validation": "pending: needs one real pod on 0.8.46 with the log read afterwards",
       "next": "Read ko.adlog after the owner's next pod: overlay-catchup lat values and native-catchup lat. Decide between a 3 s ceiling on the hand-back target and a tighter catch-up threshold (5 s instead of 8 s) on that evidence, then move ad-time-continuity with it."
+    },
+    {
+      "id": "KO-20261107-07",
+      "title": "Console dump 0.8.46: a kick channel invented from a YouTube video id, commands posted into an un-navigated frame, duplicate allowfullscreen",
+      "state": "fixed",
+      "author": "lane",
+      "reported": "2026-11-07",
+      "fixed_in": "0.8.47",
+      "commit": null,
+      "hypothesis": "Three separate defects, all visible in the owner's console dump. (a) resolveYtPageKick() had two fallback tiers that invented a kick channel from a YouTube VIDEO id and from a UC channel id, so every unmapped watch page probed kick.com from the youtube.com origin, which the browser blocks; that is the repeated 'Unsafe attempt to load URL https://kick.com/api/v2/channels/<guessed> from frame with URL https://www.youtube.com/watch?...' line, twice per video. (b) overlaySend() posted with the extension origin as targetOrigin into a frame whose navigation had not committed yet, where the contentWindow still belongs to the page origin: the browser rejects the post ('Failed to execute postMessage on DOMWindow: target origin chrome-extension://... does not match the recipient window's origin https://www.twitch.tv') and the command is LOST. (c) every clean/yt/kick frame set both an `allow` attribute carrying fullscreen and the `allowFullscreen` property, which Chrome reports as 'Allow attribute will take precedence over allowfullscreen'.",
+      "falsifier": "On a YouTube watch page with no stored mapping, zero requests to kick.com may be attempted and resolveYtPageKick() must return null; a command issued before the clean frame loads must not reach postMessage and must arrive after the frame loads; and no frame may carry both an allow attribute with fullscreen and the allowFullscreen property.",
+      "evidence": [
+        "Owner console dump 2026-11-07 (twitch.tv/minifumiga + ~20 YouTube videos): ~40 'Unsafe attempt to load URL https://kick.com/api/v{1,2}/channels/<slug> from frame with URL https://www.youtube.com/watch?...' lines, the slugs being the lowercased video ids (__uw9vktm-m from __Uw9vKtm-M)",
+        "Same dump: \"Failed to execute 'postMessage' on 'DOMWindow': The target origin provided ('chrome-extension://ojdhhbnnmdhlkinhddgoikfpbhehnojc') does not match the recipient window's origin ('https://www.twitch.tv')\" twice, plus 'Allow attribute will take precedence over allowfullscreen'",
+        "Pre-fix code, kick-overlay/content.js:200-201: `if (vid) return { slug: 'host:yt:' + vid.toLowerCase(), m: { kick: vid.toLowerCase() }, via: 'videoId' }` and the UC-id tier right below it",
+        "Fix (0.8.47): both guessing tiers deleted (no match, no overlay -- the same file's own doctrine), plus plausibleKickSlug() refusing a UC-shaped or empty slug before any fetch; overlaySend queues until the overlay frame's load or its first token-valid message; ytSend queues the same way behind a koReady mark; the duplicate allowFullscreen removed from all three frame builders",
+        "kick-overlay/yt-route-test.cjs extracts the SHIPPED resolveYtPageKick/plausibleKickSlug out of content.js by brace matching and runs them: RESULT PASS checks=6 failed=0, negative arm restores the guessing tiers and is caught",
+        "kick-overlay/ad-time-continuity-test.cjs gained two arms on an un-navigated frame (makePage(SOURCE,{autoLoad:false})): nothing is posted before load, the held `load` command is flushed after it; the PRE_FIX_POST_EARLY mutation (gate disabled) is caught: RESULT PASS checks=18 failed=0",
+        "Gate: node _tools/ko-verify.mjs -> RESULT PASS checks=19 failed=0 (new yt-route check)"
+      ],
+      "verified": false,
+      "owner_validation": "pending: 0.8.47 loaded in his Chrome; the console must stay clean on YouTube videos and the mute/play commands must still land.",
+      "next": "Owner: open a few YouTube videos. Expect zero kick.com lines in the console and the same overlay behaviour."
     }
   ]
 }

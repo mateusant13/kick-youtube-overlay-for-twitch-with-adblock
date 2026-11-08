@@ -25,7 +25,10 @@ const SOURCE = fs.readFileSync(path.join(__dirname, 'twitch-adblock.js'), 'utf8'
 const PRE_FIX_MUTATION = ['if (overlay.muteIntent) {', 'if (false) {'];
 
 // ---- stubs ----------------------------------------------------------------
-function makePage(source = SOURCE) {
+// `autoLoad` models Chrome: an iframe whose extension document loads a tick
+// after it is created. Tests that need a frame which has NOT navigated (the
+// ready gate) pass `{ autoLoad: false }`.
+function makePage(source = SOURCE, { autoLoad = true } = {}) {
   const sent = []; // every {t,m,v} the page posts into the clean frame
   const pageListeners = { message: [], pointerdown: [] };
   const adLogs = []; // parsed ko-adlog decisions (see document.dispatchEvent)
@@ -102,6 +105,13 @@ function makePage(source = SOURCE) {
       if (t === 'iframe') {
         n.contentWindow = frameWindow;
         createdFrame = n;
+        if (autoLoad) {
+          setTimeout(() => {
+            for (const f of (n.listeners.load || []).slice()) {
+              try { f(); } catch { /* a load handler must not break the run */ }
+            }
+          }, 0);
+        }
       }
       if (t === 'div') createdBadge = n;
       return n;

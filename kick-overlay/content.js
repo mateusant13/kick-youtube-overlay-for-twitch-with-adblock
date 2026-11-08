@@ -197,8 +197,14 @@ function resolveYtPageKick() {
     // path's `m.kick || slug`): the kick channel named like the page.
     return { slug: 'host:yt:@' + handle, m: { kick: handle }, via: 'handle' };
   }
-  if (vid) return { slug: 'host:yt:' + vid.toLowerCase(), m: { kick: vid.toLowerCase() }, via: 'videoId' };
-  if (cid) return { slug: 'host:yt:' + cid, m: { kick: cid }, via: 'ytId-fallback' };
+  // A YouTube VIDEO id and a UC channel id are not kick handles, and the tier
+  // that derived one from the other invented a channel that cannot exist: every
+  // such page then probed https://kick.com/api/v{1,2}/channels/<guessed> from
+  // the youtube.com origin, which the browser blocks ("Unsafe attempt to load
+  // URL ... from frame with URL https://www.youtube.com/watch?...", measured in
+  // the owner console 2026-11-07, two blocked requests per video). No match,
+  // no overlay -- the doctrine three lines above already says never guess
+  // another streamer's stream onto a page.
   return null;
 }
 // Diagnostics stay inside the extension's service-worker console. Only the
@@ -237,7 +243,7 @@ const NOT_CHANNEL = new Set([
 
 // Build marker for the diag stream — lets us tell which code a tab runs
 // (content scripts of pre-reload tabs survive extension reloads).
-const KO_VER = '0.8.46';
+const KO_VER = '0.8.47';
 // ONE canonical yt state object: every reset site (boot, teardown, the
 // frame-death watchdog) must agree, or a drained/live flag survives a rebuild.
 function freshYtState() {
@@ -553,7 +559,17 @@ function updateTwLiveSticky(v) {
 // returns a stale top-level playback_url for OFFLINE channels (proven with
 // nyro — livestream:null + playback_url present → the url does not stream),
 // which used to put a dead black player over Twitch.
+// A kick channel handle: 3-25 chars, letters/digits/underscore/hyphen. Anything
+// else is not a channel, so probing kick.com for it only burns a blocked
+// cross-origin request.
+const KICK_SLUG_RE = /^[a-z0-9][a-z0-9_-]{2,24}$/i;
+function plausibleKickSlug(slug) {
+  const s = String(slug || '').trim();
+  return KICK_SLUG_RE.test(s) && !/^uc[0-9a-z_-]{22}$/i.test(s);
+}
+
 async function kickPlaybackUrl(slug) {
+  if (!plausibleKickSlug(slug)) return { live: false };
   const enc = encodeURIComponent(slug);
   const probes = [
     `https://kick.com/api/v2/channels/${enc}`,
@@ -605,11 +621,28 @@ function ytSend(o) {
   const f = document.getElementById('ko-yt');
   const token = f && f.dataset.koToken;
   if (!f || !f.contentWindow || !token) return;
+  // Before the frame's navigation commits its contentWindow still belongs to
+  // the youtube.com origin, so a post with the extension as targetOrigin is
+  // rejected and the command is dropped (owner console 2026-11-07). Queue
+  // until the frame reports in.
+  if (f.dataset.koReady !== '1') {
+    if (!KO.ytQueue) KO.ytQueue = [];
+    if (KO.ytQueue.length < 32) KO.ytQueue.push(o);
+    return;
+  }
   try {
     f.contentWindow.postMessage({ __koKick: { ...o, _koToken: token } }, PLAYER_ORIGIN);
   } catch {
     /* frame gone */
   }
+}
+
+function ytReady() {
+  const f = document.getElementById('ko-yt');
+  if (f) f.dataset.koReady = '1';
+  const q = KO.ytQueue || [];
+  KO.ytQueue = [];
+  for (const msg of q) ytSend(msg);
 }
 
 function ytCmd(cmd, arg) {
@@ -719,7 +752,11 @@ function ensureYtIframe() {
   iframe.dataset.koToken = token;
   iframe.src = chrome.runtime.getURL(`player.html?m=hls&token=${encodeURIComponent(token)}`);
   iframe.setAttribute('allow', 'autoplay; fullscreen; encrypted-media');
-  iframe.allowFullscreen = true;
+  // No `allowFullscreen`: with `allow` present the property is redundant and
+  // Chrome logs "Allow attribute will take precedence over 'allowfullscreen'"
+  // on every frame (owner console 2026-11-07).
+  KO.ytQueue = [];
+  iframe.addEventListener('load', () => { ytReady(); });
   KO.wrap.appendChild(iframe);
   // Pain 2 (0.8.6): focus is deferred to the frame's 'load' — immediately
   // after appendChild the contentWindow is still the pre-navigation context,
@@ -773,6 +810,8 @@ window.addEventListener('message', (ev) => {
   const f = document.getElementById('ko-yt');
   if (!f || ev.source !== f.contentWindow || d.__koKick._koToken !== f.dataset.koToken) return; // the yt (hls) frame only
   const m = d.__koKick;
+  // A token-valid message proves the frame has navigated; flush what was held.
+  if (f.dataset.koReady !== '1') ytReady();
   if (m.t === 'levels') {
     KO.ytState.qualities = Array.isArray(m.levels) ? m.levels : [];
     renderQualityMenu();
@@ -901,7 +940,6 @@ function kickFrame() {
   fr.dataset.koToken = token;
   fr.src = chrome.runtime.getURL(`player.html?token=${encodeURIComponent(token)}`);
   fr.setAttribute('allow', 'autoplay; fullscreen');
-  fr.allowFullscreen = true;
   KO.kickFrame = fr;
   KO.kickWin = null;
   KO.kickReady = false;

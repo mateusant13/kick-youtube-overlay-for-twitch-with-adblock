@@ -198,6 +198,24 @@ check('copy-slop.neg-arm', () => {
 // a mirrored player" is a contract that needs a test, not a comment. This runs
 // the real content.js in a stubbed DOM (owner report 2026-10-26:
 // twitch.tv/<channel>/clips left the overlay pinned over the clips grid).
+// ---- 6b-2. YouTube page -> kick channel routing (behavioural, no browser) --
+// Every YouTube watch page used to invent a kick channel out of its VIDEO id
+// and probe https://kick.com/api/v{1,2}/channels/<guessed> from the youtube.com
+// origin, which the browser blocks: two console errors per video and a channel
+// that cannot exist (owner console dump 2026-11-07, ~20 videos). This runs the
+// shipped resolver and the shipped slug guard from content.js and its negative
+// arm restores the guessing tiers.
+check('yt-route', () => {
+  const rel = 'kick-overlay/yt-route-test.cjs';
+  assert(existsSync(path.join(ROOT, rel)), `missing ${rel}`);
+  const r = spawnSync(process.execPath, [path.join(ROOT, rel)], {
+    cwd: path.join(ROOT, 'kick-overlay'),
+    encoding: 'utf8',
+  });
+  assert(r.status === 0, `${rel}: ${String(r.stderr || r.stdout || '').trim().slice(-320)}`);
+  return 'no channel invented from a video/UC id; handle + stored mapping still route';
+});
+
 check('route-gate', () => {
   const rel = 'kick-overlay/route-gate-test.cjs';
   assert(existsSync(path.join(ROOT, rel)), `missing ${rel}`);

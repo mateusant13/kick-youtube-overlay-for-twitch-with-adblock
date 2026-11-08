@@ -57,6 +57,14 @@ const PRE_FIX_RESUME = [[
 
 // 5. no cover deadline: the pre-fix timer was declared but the branch was never
 //    announced, and a bound equal to the contract cannot resolve inside it.
+// 6. no ready gate: commands are posted into a frame whose navigation has not
+//    committed, where the browser rejects them against the page's origin and
+//    the command is lost (measured as `Failed to execute 'postMessage' ...`).
+const PRE_FIX_POST_EARLY = [[
+  'if (!overlay.frameReady) {\n      if (!overlay.queue) overlay.queue = [];',
+  'if (false) {\n      if (!overlay.queue) overlay.queue = [];',
+]];
+
 const PRE_FIX_COVER = [[
   "            adLog('cold-cover-timeout', { ms: Date.now() - (overlay.coldCoverAt || Date.now()) });\n            stopAdOverlay('cold-cover-timeout');",
   "            void 0;",
@@ -275,6 +283,36 @@ async function main() {
     });
   }
 
+  // ---- 7. a command for a frame that has not navigated is held, not lost --
+  // The browser rejects a post whose targetOrigin (the extension) does not
+  // match the recipient window's origin, which is still the PAGE origin until
+  // the frame's navigation commits: "Failed to execute 'postMessage' on
+  // 'DOMWindow': The target origin provided ('chrome-extension://...') does
+  // not match the recipient window's origin ('https://www.twitch.tv')"
+  // (owner console 2026-11-07). A thrown post is a LOST command.
+  {
+    // A frame that has NOT navigated: the only way to observe the gate.
+    const page = makePage(SOURCE, { autoLoad: false });
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    page.bypass({ type: 'ad-hold' });
+    page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+    await settle(20);
+    // A second ad event with a fresher URL arrives while the frame is still
+    // loading; pre-fix this posted `load` straight into a page-origin window.
+    page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8?2', channel: 'rodil' });
+    await settle(10);
+    check('no command is posted into the clean frame before its navigation commits', () => {
+      assert(page.frame, 'the overlay frame was never created');
+      assert(page.sent.length === 0, `posted ${page.sent.length} command(s) into an un-navigated frame: ${JSON.stringify(page.sent)}`);
+    });
+    for (const f of ((page.frame.listeners.load || []).slice())) f();
+    await settle(5);
+    check('the held commands are flushed once the frame loads', () => {
+      assert(page.sent.length > 0, 'the held command was dropped instead of flushed');
+      assert(page.sent.some((m) => m && m.t === 'load'), `the load command never reached the frame: ${JSON.stringify(page.sent)}`);
+    });
+  }
+
   // ---- negative arms: the pre-fix code must fail every detector -----------
   const negatives = [
     ['catch-up scope/threshold', PRE_FIX_CATCHUP, async () => {
@@ -322,6 +360,19 @@ async function main() {
       return {
         caught: page.video.paused === false || (page.video.plays || 0) > 0,
         detail: `paused=${page.video.paused} plays=${page.video.plays || 0}`,
+      };
+    }],
+    ['frame ready gate', PRE_FIX_POST_EARLY, async () => {
+      const page = makePage(mutate(PRE_FIX_POST_EARLY), { autoLoad: false });
+      setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+      page.bypass({ type: 'ad-hold' });
+      page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+      await settle(20);
+      page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8?2', channel: 'rodil' });
+      await settle(10);
+      return {
+        caught: page.sent.length > 0,
+        detail: `pre-load posts=${JSON.stringify(page.sent)}`,
       };
     }],
     ['cover deadline', PRE_FIX_COVER, async () => {

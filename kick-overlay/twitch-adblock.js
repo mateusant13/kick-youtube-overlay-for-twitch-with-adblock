@@ -191,6 +191,14 @@
   const overlay = {
     frame: null,
     token: null,
+    // A postMessage into a frame whose navigation has not committed yet is
+    // rejected by the browser against the page's origin (`Failed to execute
+    // 'postMessage' on 'DOMWindow': target origin chrome-extension://… does not
+    // match https://www.twitch.tv`, measured in the owner console 2026-11-07)
+    // and the command is LOST. Every command therefore waits for the frame's
+    // load or for its first token-valid message.
+    frameReady: false,
+    queue: [],
     url: null,
     channel: null,
     video: null,
@@ -526,11 +534,27 @@
 
   function overlaySend(msg) {
     if (!overlay.frame || !overlay.token) return;
+    // Before the frame's navigation commits its contentWindow still belongs to
+    // the PAGE origin, so a post with the extension as targetOrigin throws and
+    // the command never arrives. Hold it until the frame reports in.
+    if (!overlay.frameReady) {
+      if (!overlay.queue) overlay.queue = [];
+      // Bounded: a frame that never loads must not grow this forever.
+      if (overlay.queue.length < 32) overlay.queue.push(msg);
+      return;
+    }
     try {
       overlay.frame.contentWindow.postMessage({ __koKick: { ...msg, _koToken: overlay.token } }, new URL(overlay.frame.src).origin);
     } catch {
       /* frame gone */
     }
+  }
+
+  function flushOverlayQueue() {
+    if (!overlay.frameReady || !overlay.frame || !overlay.token) return;
+    const q = overlay.queue || [];
+    overlay.queue = [];
+    for (const msg of q) overlaySend(msg);
   }
 
   function hideNativeVideos() {
@@ -1213,6 +1237,8 @@
         overlay.lastStAt = 0;
         overlay.standby = false;
         overlay.adActive = true;
+        overlay.frameReady = false;
+        overlay.queue = [];
       } else {
         // A second ad event with a fresher URL: reload the same frame and
         // cancel any pending ad-end grace timer from the previous pod.
@@ -1243,7 +1269,9 @@
     frame.src = `chrome-extension://${extId}/player.html?m=hls&tw=1&token=${encodeURIComponent(token)}`;
     frame.title = 'Clean Twitch stream (ad bypass)';
     frame.setAttribute('allow', 'autoplay; fullscreen; encrypted-media');
-    frame.allowFullscreen = true;
+    // No `allowFullscreen`: with an `allow` attribute present the property is
+    // redundant and Chrome logs "Allow attribute will take precedence over
+    // 'allowfullscreen'" on every frame (owner console 2026-11-07).
     // Keep the iframe composited while it is still invisible: `opacity:0`
     // made Chrome treat the clean player as occluded and hls.js never left
     // rs=0 (measured). 1% black over the native frame is imperceptible and
@@ -1251,6 +1279,8 @@
     frame.style.cssText = 'position:fixed;z-index:2147483647;border:0;background:#000;opacity:0.01;pointer-events:none;left:0;top:0;width:100%;height:100%;';
     frame.addEventListener('load', () => {
       bypassStats.frameLoads = (bypassStats.frameLoads || 0) + 1;
+      overlay.frameReady = true;
+      flushOverlayQueue();
     });
     frame.addEventListener('error', () => {
       bypassStats.frameErrors = (bypassStats.frameErrors || 0) + 1;
@@ -1259,6 +1289,8 @@
 
     overlay.frame = frame;
     overlay.token = token;
+    overlay.frameReady = false;
+    overlay.queue = [];
     overlay.url = url;
     overlay.channel = channel || null;
     overlay.video = v;
@@ -1343,6 +1375,12 @@
     overlay.onMessage = (ev) => {
       const m = ev.data && ev.data.__koKick;
       if (!m || ev.source !== overlay.frame?.contentWindow || m._koToken !== overlay.token) return;
+      // A token-valid message can only come from a frame that has navigated:
+      // the load event is the usual signal, this is the belt.
+      if (!overlay.frameReady) {
+        overlay.frameReady = true;
+        flushOverlayQueue();
+      }
       bypassStats.msgs = (bypassStats.msgs || 0) + 1;
       bypassStats.lastMsg = { t: m.t, state: m.st && m.st.state, st: m.st || null, at: Date.now() };
       if (m.t === 'ready') {
