@@ -327,37 +327,29 @@ const KO = {
 // ---- storage ----------------------------------------------------------------
 
 // Storage -> intent. The arbiter is the store; KO.kickMuted/ytMuted are its UI
-// mirror and are refreshed by the onChange hook installed in audioBoot().
-function applyVols(vols) {
-  vols = vols || {};
+// ---- storage ----------------------------------------------------------------
+// Storage is NOT the audio store. ko-audio.js persists the intent itself, per
+// tab (sessionStorage `ko.audio.v1`), because a shared row made one tab's mute
+// silence every other tab: `chrome.storage.onChanged` fed `vols` into every
+// content script, whose `applyVols()` then called setIntent (owner report
+// 2026-11-08: "mutar uma aba e todas mutarem. e vice versa"). The record no
+// longer carries `vols` at all; KO.kickMuted/kickVol/ytMuted/ytVol are the UI
+// mirror, derived from the arbiter by mirrorAudio().
+function mirrorAudio() {
   const audio = window.KOAudio;
-  const kv = vols.kick || {};
-  const yv = vols.yt || {};
-  const tv = vols.twitch || {};
-  const pv = vols.page || {};
-  const norm = (v) => Math.max(0, Math.min(1, v > 1 ? v / 100 : v));
-  if (audio) {
-    audio.setIntent('kick', {
-      muted: typeof kv.m === 'boolean' ? kv.m : undefined,
-      volume: typeof kv.v === 'number' ? norm(kv.v) : undefined,
-    });
-    audio.setIntent('yt', {
-      muted: typeof yv.m === 'boolean' ? yv.m : undefined,
-      volume: typeof yv.v === 'number' ? norm(yv.v) : undefined,
-    });
-    audio.setIntent('twitch', {
-      muted: typeof tv.m === 'boolean' ? tv.m : undefined,
-      volume: typeof tv.v === 'number' ? norm(tv.v) : undefined,
-    });
-    audio.setIntent('page', {
-      muted: typeof pv.m === 'boolean' ? pv.m : undefined,
-      volume: typeof pv.v === 'number' ? norm(pv.v) : undefined,
-    });
+  if (!audio) return;
+  const k = audio.intent('kick');
+  const y = audio.intent('yt');
+  if (KO.audioNative === 'page') {
+    const p = audio.intent('page');
+    KO.pageMuted = p.muted;
+    KO.pageVol = p.volume;
   }
-  if (typeof kv.v === 'number') KO.kickVol = norm(kv.v);
-  if (typeof kv.m === 'boolean') KO.kickMuted = kv.m;
-  if (typeof yv.v === 'number') KO.ytVol = norm(yv.v);
-  if (typeof yv.m === 'boolean') KO.ytMuted = yv.m;
+  KO.kickMuted = k.muted;
+  KO.kickVol = k.volume;
+  KO.ytMuted = y.muted;
+  KO.ytVol = y.volume;
+  updateKickVolUI();
 }
 
 function loadState() {
@@ -368,13 +360,13 @@ function loadState() {
       KO.enabled = s.enabled === undefined ? true : !!s.enabled;
       KO.adblock = s.adblock === undefined ? true : !!s.adblock;
       KO.player = s.player === 'twitch' ? 'twitch' : s.player === 'youtube' ? 'youtube' : 'kick';
-      // Fresh profile (nothing stored yet): never emit audio until the user
-      // chooses — an EXISTING stored mute choice is applied by applyVols and
-      // must not be clobbered here.
-      if (!o || !o[KEY]) KO.kickMuted = true;
+      // Every surface starts audible: a mute nobody chose (the old
+      // `kickMuted = true` seed) was inherited by the next player on every
+      // swap. "One at a time" is the arbiter's rule, not a default mute.
+      if (!o || !o[KEY]) mirrorAudio();
       KO.playerPreference = KO.player;
       KO.mappings = s.mappings && typeof s.mappings === 'object' ? s.mappings : {};
-      applyVols(s.vols);
+      mirrorAudio();
       res();
     });
   });
@@ -392,23 +384,10 @@ function saveState(persistPlayer = false) {
       adblock: KO.adblock !== false,
       mappings: KO.mappings,
       // The YouTube fallback changes KO.player for this session only.
+      // NO audio here: ko-audio.js persists the intent per tab (sessionStorage
+      // `ko.audio.v1`). A `vols` row in this shared record is exactly what made
+      // one tab's mute reach every other tab through storage.onChanged.
       player: KO.playerPreference,
-      vols: (() => {
-        const a = window.KOAudio;
-        const k = a ? a.intent('kick') : { muted: KO.kickMuted, volume: KO.kickVol };
-        const y = a ? a.intent('yt') : { muted: KO.ytMuted, volume: KO.ytVol };
-        const t = a ? a.intent('twitch') : { muted: false, volume: 1 };
-        const p = a ? a.intent('page') : { muted: false, volume: 1 };
-        // The page's own surface keeps its own row: without it the extension had
-        // no record of the user's choice on the Twitch player and had to guess
-        // by snapshotting the element at every swap.
-        return {
-          kick: { v: k.volume, m: k.muted },
-          yt: { v: y.volume, m: y.muted },
-          twitch: { v: t.volume, m: t.muted },
-          page: { v: p.volume, m: p.muted },
-        };
-      })(),
     };
     if (typeof KO.playerAt === 'number') rec.playerAt = KO.playerAt;
     chrome.storage.local.set({ [KEY]: rec }, () => {
@@ -494,7 +473,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
       KO.ytId = null;
     }
   }
-  applyVols(s.vols);
+  mirrorAudio();
   if (pChanged) fire(apply); // hot toggle / remap / player switch — no page reload
 });
 
@@ -1396,7 +1375,6 @@ function enforceOverlayRendering(shown) {
 function audioBoot() {
   const audio = window.KOAudio;
   if (!audio) return false;
-  audio.setPersister(() => saveState(false));
   // The page's own <video> is a surface of its OWN per host: a decision made on
   // Twitch must never silence the YouTube page the extension happens to be
   // overlaying (different player, different volume scale).
@@ -1420,20 +1398,8 @@ function audioBoot() {
   // KO.kickMuted/kickVol/ytMuted/ytVol stay as the UI mirror of the intent
   // store (the bar, the popup and the badge read them); they are derived, never
   // authoritative.
-  audio.onChange(() => {
-    const k = audio.intent('kick');
-    const y = audio.intent('yt');
-    if (KO.audioNative === 'page') {
-      const p = audio.intent('page');
-      KO.pageMuted = p.muted;
-      KO.pageVol = p.volume;
-    }
-    KO.kickMuted = k.muted;
-    KO.kickVol = k.volume;
-    KO.ytMuted = y.muted;
-    KO.ytVol = y.volume;
-    updateKickVolUI();
-  });
+  audio.onChange(mirrorAudio);
+  mirrorAudio();
   return true;
 }
 
