@@ -28,12 +28,14 @@ function log(...a) {
 }
 
 function killTree() {
-  // Match both profile families: ko-guest* (manual guest) and ko-harness-*
-  // (fresh profiles created by the diagnostic harness). Leaving an old harness
-  // Chrome alive kept port 9333 and served STALE extension files, which made
-  // fresh-profile tests silently exercise the previous build.
+  // Match BOTH profile families (ko-guest*, ko-harness-*) but only the browser
+  // that owns OUR debug port. Leaving an old harness Chrome alive kept port
+  // 9333 and served STALE extension files; killing by profile name instead
+  // killed OTHER lanes' browsers mid-measurement (measured 2026-11-09: two
+  // lanes lost their guest and one lost a running parity protocol to a `stop`
+  // issued for an unrelated port).
   const ps = 'Get-CimInstance Win32_Process -Filter "Name=\'chrome.exe\'" | ' +
-    "Where-Object { $_.CommandLine -like '*ko-guest*' -or $_.CommandLine -like '*ko-harness*' } | " +
+    `Where-Object { $_.CommandLine -like '*--remote-debugging-port=${PORT}*' } | ` +
     'ForEach-Object { taskkill /PID $($_.ProcessId) /T /F 2>&1 | Out-Null }';
   try {
     // windowsHide: a console-subsystem child spawned from a console-less parent
@@ -78,6 +80,13 @@ const args = [
   '--disable-background-timer-throttling',
   '--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling',
   '--mute-audio',
+  // Disk and renderer ceiling (watcher DM dm-d863c58ce100ac7d0843, 2026-11-09:
+  // a guest doubled 15 procs/1.44 GB -> 31 procs/3.06 GB in twenty minutes on a
+  // box the owner was already seeing black tabs on). A bounded cache keeps the
+  // profile from growing without limit, and one visible page keeps the renderer
+  // count flat.
+  '--disk-cache-size=268435456',
+  '--renderer-process-limit=4',
   '--autoplay-policy=no-user-gesture-required',
   ...(HEADLESS ? ['--headless=new', '--disable-gpu'] : ['--window-position=-32000,-32000', '--window-size=1366,900']),
   // A headless page has no user gesture, so Chrome's autoplay policy refuses

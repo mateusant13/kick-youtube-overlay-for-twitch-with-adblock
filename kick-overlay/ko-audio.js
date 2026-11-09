@@ -16,7 +16,8 @@
 //     volume(surface) = intent[surface].volume
 //
 //   intent   the USER's choice for that surface. Persisted. Only a real gesture
-//            sets it (a volumechange we did not write, the popup, the badge).
+//            sets it (a volumechange we did not write that arrives right after
+//            a real input, the popup, the badge).
 //   policy   silence the BROWSER forced (autoplay refused). Never read back as
 //            intent, cleared by a gesture.
 //   visible  the one surface being listened to. Exactly one, or none.
@@ -40,9 +41,14 @@
   const TTL = 700;            // a write this young is OURS, not the user's
   const VOL_EPS = 0.02;       // volume granularity below which nothing changes
 
+  // Every surface starts AUDIBLE. A default `muted: true` is a decision the
+  // user never made, and it becomes the state of whatever player a swap brings
+  // in (owner report 2026-11-09: "acabou de trocar o player e MUTAR a live do
+  // player novo sozinho"). "Only one surface is heard" is the job of
+  // `visibleNow() !== surface` below, not of a mute default.
   const intents = {
     twitch: { muted: false, volume: 1 },
-    kick: { muted: true, volume: 1 },
+    kick: { muted: false, volume: 1 },
     yt: { muted: false, volume: 1 },
   };
   const writers = Object.create(null);   // surface -> { kind, ... }
@@ -55,11 +61,58 @@
   let claimed = null;                    // a surface that COVERS the page (the ad
                                          // path's clean player); wins while set
   const visibleNow = () => claimed || requested;
-  let persist = () => {};
   let listening = false;
-
-  const clamp = (v) => Math.max(0, Math.min(1, Number(v)));
+  // TAB SCOPE. The intent is the user's choice FOR THIS TAB: two Twitch tabs are
+  // two independent sound decisions (owner report 2026-11-08: "mutar uma aba e
+  // todas mutarem. e vice versa"). It used to live in the shared `ko.v2` record,
+  // so every tab applied every other tab's mute through storage.onChanged; here
+  // it is persisted per tab (sessionStorage survives a reload, never crosses a
+  // tab) and the shared record carries no audio at all.
+  const TAB_KEY = 'ko.audio.v1';
+  const tabStore = () => {
+    try {
+      return window.sessionStorage || null;
+    } catch {
+      return null; // storage denied (sandboxed frame): in-memory for this tab
+    }
+  };
   const isNum = (v) => typeof v === 'number' && isFinite(v);
+  const clamp = (v) => Math.max(0, Math.min(1, Number(v)));
+
+  // Restore this tab's own choices. Runs once, before the object is exported.
+  function restoreTab() {
+    const store = tabStore();
+    if (!store) return;
+    let rec = null;
+    try {
+      rec = JSON.parse(store.getItem(TAB_KEY) || 'null');
+    } catch {
+      rec = null;
+    }
+    if (!rec || typeof rec !== 'object') return;
+    for (const key of Object.keys(rec)) {
+      const v = rec[key];
+      if (!v || typeof v !== 'object') continue;
+      const it = intents[key] || (intents[key] = { muted: false, volume: 1 });
+      if (typeof v.m === 'boolean') it.muted = v.m;
+      if (isNum(v.v)) it.volume = clamp(v.v);
+    }
+  }
+
+  function persistTab() {
+    const store = tabStore();
+    if (!store) return;
+    const rec = {};
+    for (const key of Object.keys(intents)) {
+      rec[key] = { m: !!intents[key].muted, v: clamp(intents[key].volume) };
+    }
+    try {
+      store.setItem(TAB_KEY, JSON.stringify(rec));
+    } catch {
+      /* quota/denied: the in-memory intent still holds for this page */
+    }
+  }
+
   const surfaceOf = (s) => shares[s] || s;
 
   function intentOf(surface) {
@@ -169,11 +222,27 @@
     return KOAudio;
   }
 
+  // The swap carries the user's sound. Owner rule 2026-11-09, verbatim:
+  // "se antes tava desmutado > vai pra desmutado no player. e vice versa."
+  // The incoming surface inherits the outgoing one's decision, so replacing the
+  // player never invents a mute (and never invents sound either).
+  function inheritState(from, to) {
+    if (!from || !to || surfaceOf(from) === surfaceOf(to)) return;
+    const src = intentOf(from);
+    const dst = intentOf(to);
+    if (dst.muted === !!src.muted && Math.abs(dst.volume - clamp(src.volume)) <= VOL_EPS) return;
+    dst.muted = !!src.muted;
+    dst.volume = clamp(src.volume);
+    persistTab();
+  }
+
   // The surface the extension's own layers show. Overridden by a claim.
   function setVisible(surface) {
     const next = surface || null;
     if (next === requested) return KOAudio;
+    const prev = requested;
     requested = next;
+    inheritState(prev, next);
     apply();
     notify();
     return KOAudio;
@@ -209,18 +278,7 @@
       apply();
       notify();
     }
-    if (changed && opts && opts.persist) {
-      try {
-        persist();
-      } catch {
-        /* storage is best-effort */
-      }
-    }
-    return KOAudio;
-  }
-
-  function setPersister(fn) {
-    if (typeof fn === 'function') persist = fn;
+    if (changed) persistTab();
     return KOAudio;
   }
 
@@ -229,13 +287,63 @@
     return KOAudio;
   }
 
+  // ---- gesture freshness --------------------------------------------------
+  // `navigator.userActivation.hasBeenActive` is STICKY: once the owner clicked
+  // anywhere (chat, the volume bar) it stays true for the life of the page, so
+  // it cannot tell his click from Twitch's player muting itself on an ad a
+  // minute later. Owner report 2026-11-09: "ta mutando de forma aleatoria essa
+  // merda. tentei falar com um streamer e mutou sozinho".
+  //
+  // What separates the two is FRESHNESS: a human gesture and the volumechange
+  // it causes are delivered in the same task, a few ms apart. INPUT_FRESH_MS is
+  // 1200 ms = three of content.js's 400 ms RECT_MS enforcement ticks (and two
+  // of the ad path's 500 ms positionOverlay ticks): enough for a slow frame or
+  // a queued event, yet shorter than the ad path's 1500 ms unmute-check delay
+  // and about one player-bridge heartbeat (1000 ms), so a machine write that
+  // lands later is not attributable to the gesture.
+  const INPUT_FRESH_MS = 1200;
+  const INPUT_EVENTS = ['pointerdown', 'mousedown', 'keydown', 'wheel', 'touchstart', 'click'];
+  let lastInputAt = 0;
+  function markInput() {
+    lastInputAt = Date.now();
+  }
+  function installInputClock() {
+    const targets = [];
+    if (typeof window !== 'undefined' && window && typeof window.addEventListener === 'function') targets.push(window);
+    if (typeof document !== 'undefined' && document && typeof document.addEventListener === 'function') targets.push(document);
+    for (const target of targets) {
+      for (const type of INPUT_EVENTS) {
+        try {
+          target.addEventListener(type, markInput, { capture: true, passive: true });
+        } catch {
+          /* an engine without capture must not break the arbiter */
+        }
+      }
+    }
+  }
+
   // A volumechange that we did not write is the ONLY signal carrying the user's
   // decision. Read it from the surface's main element only: Twitch fires the
   // same event from preview/PBP videos and from its own ad element, and none of
   // those are the user talking.
+  // Has this tab ever seen a real user activation? Chrome's own autoplay mute
+  // fires a volumechange without one; Twitch's volume button cannot. This is a
+  // SECOND, non-decisive signal: it can veto an event, never decide one.
+  function userActive() {
+    try {
+      const nav = (typeof window !== 'undefined' && window.navigator) || (typeof navigator !== 'undefined' ? navigator : null);
+      const ua = nav && nav.userActivation;
+      if (ua && typeof ua.hasBeenActive === 'boolean') return ua.hasBeenActive;
+    } catch {
+      /* older engine: no signal */
+    }
+    return true; // no signal must not silence the feature: assume the user
+  }
+
   function installGestureReader() {
     if (listening || typeof document === 'undefined') return;
     listening = true;
+    installInputClock();
     document.addEventListener('volumechange', (ev) => {
       const el = ev && ev.target;
       if (!el || el.tagName !== 'VIDEO' || !el.isConnected) return;
@@ -256,10 +364,33 @@
         }
       }
       if (!owner) return; // not a surface's main element: not a user decision
+      // Only a FRESH input can have produced this volumechange. A stale one is
+      // the machine: Twitch's player muting itself on an ad, the ad path's
+      // claim silencing the page, or the player restarting. Recording it as
+      // intent persisted the mute per tab and the next player inherited it —
+      // the owner's "it muted by itself".
+      const fresh = Date.now() - lastInputAt <= INPUT_FRESH_MS;
+      if (!fresh) {
+        apply();
+        return;
+      }
+      // Second, non-decisive signal: a tab that has never seen activation
+      // cannot have a real gesture (Chrome silencing an autoplay). It can veto
+      // the event above, never decide it.
+      if (!userActive()) {
+        // Machine-driven: a player that muted itself, or Chrome's autoplay
+        // policy. Neither is the user's choice, so it must not become one; and
+        // it must not silence the surface either, because the intent says the
+        // user wants sound. Re-assert the derived state instead: the surface
+        // goes back to what the user left it at.
+        apply();
+        return;
+      }
+      policy.delete(owner);
       const patch = { muted: !!el.muted, volume: Number(el.volume) };
-      setIntent(owner, patch, { persist: true, silent: true });
+      setIntent(owner, patch, { silent: true });
       const now = visibleNow();
-      if (now && now !== owner) setIntent(now, patch, { persist: true, silent: true });
+      if (now && now !== owner) setIntent(now, patch, { silent: true });
       apply();
       notify();
     }, true);
@@ -284,9 +415,10 @@
     // ---- wiring
     register,
     registerNative,
-    setPersister,
     onChange,
   };
+
+  restoreTab();
 
   try {
     Object.defineProperty(window, 'KOAudio', { value: KOAudio, enumerable: true });

@@ -346,6 +346,25 @@ check('ad-time-continuity', () => {
   return 'reveal at real time + hand-off at the same offset + user mute intent + no resume of a paused/hidden player; four pre-fix arms go RED';
 });
 
+// ---- 6d. per-tab audio scope (owner report 2026-11-08) --------------------
+// "mutar uma aba e todas mutarem. e vice versa." The intent lived in the shared
+// `ko.v2` record and every tab's storage.onChanged fed it back into that tab's
+// arbiter, so one tab's mute reached all of them. This runs the real ko-audio.js
+// in one world per simulated tab and requires: A's gesture never reaches B, a
+// reload restores only its own choice, a fresh tab starts clean, and the shared
+// record carries no audio — with a positive control and two source mutations
+// proving the fence fires.
+check('tab-audio-scope', () => {
+  const rel = 'kick-overlay/tab-audio-scope-test.cjs';
+  assert(existsSync(path.join(ROOT, rel)), `missing ${rel}`);
+  const r = spawnSync(process.execPath, [path.join(ROOT, rel)], {
+    cwd: path.join(ROOT, 'kick-overlay'),
+    encoding: 'utf8',
+  });
+  assert(r.status === 0, `${rel}: ${String(r.stderr || r.stdout || '').trim().slice(-320)}`);
+  return 'one tab gesture stays in that tab; shared record carries no audio; positive control + 2 mutations';
+});
+
 // ---- 7. bug ledger -------------------------------------------------------
 // States are explicit. `fixed` is allowed; `verified` needs an independent
 // verifier, and `arm-verified` is the narrower claim: the negative arm was

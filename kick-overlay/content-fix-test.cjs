@@ -265,7 +265,9 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
   // fullscreen (owner console 2026-11-07).
   assert.ok(!src.includes('allowFullscreen = true'), 'no builder sets the redundant allowFullscreen property');
   assert.ok(src.includes("allow', 'autoplay; fullscreen; encrypted-media'") || src.includes("allow', 'autoplay; fullscreen"), 'the allow attribute carries fullscreen');
-  assert.ok(src.includes('if (!v.paused)') && src.includes('v.pause();'), 'native Twitch video is paused under overlay');
+  // 0.8.50: the tick pauses ONLY a playing native and records ownership per
+  // element (a video the user parked is not ours to resume).
+  assert.ok(src.includes('if (v.paused) continue;') && src.includes('KO.twPaused.add(v);'), 'native Twitch video is paused under overlay (only the ones actually playing, ownership recorded)');
   assert.ok(bridgeSrc.includes("case 'quality':") && bridgeSrc.includes('setAutoQualityMode'), 'quality command reaches both player engines');
   console.log('A injectStyles: style appended, bar/seek/offline CSS — OK');
 
@@ -909,11 +911,17 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
   mKO.wrap.style.display = 'block';
   mountApi.syncMute();
   assert.strictEqual(nativeVideo.paused, true, 'overlay pauses Twitch playback');
-  assert.strictEqual(nativeVideo.muted, true, 'overlay mutes Twitch playback');
+  // 0.8.50: content.js is NOT allowed to write a mute or a volume — ko-audio.js
+  // is the single authority, and the two writers this used to be are exactly
+  // what reverted the owner's unmute within 400 ms.
+  assert.strictEqual(nativeVideo.muted, false, 'content.js leaves the native mute alone (ko-audio.js owns it)');
+  const elementAudioWrites = src.split('\n').filter((l) => !l.trim().startsWith('//')
+    && /\b(v|el|video|native|hidden|vid)\.(muted|volume)\s*=[^=]/.test(l));
+  assert.strictEqual(elementAudioWrites.length, 0, 'no element.muted/.volume write anywhere in content.js');
   mKO.wrap.style.display = 'none';
   mountApi.rectTick();
   assert.strictEqual(nativeVideo.paused, false, 'hidden failed overlay resumes Twitch playback');
-  assert.strictEqual(nativeVideo.muted, false, 'hidden failed overlay unmutes Twitch playback');
+  assert.strictEqual(nativeVideo.muted, false, 'still no mute write on the way out');
   fakeVideos.length = 0;
   console.log('M fs icon: mount assigns KO_SVG.fs to #ko-fs — OK');
 
@@ -922,8 +930,11 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
   // updateKickBar() only when the playhead sits behind the edge (lat ≥ 1
   // arrow step) or on the DVR url; clicking jumps to live via the bridge.
   const p3posts = [];
-  const fakeFrameKick = { ...el('iframe'), id: 'ko-ivs', dataset: { koToken: 'p3kick' }, contentWindow: { postMessage: (m) => p3posts.push(m) } };
-  fakeFrame = { ...el('iframe'), id: 'ko-yt', dataset: { koToken: 'p3yt' }, contentWindow: { postMessage: (m) => p3posts.push(m) } };
+  // koReady models a COMMITTED navigation: 0.8.47 queues commands until the
+  // frame reports in, and a frame object re-created without its `load` event
+  // would sit in that queue forever (harness artifact, not a code path).
+  const fakeFrameKick = { ...el('iframe'), id: 'ko-ivs', dataset: { koToken: 'p3kick', koReady: '1' }, contentWindow: { postMessage: (m) => p3posts.push(m) } };
+  fakeFrame = { ...el('iframe'), id: 'ko-yt', dataset: { koToken: 'p3yt', koReady: '1' }, contentWindow: { postMessage: (m) => p3posts.push(m) } };
   mountApi.mount();
   assert.ok(mKO.wrap, 'mountApi exposed for the pill test');
   const goliveP3 = mKO.wrap.querySelector('#ko-golive');
@@ -1109,19 +1120,18 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   const t3b = R();
   assert.strictEqual(t3b.via, 'handle', 'tier 3b: synthetic same-handle');
   assert.strictEqual(t3b.slug, 'host:yt:@spreen', 'tier 3b synthetic host-scoped slug');
-  // Tier 4: videoId fallback (watch page, no metadata).
+  // Tiers 4 and 5 do NOT exist (0.8.47). A YouTube video id or a UC channel id
+  // is not a kick handle: deriving one invented a channel and made the page
+  // request kick.com/api/v{1,2}/channels/<guessed> from the youtube.com origin,
+  // which Chrome blocked twice per video (owner console 2026-11-07). No match,
+  // no overlay — the assertion is the ABSENCE of a guess.
   KO.mappings = {};
   R_setYt({});
-  assert.strictEqual(R().via, 'videoId', 'tier 4: watch videoId fallback');
-  assert.strictEqual(R().slug, 'host:yt:zzzzzz', 'tier 4 host:yt:<videoId> slug');
-  // Tier 5: ytId fallback (metadata UC only, untracked channel). A non-watch
-  // page (channel page) carries channelId but no video id.
+  assert.strictEqual(R(), null, 'no videoId-derived kick channel');
   KO.mappings = {};
   R_setYt({ cid: 'UCDDDDDDDDDDDDDDDDDDDDDD' });
   Object.assign(global.location, { hostname: 'www.youtube.com', pathname: '/channel/UCDDDDDDDDDDDDDDDDDDDDDD', search: '' });
-  const t5 = R();
-  assert.strictEqual(t5 && t5.via, 'ytId-fallback', 'tier 5: bare ytId fallback');
-  assert.strictEqual(t5.slug, 'host:yt:UCDDDDDDDDDDDDDDDDDDDDDD', 'tier 5 host:yt:<UC> slug');
+  assert.strictEqual(R(), null, 'no UC-derived kick channel');
   // Unknown /@handle page -> synthetic same-handle (still a valid identity).
   R_setYt({ handle: 'xyz' });
   Object.assign(global.location, { pathname: '/@xyz', search: '' });
@@ -1197,7 +1207,11 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   KO.player = 'kick';
   KO.slug = 'rodil';
   KO.kickSlug = 'realkick';
-  KO.mappings = { rodil: { kick: 'realkick', yt: '@x' } };
+  // The row carries a STORED ytId: the storage listener mirrors the row into
+  // the live state on every change (`KO.ytId = m.ytId || null`), and with no
+  // stored id the flip would go through the background resolver — out of
+  // scope here and stubbed to "unresolved" in this harness.
+  KO.mappings = { rodil: { kick: 'realkick', yt: '@x', ytId: 'UCRRRRRRRRRRRRRRRRRRRRRR' } };
   KO.ytRaw = '@x';
   KO.ytId = 'UCRRRRRRRRRRRRRRRRRRRRRR';
   const T_VIDEO = videoEl('tw-main-video');
@@ -1213,7 +1227,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   KO.ytHlsUrl = 'https://hls.example/live-flip';
   KO.ytHlsAt = Date.now();
   KO.ytState = { ready: true, live: true, playing: true, muted: false, ct: 5, dur: 60, lat: 2 };
-  fakeFrame = { ...el('iframe'), id: 'ko-yt', dataset: { koToken: 't' }, contentWindow: { postMessage() {} } };
+  fakeFrame = { ...el('iframe'), id: 'ko-yt', dataset: { koToken: 't', koReady: '1' }, contentWindow: { postMessage() {} } };
   // Mount a kick layer, then flip to youtube via a storage player change.
   await api.probe();
   assert.ok(KO.wrap, 'flip: wrap is mounted after the kick probe');
@@ -1268,12 +1282,18 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   await api.loadState();
   assert.strictEqual(KO.kickMuted, true, 'first run defaults kickMuted:true (owner: no audio leaks)');
   KO.kickMuted = true;
-  storage.ko = { vols: { kick: { v: 0.4, m: false } } };
+  // Audio intent is TAB-LOCAL (ko-audio.js, sessionStorage). The shared record
+  // must carry no audio: a row here is what made one tab's mute reach every
+  // other tab through storage.onChanged (owner report 2026-11-08).
+  storage.ko = { vols: { kick: { v: 0.4, m: false }, twitch: { v: 0.2, m: true } } };
   await api.loadState();
-  assert.strictEqual(KO.kickMuted, false, 'a stored muted:false choice is NOT clobbered');
-  assert.strictEqual(KO.kickVol, 0.4, 'stored kick volume applied');
+  assert.strictEqual(KO.kickMuted, true, "another tab's stored volumes do NOT reach this tab's intent");
+  assert.strictEqual(KO.kickVol, 1, 'and do not change this tab volume');
+  storage.ko = { enabled: true, player: 'kick', mappings: {} };
+  const savedRec = await new Promise((res) => api.saveState(false).then(() => res(storage.ko)));
+  assert.ok(savedRec && !('vols' in savedRec), 'the shared record carries NO vols field');
   storage.ko = undefined;
-  console.log('U mute: first-run kickMuted:true; stored muted:false preserved — OK');
+  console.log('U mute: first-run kickMuted:true; shared record carries no audio — OK');
 
   // ---- V: levels -> vertical quality menu -> setLevel ----------------------
   // Reuse the mountApi's real id-tree: renderQualityMenu reads #ko-quality-menu.
@@ -1452,7 +1472,10 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   KO.playerPreference = 'kick';
   KO.slug = 'rodil';
   KO.kickSlug = 'realkick'; // a REAL kick mapping: the handover gate is armed
-  KO.mappings = { rodil: { kick: 'realkick', yt: '@x' } };
+  // The row carries the UC id: the storage listener mirrors the row into the
+  // live state on every change, so a row without it would erase KO.ytId and
+  // route the flip through the (unstubbed) background resolver.
+  KO.mappings = { rodil: { kick: 'realkick', yt: '@x', ytId: 'UCXXXXXXXXXXXXXXXXXXXXXX' } };
   KO.ytRaw = '@x';
   KO.ytId = 'UCXXXXXXXXXXXXXXXXXXXXXX';
   KO.twDeleted = false;
@@ -1549,6 +1572,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   KO.kickFrame = null; KO.kickWin = null;
   fakeFrame = { ...el('iframe'), contentWindow: { postMessage: (m) => framePosts.push(m) } };
   fakeFrame.dataset.koToken = 'p1yt';
+  fakeFrame.dataset.koReady = '1'; // committed navigation (see the 0.8.47 ready gate)
   doc.getElementById = (id) => (id === 'ko-yt' ? fakeFrame : null);
   KO.ytState = { ready: true, live: true, playing: true, muted: false, ct: 40, dur: 60, lat: 7 }; // edge = 47
   framePosts.length = 0;
@@ -1648,6 +1672,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   KO.kickFrame = null; KO.kickWin = null;
   fakeFrame = { ...el('iframe'), contentWindow: { postMessage: (m) => framePosts.push(m) } };
   fakeFrame.dataset.koToken = 'p1cy';
+  fakeFrame.dataset.koReady = '1';
   doc.getElementById = (id) => (id === 'ko-yt' ? fakeFrame : null);
   framePosts.length = 0;
   api.onOverlayKeydown({
@@ -1680,7 +1705,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   KO.wrap = wrap;
   KO.ytState = { ready: true, live: true, playing: true, muted: false, ct: 40, dur: 60, lat: 7 };
   KO.kickFrame = null; KO.kickWin = null;
-  fakeFrame = { ...el('iframe'), id: 'ko-yt', dataset: { koToken: 'p2yt' }, contentWindow: { postMessage: (m) => framePosts.push(m) } };
+  fakeFrame = { ...el('iframe'), id: 'ko-yt', dataset: { koToken: 'p2yt', koReady: '1' }, contentWindow: { postMessage: (m) => framePosts.push(m) } };
   doc.getElementById = (id) => (id === 'ko-yt' ? fakeFrame : null);
   framePosts.length = 0;
   msgListeners.forEach((listener) => listener({
@@ -1699,7 +1724,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   KO.kickOnDvr = false;
   KO.activeUrl = 'https://ivs.example/live-p2c';
   KO.kickState = { state: 'Playing', pos: 100, lat: 1, dur: 200 , ts: Date.now() };
-  fakeFrame = { ...el('iframe'), id: 'ko-ivs', dataset: { koToken: 'p2ck' }, contentWindow: { postMessage: (m) => framePosts.push(m) } };
+  fakeFrame = { ...el('iframe'), id: 'ko-ivs', dataset: { koToken: 'p2ck', koReady: '1' }, contentWindow: { postMessage: (m) => framePosts.push(m) } };
   KO.kickFrame = fakeFrame; KO.kickWin = fakeFrame.contentWindow;
   doc.getElementById = () => null; // no ko-yt in this world -> kick listener owns it
   framePosts.length = 0;
@@ -1730,7 +1755,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   KO.wrap = wrap;
   KO.ytState = { ready: true, live: true, playing: true, muted: false, ct: 40, dur: 60, lat: 7 };
   KO.kickFrame = null; KO.kickWin = null;
-  fakeFrame = { ...el('iframe'), id: 'ko-yt', dataset: { koToken: 'p2dyt' }, contentWindow: { postMessage: (m) => framePosts.push(m) } };
+  fakeFrame = { ...el('iframe'), id: 'ko-yt', dataset: { koToken: 'p2dyt', koReady: '1' }, contentWindow: { postMessage: (m) => framePosts.push(m) } };
   doc.getElementById = (id) => (id === 'ko-yt' ? fakeFrame : null);
   framePosts.length = 0;
   api.onOverlayKeydown({

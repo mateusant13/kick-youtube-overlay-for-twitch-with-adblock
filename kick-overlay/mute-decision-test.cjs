@@ -345,9 +345,11 @@ function makeWorld(opts, extra) {
       if (ch && ch.onmessage) ch.onmessage({ data: { page: pageId, ...msg } });
     },
     stats: () => window.__koTwitchAdblockStats,
-    // A USER gesture on the page's own volume control: the element changes, the
-    // browser fires volumechange, and the authority is the only reader.
+    // A USER gesture on the page's own volume control: the click (the input
+    // event the arbiter times) comes first, then the element changes and the
+    // browser fires volumechange. The authority is the only reader.
     userSetsNative(muted, volume) {
+      document.fire({ type: 'pointerdown' });
       if (typeof muted === 'boolean') video.muted = muted;
       if (Number.isFinite(volume)) video.volume = volume;
       document.fire({ type: 'volumechange', target: video });
@@ -568,7 +570,56 @@ async function main() {
     });
   }
 
-  // ---- 9: negative arm. The detector must see a broken authority. --------
+  // ---- 9: every overlay exit releases the ad claim ------------------------
+  // A revealed standby owns the claim. A source switch can null overlay.frame
+  // and then return before building the replacement (the native <video> is
+  // gone); ad-end then takes the frame-less teardown, which used to return
+  // without claim(null) and left the page silent until the user touched the
+  // volume bar. The pre-fix arm removes that release and must go RED.
+  {
+    const drive = async (source) => {
+      const page = makeWorld(source ? { adSource: source } : undefined);
+      page.userSetsNative(false, 1); // audible intent
+      page.bypass({ type: 'standby-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+      await settle(20);
+      page.frameMsg({ t: 'ready' });
+      for (let i = 0; i < 3; i++) page.frameMsg(healthySt());
+      await settle(20);
+      page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+      await settle(20);
+      const claimed = page.audio.visible() === 'ad';
+      // The native player goes away mid-switch: startAdOverlay() nulls
+      // overlay.frame and returns without building a replacement.
+      page.video.getBoundingClientRect = () => ({ left: 0, top: 0, width: 0, height: 0 });
+      page.bypass({ type: 'ad-start', url: 'https://clean.example/next.m3u8', channel: 'rodil', switch: true });
+      await settle(20);
+      page.bypass({ type: 'ad-end' });
+      await settle(60);
+      return {
+        claimed,
+        visible: page.audio.visible(),
+        nativeMuted: page.video.muted,
+        intent: page.audio.intent('twitch').muted,
+      };
+    };
+    const fixed = await drive(null);
+    check('every overlay exit releases the ad claim (frame-less teardown included)', () => {
+      assert(fixed.claimed, 'the revealed standby never claimed the page');
+      assert(fixed.visible === 'twitch', `visible after teardown: ${fixed.visible}`);
+      assert(fixed.nativeMuted === false, `native stayed muted=${fixed.nativeMuted} after teardown`);
+      assert(fixed.intent === false, 'the machine teardown wrote intent');
+    });
+    const mutated = AD.replace('    audioClaim(false);\n    if (!overlay.frame) {', '    if (!overlay.frame) {');
+    check('mutation: dropping the claim release on the frame-less exit is caught', () => {
+      assert(mutated !== AD, 'the release site was not found');
+    });
+    const red = await drive(mutated);
+    check('mutation: the pre-fix frame-less teardown leaves the page silent (RED)', () => {
+      assert(red.visible === 'ad', `the pre-fix teardown released the claim (visible=${red.visible}): the arm is not live`);
+    });
+  }
+
+  // ---- 10: negative arm. The detector must see a broken authority. -------
   {
     const mutated = AUDIO.split(PRE_FIX_MUTATION[0]).join(PRE_FIX_MUTATION[1]);
     check('negative arm: the pre-fix mutation applied', () => {

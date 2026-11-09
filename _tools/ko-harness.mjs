@@ -76,12 +76,89 @@ async function guestUp(timeout = 1500) {
   } catch { return false; }
 }
 
-function stopGuest() {
+// A guest Chrome that survives its own `stop` keeps the debug PORT bound, and
+// the next start cannot open the devtools http server at all: measured
+// 2026-11-09, two starts in a row died with `bind() returned an error` and
+// `Cannot start http server for devtools`, and the harness then reported
+// "guest Chrome did not open the CDP port" for eight minutes while a chrome
+// tree sat on the port. `stop` now waits for the port and kills whoever holds
+// it (chrome.exe on the guest's own port only; the owner's browser is 9222).
+function portHolders() {
+  const r = spawnSync('netstat', ['-ano'], { encoding: 'utf8', windowsHide: true });
+  const pids = new Set();
+  for (const line of String(r.stdout || '').split(/\r?\n/)) {
+    if (!line.includes(`:${PORT} `)) continue;
+    const m = line.trim().match(/\s(\d+)\s*$/);
+    if (m) pids.add(Number(m[1]));
+  }
+  pids.delete(0);
+  return [...pids];
+}
+
+function commandLineOf(pid) {
+  const r = spawnSync('powershell', ['-NoProfile', '-Command',
+    `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`], { encoding: 'utf8', windowsHide: true });
+  return String(r.stdout || '');
+}
+
+// Kill a leftover guest Chrome that holds THIS port. Two guards, both paid for
+// by measurement (2026-11-09): the pid must be a chrome.exe AND its command
+// line must carry `--remote-debugging-port=<PORT>` - without the second guard a
+// 500 ms timeout on a healthy guest (a loaded machine) read as "stale" and the
+// loop killed the guest it had just started, ten times in a row.
+async function freePort({ quiet = false } = {}) {
+  for (let i = 0; i < 6; i++) {
+    const holders = portHolders();
+    if (!holders.length) return true;
+    let killedAny = false;
+    for (const pid of holders) {
+      const cl = commandLineOf(pid);
+      if (!/chrome\.exe/i.test(cl) || !cl.includes(`--remote-debugging-port=${PORT}`)) continue;
+      spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { encoding: 'utf8', windowsHide: true });
+      if (!quiet) console.log(`[harness] freed port ${PORT} from chrome pid ${pid}`);
+      killedAny = true;
+      break;
+    }
+    if (!killedAny) return false; // the holder is not ours: leave it alone and let start() report
+    await delay(800);
+  }
+  return portHolders().length === 0;
+}
+
+async function stopGuest() {
   const r = spawnSync(process.execPath, [GUEST, 'stop'], { encoding: 'utf8', windowsHide: true });
   process.stdout.write((r.stdout || '').trim() + '\n');
+  await freePort();
+}
+
+// ONE guest browser per box. A second one doubles the process count and the
+// RSS for no measurement that the first cannot do (watcher DM, 2026-11-09).
+// Reuse is cheap: KO_PORT names the browser, and every command attaches to it.
+const GUEST_PORTS = [9333, 9444, 9445, 9446, 9447, 9448, 9449];
+const flagsAllowSecondGuest = process.argv.includes('--second-guest');
+
+async function otherGuestAlive() {
+  for (const port of GUEST_PORTS) {
+    if (port === PORT) continue;
+    try {
+      const r = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(700) });
+      if (r.ok) {
+        const j = await r.json().catch(() => ({}));
+        if (String(j['Browser'] || '').includes('Chrome')) return port;
+      }
+    } catch { /* not this one */ }
+  }
+  return null;
 }
 
 async function ensureGuest({ fresh = false, url = DEFAULT_URL, quiet = false } = {}) {
+  if (!(await guestUp())) {
+    const busy = await otherGuestAlive();
+    if (busy && !flagsAllowSecondGuest) {
+      throw new Error(`a guest browser is already running on port ${busy}; reuse it with KO_PORT=${busy} (one guest per box - ceiling declared in AGENTS.md)`);
+    }
+    await freePort({ quiet });
+  }
   if (await guestUp()) {
     if (!fresh) return;
     stopGuest();
@@ -152,6 +229,12 @@ async function refreshIframes(s) {
     s.ivs = await attach(s.cdp, t.ivs, 'ivs');
     await s.ivs.enable();
   }
+  // A frame that went away leaves a session id the browser no longer knows:
+  // every later probe then fails with "Session with given id not found" and the
+  // audit reports an error row instead of "no such surface" (measured
+  // 2026-11-09 after switching from the kick player to the native one).
+  if (!t.hls && s.hls) s.hls = null;
+  if (!t.ivs && s.ivs) s.ivs = null;
   return s;
 }
 
@@ -164,6 +247,12 @@ const STATE_EXPR = `(() => {
       slug: KO.slug, kickSlug: KO.kickSlug, ytRaw: KO.ytRaw, ytId: KO.ytId,
       ytHls: String(KO.ytHlsUrl || '').slice(0, 100), ytHlsFailed: KO.ytHlsFailed,
       kickReady: KO.kickReady, kickState: KO.kickState, kickOnDvr: KO.kickOnDvr,
+      // Which url the frame was last told to load, and how long ago. Without
+      // this a "go live" that silently re-loads the DVR url is indistinguishable
+      // from one that loaded the live url and stalled.
+      kickUrl: KO.activeUrl ? String(KO.activeUrl).slice(-46) : null,
+      kickUrlAgeMs: KO.kickUrlT ? Date.now() - KO.kickUrlT : null,
+      kickDvrUrl: KO.kickDvrUrl ? String(KO.kickDvrUrl).slice(-46) : null,
       kickDur: KO.kickDur, yt: KO.ytState, adblock: KO.adblock,
       wrap: KO.wrap ? { cls: KO.wrap.className, display: KO.wrap.style.display } : null,
       pill: pill ? {
@@ -242,6 +331,21 @@ function usage() {
   click "<selector>" [--real]    real mouse or synthetic click
   key ArrowLeft|ArrowRight|f     real CDP key event (overlay handler test)
   scrolltest [--width=1600 --height=900 --y=600]   scroll-anchor regression
+  tabmute [url]                  TWO tabs on one live channel: mute tab A, prove tab B keeps its sound
+  extreload                      reload the EXTENSION (chrome.runtime.reload) then the page, and print
+                                 the version the tab is actually running (a page reload alone keeps
+                                 the OLD content script: Chrome caches extension files until the
+                                 extension itself reloads - measured 2026-11-09)
+  watch [--seconds=N]            transitions of {visible, intent(twitch/kick/yt), native muted+volume}
+                                 sampled twice a second, printed only when the tuple changes. This is
+                                 how a silent mute gets a timestamp instead of a guess.
+  live [--port=9222] [--channel=a,b] [--json]
+                                 WHICH channels are broadcasting right now. Node queries Twitch's
+                                 GQL directly; --port names the browser whose cookies give the
+                                 FOLLOWED list (read-only, no tab created or touched). Named
+                                 channels need no session. Use this instead of guessing a channel.
+  parity-ab [--channel=NAME]     A/B against kick.com's OWN player: same back-seek, ref vs ours, side by side
+  kickparity                     kick.com playback parity: pause, resume, arrow seek, 10s/60s rewind, seek inside the DVR, go live, quality, latency
   shot [path]                    PNG screenshot
   net --pattern=RE --seconds=N [--target=hls|page|sw]
   console [--seconds=N]          captured errors from page/hls/sw`);
@@ -254,15 +358,36 @@ async function main() {
 
   if (cmd === 'help' || flags.help) { usage(); return; }
   if (cmd === 'start') {
-    await ensureGuest({ fresh: !!flags.fresh, url: pos[1] || DEFAULT_URL });
+    const want = pos[1] || DEFAULT_URL;
+    await ensureGuest({ fresh: !!flags.fresh, url: want });
     console.log('[harness] guest up; waiting for content script…');
     const s = await openSessions();
-    const st = await getState(s);
+    // `start <url>` on an ALREADY running guest used to ignore the url and
+    // leave the tab wherever it was - measured 2026-11-09: `start
+    // https://www.twitch.tv/titiltei` answered href=https://www.twitch.tv/,
+    // and every later reading (kickState null, no bar) was measured against a
+    // page with no channel. Navigate when the tab is elsewhere, always.
+    let st = await getState(s);
+    if (want && st.href && st.href.replace(/\/$/, '') !== want.replace(/\/$/, '')) {
+      try {
+        await s.page.cdp.send('Page.navigate', { url: want }, s.page.sessionId);
+      } catch { /* older CDP shape */ }
+      for (let i = 0; i < 40; i++) {
+        await delay(500);
+        st = await getState(s);
+        if (st.href && st.href.startsWith('http') && st.href !== 'about:blank' && st.ko) break;
+      }
+      for (let i = 0; i < 40; i++) {
+        await delay(500);
+        st = await getState(s);
+        if (st.ko && st.ko.enabled) break;
+      }
+    }
     console.log('[harness] ready', JSON.stringify({ href: st.href, ko: !!st.ko, enabled: st.ko?.enabled, player: st.ko?.player }));
     s.cdp.close();
     return;
   }
-  if (cmd === 'stop') { stopGuest(); return; }
+  if (cmd === 'stop') { await stopGuest(); return; }
   if (cmd === 'status') {
     const up = await guestUp();
     console.log(JSON.stringify({ up, port: PORT }, null, 2));
@@ -404,6 +529,858 @@ async function main() {
       sw: s.sw ? { exceptions: s.sw.exceptions, console: s.sw.console } : null,
     }, null, 2));
     s.cdp.close();
+    return;
+  }
+
+  // ---- tabmute: the owner's per-tab audio report (2026-11-08) -------------
+  // "mutar uma aba e todas mutarem. e vice versa." Opens a SECOND tab on the
+  // same channel, mutes tab A through the arbiter's real gesture path (a
+  // volumechange the extension did not write, which is what Twitch's own volume
+  // button produces), and reads tab B's intent and native element. Prints the
+  // numbers and exits 1 if the gesture crossed the tab boundary.
+  // ---- live: the ONE way to answer "what is on air" ----------------------
+  // Owner order 2026-11-09: "para de dar guess em stream. faz um mecanismo que
+  // tu vai usar sempre pra ver que lives tao online". Node has no CORS, so the
+  // query runs here; the logged-in view comes from the owner's own cookies read
+  // over CDP (read-only: no tab is created, navigated or closed). Named channels
+  // need no session at all, so this works on any machine.
+  // ---- extreload ----------------------------------------------------------
+  if (cmd === 'extreload') {
+    try { await s.page.evalIsolated('chrome.runtime.reload(); 1'); } catch { /* the world dies with it */ }
+    await delay(2500);
+    try {
+      const cdp = await connect(PORT);
+      const t = await findTargets(cdp, { pageRe: /twitch\.tv|youtube\.com/ });
+      cdp.close();
+      if (!t.page) throw new Error('no page target');
+    } catch { /* fall through to the reload below */ }
+    const cdp2 = await connect(PORT);
+    const tg = await findTargets(cdp2, { pageRe: /twitch\.tv|youtube\.com/ });
+    cdp2.close();
+    if (!tg.page) throw new Error('no Twitch/YouTube tab to reload');
+    const cdp3 = await connect(PORT);
+    const page = await attach(cdp3, tg.page, 'page');
+    await page.enable({ page: true });
+    await page.reload();
+    const ver = await page.waitFor('typeof KO !== "undefined" && KO_VER', (v) => !!v, { timeout: 30000, label: 'content script after extreload' })
+      .catch(() => null);
+    const audio = await page.evalIsolated('typeof KOAudio !== "undefined" ? "KOAudio" : "no-audio"').catch(() => '?');
+    console.log(JSON.stringify({ koVer: ver, audio, href: await page.evalMain('location.href').catch(() => null) }));
+    cdp3.close();
+    return;
+  }
+
+  // ---- watch: who changed the sound, and when ----------------------------
+  if (cmd === 'watch') {
+    const seconds = Number(flags.seconds || 15);
+    const sample = `(() => {
+      const a = window.KOAudio;
+      if (!a) return null;
+      const v = [...document.querySelectorAll('video')].find((x) => x.isConnected && x.readyState > 0) || document.querySelector('video');
+      return {
+        vis: a.visible(),
+        tw: a.intent('twitch'), kick: a.intent('kick'), yt: a.intent('yt'),
+        want: a.wanted(a.visible() || 'twitch'),
+        el: v ? { muted: v.muted, volume: +Number(v.volume).toFixed(2), paused: v.paused } : null,
+        ui: { kickMuted: KO.kickMuted, ytMuted: KO.ytMuted },
+      };
+    })()`;
+    let last = '';
+    const t0 = Date.now();
+    while (Date.now() - t0 < seconds * 1000) {
+      let cur = '';
+      try { cur = JSON.stringify(await s.page.evalIsolated(sample)); } catch { cur = '"no-arbiter"'; }
+      if (cur !== last) {
+        console.log(`+${String(Date.now() - t0).padStart(5)}ms ${cur.replace(/^"|"$/g, '')}`);
+        last = cur;
+      }
+      await delay(500);
+    }
+    s.cdp.close();
+    return;
+  }
+
+  if (cmd === 'audio') {
+    let probeSessions = null;
+    let seenSurfaces = null;
+    // ONE question, every surface: "what is making sound right now, and is it
+    // more than one thing?" Owner report 2026-11-09 asks for exactly three
+    // answers (muted at the right moment, duplicated audio, cross-platform
+    // overlap) and each one is a COUNT of audible surfaces, so the count is the
+    // shape this command prints. Every media element is read in the process
+    // that owns it: the page (Twitch's native video), the clean ad frame, and
+    // each overlay frame (kick / YouTube) are separate CDP targets, and a
+    // cross-origin frame's element cannot be read from the page at all.
+    const PROBE = `(() => {
+      const out = [];
+      const vis = (el) => {
+        let n = el, op = 1;
+        for (let i = 0; i < 6 && n; i++, n = n.parentElement) op *= Number(getComputedStyle(n).opacity || 1);
+        const r = el.getBoundingClientRect();
+        const cs = getComputedStyle(el);
+        return { area: Math.round(r.width) * Math.round(r.height), op: +op.toFixed(3), hidden: cs.display === 'none' || cs.visibility === 'hidden' };
+      };
+      for (const el of document.querySelectorAll('video,audio')) {
+        const v = vis(el);
+        out.push({
+          src: String(el.currentSrc || el.src || '').slice(0, 70),
+          muted: !!el.muted, volume: +Number(el.volume).toFixed(2), paused: !!el.paused,
+          ct: +Number(el.currentTime).toFixed(1), rs: el.readyState, ...v,
+        });
+      }
+      return { href: location.href, origin: location.origin, els: out };
+    })()`;
+    const seconds = Number(flags.seconds || 20);
+    const audible = (e) => e && !e.muted && e.volume > 0 && !e.paused && e.area > 0 && e.op > 0.05 && !e.hidden;
+    const sample = async () => {
+      // The three surfaces are the ones the extension can make sound with:
+      // the page's own player (Twitch native), and the two extension frames
+      // (the clean ad player and the kick/YouTube overlay player). They live in
+      // separate targets because they are separate processes; openSessions
+      // already holds those sessions, and re-attaching here would cost seconds
+      // per sample (Runtime.enable on a throttled frame).
+      await refreshIframes(s);
+      const rows = [];
+      const probes = [['PAGE', s.page], ['OVERLAY-hls', s.hls], ['OVERLAY-ivs', s.ivs]];
+      // A surface that disappears must not read as silence: a torn-down kick
+      // frame with the native player audible printed `ONE` and looked healthy
+      // (found by the 2026-11-09 audio lane in its own gate-doubt). Remember
+      // which surfaces existed and report the missing ones.
+      seenSurfaces = seenSurfaces || new Set();
+      for (const [label, sess] of probes) if (sess) seenSurfaces.add(label);
+      const missing = [...seenSurfaces].filter((l) => !probes.find(([n, x]) => n === l && x));
+      for (const [label, sess] of probes) {
+        if (!sess) continue;
+        let r = null;
+        // The page has an isolated world (the content script); the extension
+        // frames are extension pages and have only the main one.
+        const run = async () => {
+          try { return await sess.evalIsolated(PROBE); } catch { return await sess.evalMain(PROBE); }
+        };
+        try {
+          r = await run();
+        } catch (e) {
+          // A page reload replaces the execution context; the session still
+          // holds the dead id and would report an error row forever (measured
+          // 2026-11-09 across a reload during a soak). Refresh once, then retry.
+          if (/context/i.test(String(e.message))) {
+            try { await sess.refreshContexts(); r = await run(); } catch (e2) { rows.push({ label, origin: '-', href: 'probe error: ' + e2.message, els: [] }); continue; }
+          } else { rows.push({ label, origin: '-', href: 'probe error: ' + e.message, els: [] }); continue; }
+        }
+        if (!r) { rows.push({ label, origin: '-', href: 'no result', els: [] }); continue; }
+        rows.push({ label, origin: r.origin, href: String(r.href).slice(0, 90), els: r.els });
+      }
+      let ui = null;
+      try {
+        ui = await s.page.evalIsolated(`(() => {
+          const a = window.KOAudio;
+          const cover = document.getElementById('ko-adfix-cover');
+          const adfix = document.getElementById('ko-adfix');
+          return {
+            vis: a ? a.visible() : null,
+            intent: a ? { tw: a.intent('twitch'), kick: a.intent('kick'), yt: a.intent('yt') } : null,
+            ad: {
+              frame: !!adfix,
+              frameRect: adfix ? (() => { const b = adfix.getBoundingClientRect(); return [b.left | 0, b.top | 0, b.width | 0, b.height | 0]; })() : null,
+              coverPainted: !!cover && getComputedStyle(cover).display !== 'none',
+              coverText: cover ? cover.textContent : null,
+            },
+            bar: (() => { const b = document.getElementById('ko-bar'); return b ? getComputedStyle(b).display : null; })(),
+          };
+        })()`);
+      } catch { /* no arbiter */ }
+      // A surface that was never there is not "silent": if the overlay SAYS it
+      // is showing the kick layer and no kick frame exists, the honest verdict
+      // is MISSING - `ONE` on the native player is the wrong answer (measured
+      // 2026-11-09: `player=kick` with no kick frame mounted printed ONE).
+      try {
+        if (ui && ui.vis === 'kick' && !probes.find(([n, x]) => n === 'OVERLAY-ivs' && x) && !missing.includes('OVERLAY-ivs')) missing.push('OVERLAY-ivs');
+        if (ui && (ui.vis === 'yt' || ui.vis === 'page') && !probes.find(([n, x]) => n === 'OVERLAY-hls' && x) && !missing.includes('OVERLAY-hls')) missing.push('OVERLAY-hls');
+        if (ui && ui.vis === 'twitch' && !s.page) missing.push('PAGE');
+      } catch { /* no ui: nothing to expect */ }
+      const live = [];
+      for (const row of rows) for (const e of row.els) if (audible(e)) live.push(`${row.label}/${row.origin.replace('https://', '')}/${e.src.replace(/^.*\//, '').slice(0, 28)}`);
+      const outs = rows;
+      const verdict = missing.length
+        ? `MISSING(${missing.join(',')})${live.length ? '+AUDIBLE(' + live.length + ')' : ''}`
+        : (live.length === 0 ? 'SILENT' : (live.length === 1 ? 'ONE' : `DUPLICATED(${live.length})`));
+      return { live, verdict, missing, ui, rows: outs };
+    };
+    let last = '';
+    const t0 = Date.now();
+    while (Date.now() - t0 < seconds * 1000) {
+      let cur;
+      try { cur = await sample(); } catch (e) { cur = { err: e.message }; }
+      const key = JSON.stringify({ v: cur.verdict, live: cur.live, miss: cur.missing, el: (cur.rows || []).map((r) => r.els.map((e) => [r.label, e.muted, e.volume, e.paused, e.op, e.area])), ui: cur.ui });
+      if (key !== last) {
+        last = key;
+        const head = `+${String(Date.now() - t0).padStart(5)}ms ${cur.verdict || cur.err} ${JSON.stringify(cur.live)}`;
+        const body = (cur.rows || []).map((r) => `   ${r.label} ${r.origin} ${r.href}\n` + r.els.map((e) => '     ' + JSON.stringify(e)).join('\n')).join('\n');
+        console.log(head + (body ? '\n' + body : ''));
+        if (cur.ui) console.log('   ui ' + JSON.stringify(cur.ui));
+      }
+      await delay(500);
+    }
+    s.cdp.close();
+    return;
+  }
+
+  if (cmd === 'parity-ab') {
+    // PROOF OF PARITY, not a contract. `kickparity` asserts what OUR player
+    // must do; it never asks kick.com what IT does. This command runs the same
+    // capability on both players in the same guest browser - the REFERENCE is
+    // kick.com/<channel>'s own player, the CANDIDATE is twitch.tv/<channel>
+    // with our kick overlay - and prints the two numbers side by side. Parity
+    // is decided on the RESULT (offset behind the live edge, and whether
+    // playback holds there), because the two players take different inputs:
+    // the reference is driven through its own media element (what its DVR
+    // does internally) and the candidate through the real bar click a user
+    // makes.
+    const channel = String(flags.channel || 'titiltei').toLowerCase();
+    const OFFSETS = [10, 60, 600];
+    const sleepms = (n) => delay(n);
+    const nav = async (url) => {
+      await s.page.cdp.send('Page.navigate', { url }, s.page.sessionId);
+      await sleepms(1500);
+    };
+    // Pick the BIGGEST playing video, and never trust a sentinel: measured on
+    // kick.com 2026-11-09 the first run "measured" a 2-second video (a preview
+    // or an ad) and then reported `behind=1073741824s`, which is the same
+    // 1 GiB sentinel Twitch's own element exposes. A reference read through a
+    // bad element is a wrong reference, so both filters are mandatory.
+    const refProbe = `(() => {
+      const cands = [...document.querySelectorAll('video')]
+        .map((v) => { const r = v.getBoundingClientRect(); return { v, area: r.width * r.height }; })
+        .filter((x) => x.v.readyState >= 2 && x.area > 100000)
+        .sort((a, b) => b.area - a.area);
+      if (!cands.length) return null;
+      const v = cands[0].v;
+      const sk = v.seekable;
+      let end = null;
+      let start = 0;
+      if (sk && sk.length) {
+        const e = sk.end(sk.length - 1);
+        const b = sk.start(0);
+        if (Number.isFinite(e) && e < 1e6) end = +e.toFixed(2);
+        if (Number.isFinite(b) && b < 1e6) start = +b.toFixed(2);
+      }
+      if (end === null && Number.isFinite(v.duration) && v.duration < 1e6) end = +v.duration.toFixed(2);
+      return { pos: +v.currentTime.toFixed(2), paused: !!v.paused, end, start, area: cands[0].area };
+    })()`;
+    const refSeek = `(t) => (() => {
+      const cands = [...document.querySelectorAll('video')]
+        .map((v) => { const r = v.getBoundingClientRect(); return { v, area: r.width * r.height }; })
+        .filter((x) => x.v.readyState >= 2 && x.area > 100000)
+        .sort((a, b) => b.area - a.area);
+      if (!cands.length) return null;
+      const v = cands[0].v;
+      v.currentTime = t;
+      return +v.currentTime.toFixed(2);
+    })()`;
+    const rows = [];
+    const ref = {};
+
+    // ---- REFERENCE: kick.com's own player
+    await nav(`https://kick.com/${channel}`);
+    let refOk = false;
+    for (let i = 0; i < 40; i++) {
+      const v = await s.page.evalMain(refProbe).catch(() => null);
+      if (v && v.end !== null) { refOk = true; ref.base = v; break; }
+      await sleepms(500);
+    }
+    if (!refOk) {
+      rows.push({ name: 'reference', pass: false, detail: 'kick.com player never produced a seekable video (login/consent/offline?) - PARITY UNPROVEN' });
+      console.log('FAIL reference kick.com player unavailable; parity is UNPROVEN, not a pass');
+    } else {
+      console.log(`[harness] reference kick.com/${channel} ${JSON.stringify(ref.base)}`);
+      for (const off of OFFSETS) {
+        const cur = await s.page.evalMain(refProbe);
+        const edge = cur.end;
+        const target = Math.max(cur.start || 0, edge - off);
+        await s.page.evalMain(`(${refSeek})(${target})`).catch(() => null);
+        await sleepms(2500);
+        const a = await s.page.evalMain(refProbe);
+        await sleepms(4000);
+        const b = await s.page.evalMain(refProbe);
+        const heldRef = !!a && !!b && b.pos - a.pos > 2.5;
+        const got = a ? +(edge - a.pos).toFixed(1) : null;
+        ref[off] = { got, held: heldRef, posA: a && a.pos, posB: b && b.pos };
+        console.log(`[harness] reference back ${off}s -> behind=${got}s held=${heldRef} (pos ${a && a.pos} -> ${b && b.pos})`);
+      }
+    }
+
+    // ---- CANDIDATE: twitch.tv + our kick overlay, driven by the real bar
+    await nav(`https://www.twitch.tv/${channel}`);
+    let candOk = false;
+    for (let i = 0; i < 120; i++) {
+      const st = await s.page.evalIsolated(`(() => { const k = window.KO && KO.kickState; return k ? { pos: +Number(k.pos||0).toFixed(2), lat: +Number(k.lat||0).toFixed(2), state: k.state, dur: +Number(KO.kickDur||0).toFixed(1) } : null; })()`).catch(() => null);
+      if (st && st.state === 'Playing' && st.pos > 1) { candOk = true; console.log(`[harness] candidate ${JSON.stringify(st)}`); break; }
+      await sleepms(500);
+    }
+    const cand = {};
+    if (!candOk) {
+      rows.push({ name: 'candidate', pass: false, detail: 'our kick layer did not reach Playing - CANDIDATE UNPROVEN' });
+      console.log('FAIL candidate kick layer not playing; parity is UNPROVEN, not a pass');
+    } else {
+      const st = () => s.page.evalIsolated(`(() => { const k = KO.kickState; return { pos: +Number(k.pos||0).toFixed(2), lat: +Number(k.lat||0).toFixed(2), paused: !!k.paused, onDvr: !!KO.kickOnDvr, dur: +Number(KO.kickDur||0).toFixed(1) }; })()`);
+      const clickBar = async (targetSec) => {
+        const r = await s.page.evalMain(`(() => { const b = document.querySelector('#ko-seekbar'); if (!b) return null; const x = b.getBoundingClientRect(); return [x.left, x.top, x.width, x.height]; })()`);
+        if (!r) throw new Error('no seekbar');
+        const s0 = await st();
+        const max = s0.dur > 0 ? s0.dur : 1;
+        const frac = Math.max(0.002, Math.min(0.998, targetSec / max));
+        const x = r[0] + r[2] * frac;
+        const y = r[1] + r[3] / 2;
+        await s.page.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none' }, s.page.sessionId);
+        await s.page.cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 }, s.page.sessionId);
+        await s.page.cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 }, s.page.sessionId);
+        return { frac, max, requested: frac * max };
+      };
+      for (const off of OFFSETS) {
+        let before = await st();
+        if (!(before.pos > 1)) { await sleepms(3000); before = await st(); }
+        if (!(before.pos > 1)) { cand[off] = { got: null, held: false, note: 'layer not playing' }; console.log(`[harness] candidate back ${off}s SKIP (layer not playing)`); continue; }
+        const edge = before.onDvr ? before.pos + before.lat : before.dur - before.lat;
+        const target = Math.max(1, edge - off);
+        const c = await clickBar(target);
+        await sleepms(2500);
+        const a = await st();
+        await sleepms(4000);
+        const b = await st();
+        const held = !!(a && b) && b.pos - a.pos > 2.5;
+        const got = a && Number.isFinite(a.pos) ? +(edge - a.pos).toFixed(1) : null;
+        cand[off] = { got, held, onDvr: a && a.onDvr, note: `clicked=${c.requested.toFixed(1)}` };
+        console.log(`[harness] candidate back ${off}s -> behind=${got}s held=${held} onDvr=${a && a.onDvr} (pos ${a && a.pos} -> ${b && b.pos})`);
+      }
+    }
+
+    // ---- COMPARISON
+    for (const off of OFFSETS) {
+      const r = ref[off];
+      const c = cand[off];
+      const rTxt = r ? `kick behind=${r.got}s held=${r.held}` : 'kick UNMEASURED';
+      const cTxt = c ? `ours behind=${c.got}s held=${c.held}` : 'ours UNMEASURED';
+      const pass = !!(r && c && r.held === c.held && Number.isFinite(r.got) && Number.isFinite(c.got) && Math.abs(r.got - c.got) <= 8);
+      rows.push({ name: `parity-back-${off}s`, pass, detail: `${rTxt} | ${cTxt}` });
+    }
+    const failed = rows.filter((x) => !x.pass).length;
+    console.log('--- parity table ---');
+    for (const x of rows) console.log(`${x.pass ? 'PASS' : 'FAIL'} ${x.name} ${x.detail}`);
+    console.log(`RESULT ${failed ? 'FAIL' : 'PASS'} parity-ab rows=${rows.length} failed=${failed}`);
+    s.cdp.close();
+    if (failed) process.exitCode = 1;
+    return;
+  }
+
+  if (cmd === 'kickparity') {
+    // "The kick player inside Twitch must behave like kick.com's own player"
+    // (owner order 2026-11-09). Parity is a LIST of operations with an
+    // observable result, so this command runs the list and prints one PASS/FAIL
+    // row per operation with the numbers that decided it. Every action is a
+    // real CDP mouse press/key so the page's own handlers run, except the
+    // quality menu (a synthetic click on the item is what a user click does).
+    // The guest's default 800x600 viewport makes Twitch put its chat panel OVER
+    // the right half of the player; the overlay bar is below it, so a click at
+    // ~99.5% (a 60s rewind on a 3h stream) lands on Twitch's chat instead of
+    // the seekbar (measured 2026-11-09: elementFromPoint returned a chat DIV).
+    // A desktop viewport lays the chat beside the video, which is the layout the
+    // owner sees; without it the rewind rows measure the instrument, not the
+    // product.
+    await s.page.setViewport(1600, 900);
+    await delay(1500);
+    const KP = `(() => {
+      // content.js declares const KO in the isolated world, so it is NOT a
+      // property of window. The old window.KO guard read every row's
+      // pos/state/paused/q from {}, so the preflight could never see Playing.
+      const k = KO && KO.kickState ? KO.kickState : {};
+      return {
+        ver: typeof KO_VER === 'string' ? KO_VER : null,
+        player: KO.player,
+        pos: +Number(k.pos || 0).toFixed(2), lat: +Number(k.lat || 0).toFixed(2),
+        paused: !!k.paused, state: k.state || null, q: k.q && k.q.name ? k.q.name : null,
+        onDvr: !!KO.kickOnDvr, dur: +Number(KO.kickDur || 0).toFixed(1),
+        bar: !!document.getElementById('ko-bar'),
+      };
+    })()`;
+    const st = () => s.page.evalIsolated(KP);
+    const waitFor = async (pred, ms = 15000, step = 250) => {
+      const t0 = Date.now();
+      let last = null;
+      while (Date.now() - t0 < ms) {
+        last = await st();
+        if (pred(last)) return { ok: true, v: last, ms: Date.now() - t0 };
+        await delay(step);
+      }
+      return { ok: false, v: last, ms: Date.now() - t0 };
+    };
+    const clickAt = async (x, y) => {
+      await s.page.cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none' }, s.page.sessionId);
+      await s.page.cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 }, s.page.sessionId);
+      await s.page.cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 }, s.page.sessionId);
+    };
+    const key = async (name) => {
+      const vk = { ArrowLeft: 37, ArrowRight: 39, ArrowUp: 38, ArrowDown: 40, f: 70 }[name];
+      const base = { key: name, code: name.length === 1 ? `Key${name.toUpperCase()}` : name, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk };
+      await s.page.cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', ...base }, s.page.sessionId);
+      await s.page.cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base }, s.page.sessionId);
+    };
+    const seekBarTo = async (targetSec) => {
+      const r = await s.page.evalMain(`(() => { const b = document.querySelector('#ko-seekbar'); if (!b) return null; const x = b.getBoundingClientRect(); return [x.left, x.top, x.width, x.height]; })()`);
+      if (!r) throw new Error('no seekbar (the kick bar is not mounted)');
+      const cur = await st();
+      const max = cur.dur > 0 ? cur.dur : 1;
+      // Keep the click inside the bar but represent sub-second offsets: on a
+      // 3h stream at 1000px one pixel is ~11s, so the old 0.002..0.998 clamp
+      // made the last ~25s (including a 10s rewind) unclickable by construction.
+      const halfPx = r[2] > 0 ? 0.5 / r[2] : 0.0005;
+      const frac = Math.max(halfPx, Math.min(1 - halfPx, targetSec / max));
+      await clickAt(r[0] + r[2] * frac, r[1] + r[3] / 2);
+      // The page's endDrag maps the same fraction against KO.kickDur, so this
+      // is the broadcast offset the bar actually requested. Printed in the row
+      // so a target/clicked mismatch is visible instead of inferred.
+      return { frac, max, x: r[0] + r[2] * frac, target: frac * max };
+    };
+    // The kick layer can go through a teardown/remount of its own (measured
+    // 2026-11-09: `kickState` null for ~90 s, then `Playing` again at pos 0).
+    // A row that starts measuring inside that window reports a defect that is
+    // not the row's, so each row first waits for playback to come back.
+    const waitPlaying = async (ms = 25000) => {
+      const w = await waitFor((v) => v.state === 'Playing' && v.pos > 0.5, ms, 400);
+      return w;
+    };
+    const rows = [];
+    const row = async (name, fn) => {
+      try {
+        const r = await fn();
+        rows.push({ name, pass: !!r.pass, detail: r.detail });
+        console.log(`${r.pass ? 'PASS' : 'FAIL'} ${name} ${r.detail}`);
+      } catch (e) {
+        rows.push({ name, pass: false, detail: 'error: ' + e.message });
+        console.log(`FAIL ${name} error: ${e.message}`);
+      }
+    };
+
+    // Preflight: a player that is not playing makes every row below vacuous
+    // (measured 2026-11-09: a fresh guest printed PASS on `seek-within-dvr` at
+    // pos=0 because the kick layer had never mounted - kickReady=false). A row
+    // that cannot be exercised is a FAIL, never a pass.
+    const pf = await waitFor((v) => v.bar && v.state === 'Playing' && v.pos > 1, 90000, 500);
+    console.log(`${pf.ok ? 'PASS' : 'FAIL'} preflight-playing ${JSON.stringify(pf.v)} (${pf.ms}ms)`);
+    if (!pf.ok) {
+      console.log('RESULT FAIL kickparity rows=1 failed=1 (the kick layer is not playing: nothing below can be measured)');
+      s.cdp.close();
+      process.exitCode = 1;
+      return;
+    }
+    const before = await st();
+    if (before.player !== 'kick') {
+      // The parity list is about the kick layer; ask for it instead of silently
+      // measuring the native player.
+      console.log(`[harness] player=${before.player}; run: node _tools/ko-harness.mjs set --player=kick`);
+    }
+    console.log(`[harness] kickparity start ${JSON.stringify(before)}`);
+
+    // Which element a REAL pointer reaches at our bar is not assertable here:
+    // Twitch's own control bar sits in the same place and is only invisible
+    // because a headless browser never hovers out of it (measured 2026-11-09:
+    // elementFromPoint returned ScCoreButton for our #ko-play at z-index 30,
+    // while the same point passes for a real user once the controls fade to
+    // pointer-events:none). So the pause/resume rows below dispatch on OUR
+    // element (synthetic) - they test our handler, not Twitch's hover state -
+    // and the "does a pointer reach the bar" question stays a live check.
+    await row('pause-freezes', async () => {
+      const gate = await waitPlaying();
+      if (!gate.ok) return { pass: false, detail: `precondition: not playing ${JSON.stringify(gate.v)}` };
+      // A live IVS session drops its position on pause (measured 2026-11-09:
+      // pos 93 -> 0 / readyState 0, resuming at the edge) - that is the live
+      // engine's rule, not a resumable pause. Move to the replay first: pause
+      // on the replay is the case this row is about, and it must hold there.
+      const a = await st();
+      if (!a.onDvr) {
+        const target = Math.max(1, a.dur - 60);
+        await seekBarTo(target);
+        const dw = await waitFor((v) => v.onDvr && v.state === 'Playing' && Math.abs(v.pos - target) <= 20, 25000);
+        if (!dw.ok) return { pass: false, detail: `precondition: no replay (${JSON.stringify(dw.v)})` };
+      }
+      // Wait for STEADY Playing (two consecutive samples): the first Playing
+      // after a load can flip to Buffering inside the click's settle, and the
+      // play button then sends `play`, not pause.
+      let steady = 0;
+      for (let i = 0; i < 16 && steady < 2; i++) {
+        await delay(500);
+        const v = await st();
+        steady = v.state === 'Playing' && !v.paused ? steady + 1 : 0;
+      }
+      if (steady < 2) return { pass: false, detail: `precondition: replay not steady (${JSON.stringify(await st())})` };
+      await s.page.click('#ko-play', { synthetic: true, settle: 400 });
+      // Measure the freeze between two samples AFTER the pause is reported:
+      // the click->pause latency is not the freeze, and comparing across it
+      // made a healthy pause look like it moved.
+      const p = await waitFor((v) => v.paused === true, 3000);
+      if (!p.ok) return { pass: false, detail: `pause click did not pause (${JSON.stringify(p.v)})` };
+      const b0 = p.v;
+      await delay(1600);
+      const b = await st();
+      const moved = Math.abs(b.pos - b0.pos);
+      return { pass: b.paused && moved < 0.6, detail: `onDvr=${b.onDvr} paused=${b.paused} moved=${moved.toFixed(2)}s` };
+    });
+    await row('resume-advances', async () => {
+      await s.page.click('#ko-play', { synthetic: true, settle: 400 });
+      // Measure AFTER the playing state is reported: the resume latency is
+      // not the advance, and comparing across it left <0.7s in the window.
+      const r = await waitFor((v) => !v.paused && v.state === 'Playing', 4000);
+      if (!r.ok) return { pass: false, detail: `resume click did not play (${JSON.stringify(r.v)})` };
+      const a = r.v;
+      await delay(1800);
+      const b = await st();
+      const moved = b.pos - a.pos;
+      return { pass: !b.paused && moved > 0.7, detail: `paused=${b.paused} moved=${moved.toFixed(2)}s` };
+    });
+    await row('arrow-back-5s', async () => {
+      const gate = await waitPlaying();
+      if (!gate.ok) return { pass: false, detail: `precondition: not playing` };
+      const a = await st();
+      // A live session's buffer and the broadcast both start at 0; below ~6s
+      // there is no room for a 5s step. The predicate must see a real move
+      // backward: accepting `onDvr` alone passed with back=0.00s on the DVR.
+      if (a.pos < 6) return { pass: false, detail: `precondition: pos=${a.pos} (no room to rewind 5s)` };
+      const wasDvr = a.onDvr;
+      await key('ArrowLeft');
+      const w = await waitFor((v) => (v.onDvr !== wasDvr) || v.pos <= a.pos - 2, 8000);
+      const b = w.v;
+      const back = a.pos - b.pos;
+      return { pass: w.ok && back >= 2, detail: `from=${a.pos} to=${b.pos} back=${back.toFixed(2)}s onDvr=${b.onDvr} lat=${b.lat} (${w.ms}ms)` };
+    });
+    await row('rewind-60s-holds', async () => {
+      const gate = await waitPlaying();
+      if (!gate.ok) return { pass: false, detail: `precondition: not playing` };
+      const a = await st();
+      // On the live url `pos` is the IVS session clock (pos ~3s, dur 0), so
+      // `pos + lat` is NOT a broadcast offset; KO.kickDur (a.dur) is. Once on
+      // the DVR url `pos` becomes the broadcast offset and pos + lat is right.
+      const target = Math.max(1, (a.onDvr ? a.pos + a.lat : a.dur) - 60);
+      const clicked = await seekBarTo(target);
+      const w = await waitFor((v) => Math.abs(v.pos - target) <= 8 && v.paused === false, 20000);
+      const b = w.v;
+      await delay(4000);
+      const c = await st();
+      const advanced = c.pos - b.pos;
+      const latHeld = Math.abs(c.lat - b.lat) <= 6;
+      const pass = w.ok && advanced > 2.2 && latHeld && c.onDvr;
+      return { pass, detail: `target=${target.toFixed(1)} clicked=${clicked.target.toFixed(1)} got=${b.pos} onDvr=${b.onDvr} advanced=${advanced.toFixed(2)}s lat=${b.lat}->${c.lat}` };
+    });
+    await row('rewind-10s-holds', async () => {
+      const a = await st();
+      const target = Math.max(1, (a.onDvr ? a.pos + a.lat : a.dur) - 10);
+      const clicked = await seekBarTo(target);
+      const w = await waitFor((v) => Math.abs(v.pos - target) <= 6 && v.paused === false, 20000);
+      const b = w.v;
+      await delay(3000);
+      const c = await st();
+      const advanced = c.pos - b.pos;
+      const pass = w.ok && advanced > 1.5 && c.onDvr;
+      return { pass, detail: `target=${target.toFixed(1)} clicked=${clicked.target.toFixed(1)} got=${b.pos} onDvr=${b.onDvr} advanced=${advanced.toFixed(2)}s lat=${b.lat}->${c.lat}` };
+    });
+    await row('seek-within-dvr', async () => {
+      const a = await st();
+      if (!(a.pos > 5)) return { pass: false, detail: `precondition: pos=${a.pos} (no playback to rewind from)` };
+      const target = Math.max(1, a.pos - 120);
+      await seekBarTo(target);
+      const w = await waitFor((v) => Math.abs(v.pos - target) <= 10, 20000);
+      return { pass: w.ok, detail: `from=${a.pos} target=${target.toFixed(1)} got=${w.v.pos} (${w.ms}ms)` };
+    });
+    await row('go-live', async () => {
+      const g0 = await st();
+      if (!(g0.pos > 5)) return { pass: false, detail: `precondition: pos=${g0.pos}` };
+      await s.page.click('#ko-golive', { real: true, settle: 400 });
+      // The live IVS position can be the session clock OR the broadcast clock
+      // (measured both), so a small-pos bound is wrong. The live load also
+      // reports Playing/Buffering in flapping samples for several seconds, so
+      // one instantaneous sample only proves a frozen pos. Require two
+      // consecutive samples that are live and actually advancing.
+      let prev = null;
+      let stable = 0;
+      let last = null;
+      for (let i = 0; i < 40 && stable < 2; i++) {
+        await delay(800);
+        const v = await st();
+        last = v;
+        const ok = !v.onDvr && v.lat > 0.2 && v.lat < 6 && v.state === 'Playing';
+        stable = ok && prev && v.pos > prev.pos + 0.3 ? stable + 1 : 0;
+        prev = v;
+      }
+      if (stable < 2) return { pass: false, detail: `live never advanced (${JSON.stringify(last)})` };
+      const a = await st();
+      await delay(2000);
+      const b = await st();
+      const adv = b.pos - a.pos;
+      return { pass: b.state === 'Playing' && !b.onDvr && adv > 1.2, detail: `onDvr=${b.onDvr} lat=${b.lat} pos=${a.pos}->${b.pos} adv=${adv.toFixed(2)}s` };
+    });
+    await row('quality-480p', async () => {
+      const cur = await st();
+      if (!cur.q) return { pass: false, detail: 'no quality reported' };
+      await s.page.click('#ko-settings', { real: true, settle: 500 });
+      const clicked = await s.page.evalMain(`(() => {
+        const items = [...document.querySelectorAll('#ko-quality-menu button')];
+        const want = items.find((b) => /480p/.test(b.textContent || ''));
+        if (!want) return 'no 480p item: ' + items.map((b) => b.textContent).join('|');
+        want.click();
+        return 'clicked';
+      })()`);
+      if (clicked !== 'clicked') return { pass: false, detail: String(clicked) };
+      const w = await waitFor((v) => v.q === '480p', 20000);
+      return { pass: w.ok, detail: `from=${cur.q} to=${w.v.q} (${w.ms}ms)` };
+    });
+    await row('latency-at-edge', async () => {
+      const a = await st();
+      return { pass: a.lat > 0.2 && a.lat < 6, detail: `lat=${a.lat}s pos=${a.pos} state=${a.state}` };
+    });
+
+    const failed = rows.filter((r) => !r.pass).length;
+    console.log(`RESULT ${failed ? 'FAIL' : 'PASS'} kickparity rows=${rows.length} failed=${failed}`);
+    s.cdp.close();
+    if (failed) process.exitCode = 1;
+    return;
+  }
+
+  if (cmd === 'live') {
+    const CLIENT = 'kimne78kx3ncx6brgo4mv6wki5h1ko';
+    const gql = async (query, cookie) => {
+      const headers = { 'Client-ID': CLIENT, 'Content-Type': 'text/plain' };
+      if (cookie) headers.Cookie = cookie;
+      if (cookie && token) headers.Authorization = 'OAuth ' + token;
+      const r = await fetch('https://gql.twitch.tv/gql', { method: 'POST', headers, body: JSON.stringify({ query }) });
+      const text = await r.text();
+      let json = null;
+      try { json = JSON.parse(text); } catch { /* not json */ }
+      return { status: r.status, json, text };
+    };
+    const wanted = String(flags.channel || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+    const out = { account: null, followed: [], named: [], errors: [], notes: [] };
+
+    // The session cookie, if a browser with it is reachable.
+    let cookie = '';
+    let token = '';
+    const port = Number(flags.port || 9222);
+    try {
+      const cdp = await connect(port);
+      const ck = await cdp.send('Storage.getCookies', {});
+      cdp.close();
+      const mine = (ck.cookies || []).filter((c) => /(^|\.)twitch\.tv$/.test(c.domain || ''));
+      cookie = mine.map((c) => `${c.name}=${c.value}`).join('; ');
+      // Twitch resolves the GQL viewer from the Authorization header, not from
+      // the cookie jar alone (measured 2026-11-09: cookie-only -> currentUser
+      // null). The token is the same `auth-token` cookie the page sends.
+      const tk = mine.find((c) => c.name === 'auth-token');
+      if (tk) token = tk.value;
+      if (!mine.length) out.notes.push(`port ${port}: browser reachable, no twitch.tv cookie`);
+    } catch (e) {
+      out.notes.push(`port ${port}: no browser (${String(e.message || e).slice(0, 80)}); followed list skipped`);
+    }
+
+    if (cookie) {
+      const r = await gql('{ currentUser { login follows(first:100) { edges { node { login displayName stream { viewersCount game { name } } } } } } }', cookie);
+      if (flags.raw) console.log('[raw followed]', String(r.text).slice(0, 600));
+      const u = r.json && r.json.data && r.json.data.currentUser;
+      if (u) {
+        out.account = u.login;
+        if (u.follows === null) out.notes.push('Twitch refused the followed list for this client (service error): name channels with --channel=');
+        out.followedTotal = ((u.follows && u.follows.edges) || []).length;
+        for (const e of (u.follows && u.follows.edges) || []) {
+          const n = (e && e.node) || {};
+          if (!n.stream) continue;
+          out.followed.push({ login: n.login, viewers: n.stream.viewersCount, game: (n.stream.game && n.stream.game.name) || '' });
+        }
+        out.followed.sort((a, b) => b.viewers - a.viewers);
+      } else {
+        out.errors.push(`followed: http ${r.status} ${String(r.text).slice(0, 120)}`);
+      }
+    }
+
+    // The account's OWN channel is always worth answering: "is my channel on
+    // air" is the question the followed list was standing in for, and Twitch
+    // refuses `follows` without the web app's integrity headers (measured
+    // 2026-11-09: service error). One public query, no session needed.
+    if (out.account && !wanted.includes(out.account.toLowerCase())) wanted.push(out.account.toLowerCase());
+
+    if (wanted.length) {
+      const r = await gql(`{ users(logins: ${JSON.stringify(wanted)}) { login stream { viewersCount game { name } } } }`);
+      const list = (r.json && r.json.data && r.json.data.users) || null;
+      if (list) {
+        for (const name of wanted) {
+          const u = list.find((x) => x && String(x.login).toLowerCase() === name) || null;
+          out.named.push({ login: name, live: !!(u && u.stream), viewers: u && u.stream ? u.stream.viewersCount : 0, game: u && u.stream && u.stream.game ? u.stream.game.name : '' });
+        }
+      } else {
+        out.errors.push(`named: http ${r.status} ${String(r.text).slice(0, 120)}`);
+      }
+    }
+
+    if (flags.json) {
+      console.log(JSON.stringify(out));
+      process.exitCode = out.errors.length ? 1 : 0;
+      return;
+    }
+    console.log(`account: ${out.account || 'unknown'}${cookie ? '' : ' (no session cookie)'}`);
+    if (out.followed.length) {
+      console.log(`following, LIVE now (${out.followed.length}):`);
+      for (const f of out.followed) console.log(`  ${String(f.viewers).padStart(7)}  twitch.tv/${f.login}  ${f.game}`);
+    } else if (out.account) {
+      console.log(`following: 0 of ${out.followedTotal || 0} followed channel(s) on air right now`);
+    }
+    for (const n of out.named) console.log(`  ${n.live ? 'LIVE' : 'off '}  twitch.tv/${n.login}  viewers=${n.viewers}  ${n.game}`);
+    for (const x of out.notes) console.log(`  note: ${x}`);
+    for (const x of out.errors) console.log(`  error: ${x}`);
+    process.exitCode = out.errors.length ? 1 : 0;
+    return;
+  }
+
+  if (cmd === 'tabmute') {
+    const targetUrl = (await s.page.evalIsolated('location.href')) || flags.url || DEFAULT_URL;
+    const { targetId } = await s.cdp.send('Target.createTarget', { url: targetUrl });
+    let other = null;
+    for (let i = 0; i < 40 && !other; i++) {
+      await delay(500);
+      const info = (await s.cdp.send('Target.getTargets')).targetInfos.find((t) => t.targetId === targetId);
+      if (!info) continue;
+      try {
+        const cand = await attach(s.cdp, info, 'tabB');
+        await cand.enable({ page: true });
+        const ready = await cand.evalIsolated('typeof KOAudio !== "undefined" && typeof KO !== "undefined"').catch(() => false);
+        if (ready) other = cand;
+      } catch {
+        /* content script not injected yet */
+      }
+    }
+    if (!other) throw new Error('second tab never got the content script');
+    // Both tabs must see a real, playing native player — the audio surfaces.
+    const readTab = async (label, sess) => {
+      const iso = await sess.evalIsolated(`({
+        intent: KOAudio.intent('twitch'),
+        kick: KOAudio.intent('kick'),
+        visible: KOAudio.visible(),
+        muted: KO.kickMuted,
+        slug: KO.slug,
+      })`);
+      const main = await sess.evalMain(`(() => {
+        const v = [...document.querySelectorAll('video')].find((x) => x.isConnected && x.readyState > 0) || document.querySelector('video');
+        return v ? { muted: v.muted, volume: v.volume, paused: v.paused, ct: v.currentTime } : null;
+      })()`);
+      const stored = await sess.evalIsolated(`new Promise((res) => chrome.storage.local.get('ko.v2', (o) => {
+        const st = (o && o['ko.v2']) || {};
+        res({ hasVols: Object.prototype.hasOwnProperty.call(st, 'vols'), player: st.player });
+      }))`);
+      return { label, iso, main, stored };
+    };
+    // ko-audio.js only attributes a volumechange to the user when it lands
+    // within INPUT_FRESH_MS (1200 ms) of a real input event. A synthetic
+    // `new Event('pointerdown')` would forge that trust — exactly the class the
+    // window exists to stop — so every write below is preceded by a CDP
+    // Input.dispatchMouseEvent, which the browser marks trusted.
+    const gesture = async (sess) => {
+      try {
+        await sess.click('video', { real: true, settle: 120 });
+      } catch {
+        await sess.click('body', { real: true, settle: 120 });
+      }
+    };
+    // Both tabs start audible: a fresh guest profile hands Chrome an autoplay
+    // mute, and a real click + the write is the gesture the arbiter reads.
+    const unmute = async (sess) => {
+      await gesture(sess);
+      return sess.evalMain(`(() => {
+      const v = [...document.querySelectorAll('video')].find((x) => x.isConnected && x.readyState > 0) || document.querySelector('video');
+      if (!v) return false;
+      v.muted = false;
+      if (v.volume === 0) v.volume = 0.6;
+      return !v.muted;
+    })()`);
+    };
+    await unmute(s.page);
+    await unmute(other);
+    await delay(1500);
+    const out = { url: targetUrl, before: {}, after: {}, uTurn: {} };
+    out.before.A = await readTab('A', s.page);
+    out.before.B = await readTab('B', other);
+
+    // The gesture: a real click in tab A, then Twitch's own volume button
+    // writes element.muted, which fires the volumechange the arbiter reads. No
+    // KOAudio call is made here.
+    await gesture(s.page);
+    await s.page.evalMain(`(() => {
+      const v = [...document.querySelectorAll('video')].find((x) => x.isConnected && x.readyState > 0) || document.querySelector('video');
+      if (!v) return false;
+      v.muted = true;
+      return v.muted;
+    })()`);
+    await delay(1500);
+    out.after.A = await readTab('A', s.page);
+    out.after.B = await readTab('B', other);
+
+    // Reverse direction, the owner's "e vice versa": unmute A, then mute B and
+    // require A to stay audible; then unmute B.
+    await gesture(s.page);
+    await s.page.evalMain(`(() => {
+      const v = [...document.querySelectorAll('video')].find((x) => x.isConnected && x.readyState > 0) || document.querySelector('video');
+      if (!v) return false;
+      v.muted = false;
+      return !v.muted;
+    })()`);
+    await delay(1200);
+    out.uTurn.A = await readTab('A', s.page);
+    await gesture(other);
+    await other.evalMain(`(() => {
+      const v = [...document.querySelectorAll('video')].find((x) => x.isConnected && x.readyState > 0) || document.querySelector('video');
+      if (!v) return false;
+      v.muted = true;
+      return v.muted;
+    })()`);
+    await delay(1200);
+    out.muteB = { A: await readTab('A', s.page), B: await readTab('B', other) };
+    await gesture(other);
+    await other.evalMain(`(() => {
+      const v = [...document.querySelectorAll('video')].find((x) => x.isConnected && x.readyState > 0) || document.querySelector('video');
+      if (!v) return false;
+      v.muted = false;
+      return !v.muted;
+    })()`);
+    await delay(1200);
+    out.unmuteB = { A: await readTab('A', s.page), B: await readTab('B', other) };
+
+    const fails = [];
+    const intentOf = (t) => (t && t.iso && t.iso.intent ? t.iso.intent.muted : null);
+    if (intentOf(out.before.A) === null || intentOf(out.before.B) === null) fails.push('no KOAudio intent readable');
+    if (intentOf(out.after.A) !== true) fails.push('tab A did not take the mute');
+    if (intentOf(out.after.B) !== intentOf(out.before.B)) fails.push('tab B intent CHANGED with tab A mute');
+    if (out.after.B && out.after.B.main && out.before.B && out.before.B.main && out.after.B.main.muted !== out.before.B.main.muted) {
+      fails.push('tab B native element CHANGED with tab A mute');
+    }
+    if (out.after.B && out.after.B.stored && out.after.B.stored.hasVols) fails.push('shared record still carries vols');
+    if (intentOf(out.uTurn.A) !== false) fails.push('tab A did not take its own unmute');
+    if (intentOf(out.muteB.B) !== true) fails.push('tab B did not take its own mute');
+    if (intentOf(out.muteB.A) !== false) fails.push('tab A was muted/unmuted by tab B mute');
+    if (intentOf(out.unmuteB.A) !== false) fails.push('tab A changed with tab B unmute');
+    if (out.muteB.A && out.muteB.A.main && out.muteB.A.main.muted !== false) fails.push('tab A native muted by tab B mute');
+
+    const brief = (t) => ({
+      intentMuted: t.iso.intent.muted,
+      intentVol: t.iso.intent.volume,
+      nativeMuted: t.main ? t.main.muted : null,
+      nativeVol: t.main ? t.main.volume : null,
+      hasVols: t.stored.hasVols,
+    });
+    const table = {
+      before: { A: brief(out.before.A), B: brief(out.before.B) },
+      afterMuteInA: { A: brief(out.after.A), B: brief(out.after.B) },
+      afterUnmuteInA: { A: brief(out.uTurn.A) },
+      afterMuteInB: { A: brief(out.muteB.A), B: brief(out.muteB.B) },
+      afterUnmuteInB: { A: brief(out.unmuteB.A), B: brief(out.unmuteB.B) },
+    };
+    console.log(JSON.stringify(table, null, 2));
+    console.log(`[tabmute] ${fails.length ? 'FAIL' : 'PASS'} ${fails.length ? fails.join(' | ') : 'one tab gesture stays in that tab'}`);
+    try { await s.cdp.send('Target.closeTarget', { targetId }); } catch { /* guest tab already gone */ }
+    s.cdp.close();
+    process.exitCode = fails.length ? 1 : 0;
     return;
   }
 

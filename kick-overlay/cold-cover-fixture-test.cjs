@@ -294,6 +294,73 @@ async function main() {
     };
   }
 
+  // ---- the panel must never outlive the hold (owner report 2026-11-09) -----
+  // "sem anuncio carregando a live" stayed on the NORMAL stream for the whole
+  // session and only fullscreen hid it: a painted node with no owner. Two
+  // invariants answer it, and both are checked here.
+  //   (1) the paint is DERIVED from state by syncCover(), never set by a flag;
+  //   (2) one node per id, so a rebuild cannot orphan a painted panel.
+  const syncCoverSource = (() => {
+    const at = SOURCE.indexOf('function syncCover()');
+    if (at < 0) throw new Error('syncCover() is missing from the shipped source');
+    let depth = 0;
+    for (let i = SOURCE.indexOf('{', at); i < SOURCE.length; i++) {
+      if (SOURCE[i] === '{') depth++;
+      else if (SOURCE[i] === '}') {
+        depth--;
+        if (depth === 0) return SOURCE.slice(at, i + 1);
+      }
+    }
+    throw new Error('unbalanced syncCover()');
+  })();
+  check('the panel paint follows state (shipped syncCover, driven directly)', () => {
+    const run = (state) => {
+      const cover = { isConnected: true, style: { display: 'flex' } };
+      const overlay = Object.assign({ cover }, state);
+      // eslint-disable-next-line no-new-func
+      new Function('overlay', `${syncCoverSource}; syncCover();`)(overlay);
+      return cover.style.display;
+    };
+    assert(run({ coldCover: true, revealed: false, adActive: true }) === 'flex', 'a live hold must paint');
+    assert(run({ coldCover: false, revealed: false, adActive: true }) === 'none', 'a cleared hold must un-paint');
+    assert(run({ coldCover: true, revealed: true, adActive: true }) === 'none', 'a revealed player must win over a stale hold');
+    assert(run({ coldCover: true, revealed: false, adActive: false }) === 'none', 'a pod that ended must un-paint');
+    const hidden = { isConnected: true, style: { display: 'none' } };
+    // eslint-disable-next-line no-new-func
+    new Function('overlay', `${syncCoverSource}; syncCover();`)({ cover: hidden, coldCover: true, revealed: false, adActive: true });
+    assert(hidden.style.display === 'flex', 'and it re-paints a fresh hold');
+  });
+  check('the paint is enforced on the position tick, and the panel is deduped', () => {
+    const tick = SOURCE.slice(SOURCE.indexOf('function positionOverlay()'), SOURCE.indexOf('function positionOverlay()') + 200);
+    assert(/syncCover\(\);/.test(tick), 'positionOverlay no longer enforces the panel state');
+    assert(SOURCE.includes("for (const staleId of ['ko-adfix-badge', 'ko-adfix-cover'])"), 'a rebuild can orphan a painted panel');
+    const mutated = SOURCE.replace('  function positionOverlay() {\n    syncCover();', '  function positionOverlay() {\n    void 0;');
+    assert(mutated !== SOURCE && !/syncCover\(\);/.test(mutated.slice(mutated.indexOf('function positionOverlay()'), mutated.indexOf('function positionOverlay()') + 200)), 'the enforcement mutation did not apply');
+  });
+  // The pod-end path must leave nothing painted either (it removes the node).
+  const cleared = await (async () => {
+    const page = makePage(SOURCE);
+    page.video.style = {};
+    page.video.muted = true;
+    page.bypass({ type: 'standby-start', url: 'https://clean.example/live.m3u8', channel: CHANNEL });
+    await settle(20);
+    page.frameMsg({ t: 'ready' });
+    page.frameMsg(healthySt());
+    await settle(20);
+    const pageId = page.stats() && page.stats().pageId;
+    page.bypass({ type: 'ad-hold', channel: CHANNEL, page: pageId });
+    await settle(30);
+    const shownAtHold = page.cover ? page.cover.style.display : null;
+    page.bypass({ type: 'ad-end', page: pageId });
+    await settle(200);
+    const after = page.cover && page.cover.isConnected !== false ? page.cover.style.display : 'removed';
+    return { shownAtHold, after };
+  })();
+  check('a pod that ends leaves no panel painted', () => {
+    assert(cleared.shownAtHold === 'flex', `cover at hold=${cleared.shownAtHold}`);
+    assert(cleared.after === 'none' || cleared.after === 'removed', `panel still painted: ${cleared.after}`);
+  });
+
   const green = await arm(SOURCE, 'green');
   check('GREEN: cold-cover fires on the ad-hold tick', () => {
     assert(green.coverEvents.length >= 1, `no cold-cover; adlog=${JSON.stringify(green.events.map((e) => e.ev))}`);

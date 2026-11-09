@@ -648,9 +648,12 @@ function sendSt() {
   // Playing can fire with an empty seekable range), but a target that
   // never becomes reachable must give up instead of seeking forever
   // (that "video replays every second" bug — each seek restarts playback).
+  // Compare in BOTH directions: IVS can start a replay url at its live edge
+  // (pos > target), and the old `pos < pendingSeek - 1` test then declared
+  // the seek landed without ever issuing it, so the rewind stayed at the edge.
   if (pendingSeek !== null && pendingSeek < 1e15) {
     if (pendingTries-- > 0) {
-      if (pos < pendingSeek - 1) {
+      if (Math.abs(pos - pendingSeek) > 1.5) {
         try {
           p.seekTo(pendingSeek);
         } catch {
@@ -728,11 +731,24 @@ window.addEventListener('message', (ev) => {
       try {
         if (Number.isFinite(m.s) && m.s >= 0 && m.s < 1e15) {
           const cur = p.getPosition() || 0;
+          // A finite duration means this is the replay (DVR/VOD) url: its
+          // seekable timeline is the whole broadcast, so a forward jump must
+          // not be clamped to the buffered window (IVS reports buffered.end
+          // near the playhead, which made every DVR seek look like "one
+          // second forward"). A live url reports Infinity (mapped to 0)
+          // duration; there the newest buffered frame is the edge.
           let edge = 0;
+          let replay = false;
           try {
-            const b = p.getBuffered();
-            if (b && isFinite(b.end)) edge = b.end;
+            const dur = p.getDuration();
+            if (isFinite(dur) && dur > 0 && dur < 1e15) { edge = dur; replay = true; }
           } catch { /* not ready */ }
+          if (!(edge > 0)) {
+            try {
+              const b = p.getBuffered();
+              if (b && isFinite(b.end)) edge = b.end;
+            } catch { /* not ready */ }
+          }
           if (!(edge > 0)) {
             const lat = p.getLiveLatency();
             edge = cur + (isFinite(lat) && lat > 0 ? lat : 0);
@@ -760,7 +776,9 @@ window.addEventListener('message', (ev) => {
                   const b = p.getBuffered();
                   if (b && isFinite(b.end)) nowLat = Math.max(0, b.end - nowPos);
                 } catch { /* not ready */ }
-                const ok = Math.abs(nowPos - target) < 3 || nowLat > beforeLat + 2;
+                // On the replay url only the position is meaningful: buffered
+                // end is not an edge, so the live latency rise is not proof.
+                const ok = Math.abs(nowPos - target) < 3 || (!replay && nowLat > beforeLat + 2);
                 if (!ok) attempt();
               } catch { attempt(); }
             }, 450);

@@ -451,6 +451,88 @@
       "verified": "2026-11-08",
       "owner_validation": null,
       "next": "Guest on kaicenat reached clean {state:Playing,lat:5.33,latSrc:hls,buf:2.31} with no empty-buffer seek. A real pod on the owner's channel is the confirmation that matters."
+    },
+    {
+      "id": "KO-20261108-08",
+      "title": "Muting one tab muted every other tab, and unmuting one unmuted the rest",
+      "state": "fixed",
+      "author": "lane",
+      "reported": "2026-11-08",
+      "fixed_in": "0.8.53",
+      "commit": null,
+      "hypothesis": "The mute/volume intent was one shared row (`ko.v2.vols`) written by whichever tab the user touched and fed back into EVERY tab by `chrome.storage.onChanged` -> `applyVols(s.vols)` -> `KOAudio.setIntent(...)` -> `apply()`. Since ko-audio derives `muted = intent || policy || surface !== visible`, a mute in tab A silenced tab B's native player within one storage round-trip, and the same path carried an unmute the other way ('e vice versa'). A reload of one tab, or any saveState from it, also clobbered the stored row for everyone.",
+      "falsifier": "Two tabs sharing the `ko.v2` record: a gesture in A must not change B's arbiter intent. tab-audio-scope-test.cjs fabricates two worlds from the real ko-audio.js; the pre-fix shape is the positive control (feeding a shared row into a tab DOES mute it) and two source mutations re-insert the shared row and the listener write, both caught by the fence.",
+      "evidence": [
+        "kick-overlay/tab-audio-scope-test.cjs — checks=11 failed=0 (A's gesture invisible to B, reload restores only its own choice, fresh tab at defaults, mirror reads the arbiter, positive control, 2 fence mutations)",
+        "_tools/ko-verify.mjs RESULT PASS checks=20 failed=0 (tab-audio-scope wired into the gate)",
+        "LIVE guest Chrome 0.8.53, twitch.tv/kaicenat (native player, two real tabs), `node _tools/ko-harness.mjs tabmute`: before A={intent false, vol 0.5, native false} B={false,0.5}; mute in A -> A={true,0} B unchanged {false,0.5}; unmute A -> A false; mute in B -> B={true,0} A unchanged {false,0.5}; unmute B -> false. Shared `ko.v2` record carried no `vols` in every sample. PASS"
+      ],
+      "verified": false,
+      "owner_validation": "Guest-Chrome live run passed both directions. Still owed on HIS Chrome: two tabs on a live channel, mute one from the bar, the other keeps its sound (open tabs need one navigation to pick up 0.8.53).",
+      "next": "Owner: with 0.8.53 loaded, navigate two Twitch tabs to a live channel, click mute in one, confirm the other's audio is untouched and its overlay mute icon does not change; reload one tab and confirm its own choice persists."
+    },
+    {
+      "id": "KO-20261109-01",
+      "date": "2026-11-09",
+      "title": "swapping the player muted the new player by itself",
+      "state": "fixed",
+      "fixed_in": "0.8.54",
+      "verified": false,
+      "evidence": [
+        "tab-audio-scope-test.cjs checks=16 (+3 swap arms, +1 machine-mute arm, +1 mutation): unmuted live stays unmuted through twitch->kick->yt and back; a muted live stays muted; a machine mute (volumechange with navigator.userActivation.hasBeenActive=false) is NOT recorded as intent and the element is re-asserted audible",
+        "LIVE guest Chrome 0.8.54, twitch.tv/rodil (native player): clean boot -> intent twitch {muted:false, volume:1}, element unmuted (no self-mute); set player=youtube -> intent yt {false,1} inherited; #ko-mute click -> yt true; set player=twitch -> intent twitch true (the mute carried back)"
+      ],
+      "owner_validation": "Both directions proven on a live channel in guest Chrome. Owed on HIS Chrome: swap players with the bar and confirm the sound follows the previous surface, both ways.",
+      "next": "Owner: with 0.8.54 loaded (reload the tabs), unmute the live, switch player in the popup, confirm the new player is audible; mute it, switch back, confirm it is muted.",
+      "falsifier": "Falsify with `node kick-overlay/tab-audio-scope-test.cjs`: if 'swap to the kick player keeps an UNMUTED live unmuted' passes and 'a volumechange with NO user activation is policy, not intent' passes, the claim is refuted. Second instrument: guest Chrome, `node _tools/ko-harness.mjs watch` after `set --player=twitch` — a clean boot that reads intent twitch muted:true refutes it."
+    },
+    {
+      "id": "KO-20261109-02",
+      "date": "2026-11-09",
+      "title": "'sem anuncio - carregando a live' panel stayed on the normal stream for the whole session",
+      "state": "fixed",
+      "fixed_in": "0.8.54",
+      "verified": false,
+      "evidence": [
+        "cold-cover-fixture-test.cjs checks=18: the paint is derived by syncCover() (shipped function driven directly: hold paints, cleared hold un-paints, revealed wins over a stale hold, ended pod un-paints, a fresh hold re-paints); the enforcement is on the 500 ms position tick with a mutation that removes it; a pod that ends leaves nothing painted",
+        "cause: three exits cleared overlay.coldCover without un-painting the element, and a rebuild overwrote overlay.cover with a NEW node while the old painted one stayed in the DOM (only fullscreen hid it)"
+      ],
+      "owner_validation": "Not reproduced as a live pod (no ad was served in the guest). The two invariants and the fixture path are proven; the live pod is owed.",
+      "next": "First pod with 0.8.54 must show one cold-cover and one cold-cover-timeout/overlay-reveal pair, then no panel in ko.adlog's DOM (visual: nothing left on the stream after the pod).",
+      "falsifier": "Falsify with `node kick-overlay/cold-cover-fixture-test.cjs`: the three panel arms ('the panel paint follows state', 'the paint is enforced on the position tick', 'a pod that ends leaves no panel painted') going red refutes it."
+    },
+    {
+      "id": "KO-20261109-03",
+      "date": "2026-11-09",
+      "title": "the kick bar's control order: pause belongs at the far left, the volume-first order belongs to the ad player",
+      "state": "fixed",
+      "fixed_in": "0.8.55",
+      "verified": false,
+      "evidence": [
+        "0.8.54 put the volume control first on the KICK bar; the owner corrected the order on 2026-11-09 (\"bota o botao de pause a esquerda de tudo do player da kick ... o botao de volume na esquerda era pra ser do player que troca quando acontece ad\"), so 0.8.55 puts #ko-play first and #ko-volwrap second",
+        "the ad path builds no control bar of its own (twitch-adblock.js creates only #ko-adfix-badge and #ko-adfix-cover, and player.html carries no controls), so the volume-first order he asked for belongs to Twitch's own bar that shows on an ad and is not ours to lay out",
+        "measured in the guest with 0.8.55: #ko-g1 order = [ko-play, ko-volwrap, ko-cur, sep, ko-total]"
+      ],
+      "owner_validation": "Measured in the guest; owed on his screen.",
+      "next": "Owner: one look at the bar - pause, then volume, then time.",
+      "falsifier": "Falsify in the guest: `node _tools/ko-harness.mjs eval \"[...document.querySelector('#ko-g1').children].map(c=>c.id)\" --world=main` — if ko-play comes before ko-volwrap the claim is refuted."
+    },
+    {
+      "id": "KO-20261109-04",
+      "date": "2026-11-09",
+      "title": "the page muted itself at random while he was talking in chat",
+      "state": "fixed",
+      "fixed_in": "0.8.56",
+      "verified": false,
+      "evidence": [
+        "cause A: the gesture reader gated on navigator.userActivation.hasBeenActive, which is STICKY for the life of the page. After one click anywhere, every machine volumechange (Twitch muting on an ad, the ad path's claim silencing the page) was recorded as HIS intent and persisted per tab; the next player inherited it",
+        "cause B: stopAdOverlay() released the 'ad' claim in two of its three exits; the frame-less early return skipped it, so a source switch could leave every other surface muted by the claim rule until the user touched the bar",
+        "live falsification on a guest with the fix (twitch.tv/titiltei, player=twitch): real CDP click -> 3 s wait -> `video.muted = true` in the main world -> intent stays {muted:false, volume:1} and the element is re-asserted to muted=false (pre-fix: intent {muted:true})",
+        "positive control, same guest, one task: pointerdown + `video.muted = true` -> intent {muted:true} recorded, element stays muted"
+      ],
+      "falsifier": "Falsify with `node kick-overlay/tab-audio-scope-test.cjs`: the arms 'a volumechange 3 s after the last real input is machine-driven' and 'a volumechange in the same task as a real input is intent' going red refute the claim; a mutation that restores the sticky hasBeenActive gate must turn an arm RED.",
+      "owner_validation": "Proven in guest Chrome. Owed on his Chrome: after a reload with 0.8.56, talk in chat and type for a while, then check the volume is still his.",
+      "next": "Owner: reload the tab so it runs 0.8.56, then chat normally for a few minutes and confirm the sound does not change by itself."
     }
   ]
 }

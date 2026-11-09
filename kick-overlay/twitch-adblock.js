@@ -596,7 +596,24 @@
     /* document may be unavailable very early */
   }
 
+  // The notice panel is a FUNCTION of state, never a flag. Owner report
+  // 2026-11-09: "sem anuncio carregando a live" stayed on the normal stream the
+  // whole session out of fullscreen (fullscreen only masked it). Three exits
+  // cleared overlay.coldCover without ever un-painting the element, and the
+  // early return below (video smaller than 40px, or a player that went away)
+  // left it painted forever. Enforced on the 500 ms tick, so no exit path can
+  // leave it on screen.
+  function syncCover() {
+    const c = overlay.cover;
+    if (!c || c.isConnected === false) return; // a detached node cannot paint
+    const show = !!(overlay.coldCover && !overlay.revealed && overlay.adActive);
+    const shown = c.style.display !== 'none';
+    if (show === shown) return;
+    c.style.display = show ? 'flex' : 'none';
+  }
+
   function positionOverlay() {
+    syncCover();
     if (!overlay.frame) return;
     const v = overlay.video && overlay.video.isConnected ? overlay.video : mainVideo();
     if (!v) return;
@@ -774,10 +791,10 @@
   function restoreHeldMute() {
     if (!overlay.held) return;
     restoreNativeVideos();
-    // Releasing the claim hands the sound back to whatever the page shows, at
-    // the user's current intent — not at a value captured before the pod.
+    // The claim is released by stopAdOverlay(), the single site every exit
+    // passes through, so the page surface comes back at the user's CURRENT
+    // intent — not at a value captured before the pod.
     overlay.held = false;
-    audioClaim(false);
   }
 
   // Hiding the native video does not normally pause it, but Twitch may pause
@@ -991,6 +1008,13 @@
       overlay.hideTimer = 0;
     }
     if (overlay.held) restoreHeldMute();
+    // ONE release site for every exit, including the frame-less early return
+    // below. A source switch can null overlay.frame while the claim is still
+    // set; the early return used to skip the release, and the page stayed
+    // silent until the user touched the volume bar. claim(null) is idempotent,
+    // so a standby that never claimed costs nothing. Released before the frame
+    // is removed is still one synchronous task: no audio renders in between.
+    audioClaim(false);
     if (!overlay.frame) {
       // Even without a frame, a badge/unmute handler can be left over from a
       // source switch that failed between teardown and rebuild.
@@ -1063,11 +1087,10 @@
           cleanLat: overlay.lastSt ? +Number(overlay.lastSt.lat || 0).toFixed(1) : null,
         });
       } catch { /* ignore */ }
-      // CSS back (mute ownership never left the authority), then the claim is
-      // released so the page surface is audible again at the user's CURRENT
-      // intent — including an unmute made during the pod.
+      // CSS back (mute ownership never left the authority); the claim was
+      // released above, so the page surface is audible again at the user's
+      // CURRENT intent — including an unmute made during the pod.
       restoreNativeVideos();
-      audioClaim(false);
       const v = overlay.video && overlay.video.isConnected ? overlay.video : mainVideo();
       if (v) {
         // Hand back NOW, not at the 300ms retry: the frame is still mounted and
@@ -1210,7 +1233,7 @@
     overlay.coldTimer = 0;
       // The clean picture is up: drop the notice panel in the same tick as the
       // frame raise, so the user never sees the panel over a playing stream.
-      try { if (overlay.cover) overlay.cover.style.display = 'none'; } catch { /* ignore */ }
+      syncCover();
       try {
         overlay.frame.style.opacity = '1';
         overlay.frame.style.pointerEvents = 'auto';
@@ -1478,6 +1501,18 @@
 
     // Small, non-interactive indicator so the reduced-quality player is not
     // mistaken for a broken Twitch player. Positioned in positionOverlay().
+    // A rebuild creates this element again. Overwriting the reference while the
+    // old node stayed in the DOM is how a painted panel outlived every owner
+    // (owner report 2026-11-09: the notice stayed on the normal stream until the
+    // page was reloaded, and only fullscreen hid it). One node per id, always.
+    for (const staleId of ['ko-adfix-badge', 'ko-adfix-cover']) {
+      try {
+        const old = document.getElementById(staleId);
+        if (old && old !== overlay.badge && old !== overlay.cover) old.remove();
+      } catch { /* ignore */ }
+    }
+    if (overlay.badge) { try { overlay.badge.remove(); } catch { /* ignore */ } overlay.badge = null; }
+    if (overlay.cover) { try { overlay.cover.remove(); } catch { /* ignore */ } overlay.cover = null; }
     const badge = document.createElement('div');
     badge.id = 'ko-adfix-badge';
     badge.textContent = switchSource ? 'sem anúncio · trocando fonte limpa…' : 'sem anúncio · conectando fonte limpa…';
