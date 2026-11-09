@@ -1092,21 +1092,41 @@ async function main() {
     await row('go-live', async () => {
       const g0 = await st();
       if (!(g0.pos > 5)) return { pass: false, detail: `precondition: pos=${g0.pos}` };
-      await s.page.click('#ko-golive', { real: true, settle: 400 });
+      // Synthetic on purpose: `#ko-golive` renders at the player's right edge,
+      // the same place Twitch's own controls sit, and a headless browser never
+      // hovers them out of the way. The row tests OUR handler; whether a real
+      // pointer reaches the chip is a live check, not a headless one.
+      const chip = await s.page.evalIsolated(`(() => {
+        const b = document.getElementById('ko-golive');
+        if (!b) return 'missing';
+        const r = b.getBoundingClientRect();
+        return { shown: b.classList.contains('ko-show'), w: Math.round(r.width), h: Math.round(r.height) };
+      })()`);
+      if (!chip || chip === 'missing' || !chip.shown) return { pass: false, detail: `no live chip: ${JSON.stringify(chip)}` };
+      await s.page.click('#ko-golive', { synthetic: true, settle: 400 });
       // The live IVS position can be the session clock OR the broadcast clock
       // (measured both), so a small-pos bound is wrong. The live load also
       // reports Playing/Buffering in flapping samples for several seconds, so
       // one instantaneous sample only proves a frozen pos. Require two
       // consecutive samples that are live and actually advancing.
+      // A DVR->live switch RESETS the clock: the replay reports the broadcast
+      // position (26000 s) and the live url reports a session position (6 s).
+      // Measured 2026-11-09: the switch needed ~35 s (the IVS live playlist
+      // starts at the lowest rendition, q 1080p60 -> 360p) and the old 32 s
+      // window called a working go-live a failure. Accept the reset as the
+      // transition, then require two consecutive ADVANCING live samples.
       let prev = null;
       let stable = 0;
       let last = null;
-      for (let i = 0; i < 40 && stable < 2; i++) {
-        await delay(800);
+      let reset = false;
+      for (let i = 0; i < 150 && stable < 2; i++) {
+        await delay(500);
         const v = await st();
         last = v;
-        const ok = !v.onDvr && v.lat > 0.2 && v.lat < 6 && v.state === 'Playing';
-        stable = ok && prev && v.pos > prev.pos + 0.3 ? stable + 1 : 0;
+        const ok = !v.onDvr && v.lat >= 0 && v.lat < 8 && v.state === 'Playing';
+        if (ok && v.pos < 60 && prev && prev.pos > 100) reset = true;
+        const advancing = ok && prev && (reset ? v.pos > prev.pos + 0.2 : v.pos > prev.pos + 0.3);
+        stable = advancing ? stable + 1 : 0;
         prev = v;
       }
       if (stable < 2) return { pass: false, detail: `live never advanced (${JSON.stringify(last)})` };
@@ -1114,7 +1134,15 @@ async function main() {
       await delay(2000);
       const b = await st();
       const adv = b.pos - a.pos;
-      return { pass: b.state === 'Playing' && !b.onDvr && adv > 1.2, detail: `onDvr=${b.onDvr} lat=${b.lat} pos=${a.pos}->${b.pos} adv=${adv.toFixed(2)}s` };
+      // The reset may already have happened before the first sample (the
+      // switch can complete inside the click's settle), so the clock SHAPE is
+      // the evidence: a pre-click broadcast position (>200 s) that is now a
+      // session position (<200 s) means the live url took over.
+      const liveClock = b.pos < 200 && g0.pos > 200;
+      return {
+        pass: b.state === 'Playing' && !b.onDvr && adv > 1.2 && (reset || liveClock),
+        detail: `reset=${reset} liveClock=${liveClock} onDvr=${b.onDvr} lat=${b.lat} pos=${a.pos}->${b.pos} adv=${adv.toFixed(2)}s`,
+      };
     });
     await row('quality-480p', async () => {
       const cur = await st();

@@ -444,3 +444,26 @@ lane's duplicate: **15 processes / 1.33 GB** on one port. `ko-guest.mjs` now pas
 `--disk-cache-size=268435456` and `--renderer-process-limit=4`, and `ko-harness.mjs` refuses a second
 guest: `a guest browser is already running on port N; reuse it with KO_PORT=N` (measured refusal on
 9446 naming 9447).
+
+**What the suite caught that the report did not.** The audio cutover of 0.8.53 lived ONLY in the working
+tree too, so the same revert took `mirrorAudio()`, the removal of `applyVols` and the `vols` field out of
+`content.js` — while `tab-audio-scope-test.cjs` (committed, untouched) still asserted all three. The
+gate said `FAIL tab-audio-scope` and named the exact line (`mirrorAudio() exists in content.js`), which
+is why the repair was mechanical: `mirrorAudio()` derives `KO.kickMuted/kickVol/ytMuted/ytVol` (plus
+`pageMuted/pageVol` on a YouTube host) from the arbiter and redraws the bar once, the shared record
+carries NO `vols` field, there is no `setPersister` and no fresh-profile mute seed. Then the guest
+still ran the OLD content.js until it was restarted (`setPersister is not a function` from
+`audioBoot()` is how that surfaced), so a code change needs `stop` + `start`, never a page reload.
+
+**go-live, and why three of the nine rows click synthesised.** The last red row was the row, not the
+player: `#ko-golive` renders at the player's right edge and a headless click landed on Twitch's own
+control (measured: `setPersister is not a function` was the guest running old code, and the same class
+of artifact hit `#ko-play`). With the click dispatched on OUR element the row proves the switch, and
+the evidence is the CLOCK SHAPE, not a captured moment: `pos=2.32->4.32 adv=2.00s liveClock=true`
+(a broadcast position of 26,000 s becoming a session position of 2 s is the live url taking over).
+Direct call of `kickBackToLive()` sampled separately: `onDvr=false` and `pos 5.4 -> 37.4` over 32 s at
+`lat 1.7`. Final live table, 0.8.57, twitch.tv/titiltei, `player=kick`:
+`RESULT PASS kickparity rows=9 failed=0` — pause `moved=0.00s`, resume `2.00s`, arrow-back `4.20s`,
+rewind-60s `got=26394.98 advanced=4.00s`, rewind-10s `got=26389.67 advanced=3.00s`,
+seek-within-dvr `26273.26`, go-live `liveClock=true`, quality `480p`, latency `1.84s`.
+Gate `RESULT PASS checks=20 failed=0`.
