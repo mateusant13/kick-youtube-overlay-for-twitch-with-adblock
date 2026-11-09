@@ -344,7 +344,8 @@ function usage() {
                                  GQL directly; --port names the browser whose cookies give the
                                  FOLLOWED list (read-only, no tab created or touched). Named
                                  channels need no session. Use this instead of guessing a channel.
-  parity-ab [--channel=NAME]     A/B against kick.com's OWN player: same back-seek, ref vs ours, side by side
+  parity-ab [--channel=NAME]     A/B against kick.com's OWN player (in the guest browser)
+  parity-live [--channel=NAME] [--port=9222]  the same A/B in HIS Chrome, own background tabs only, never activates his
   kickparity                     kick.com playback parity: pause, resume, arrow seek, 10s/60s rewind, seek inside the DVR, go live, quality, latency
   shot [path]                    PNG screenshot
   net --pattern=RE --seconds=N [--target=hls|page|sw]
@@ -402,12 +403,15 @@ async function main() {
     return;
   }
 
+  // `parity-live` runs in the OWNER'S Chrome with his profile and opens its own
+  // background tabs, so it must neither start nor attach to the guest browser.
+  const needsGuest = cmd !== 'parity-live';
   // Commands below need a live page + content script. Start the guest if it is
   // not up yet; --fresh always replaces the profile with clean extension code.
-  if (!(await guestUp()) || flags.fresh) {
+  if (needsGuest && (!(await guestUp()) || flags.fresh)) {
     await ensureGuest({ fresh: !!flags.fresh, url: flags.url || DEFAULT_URL });
   }
-  const s = await openSessions();
+  const s = needsGuest ? await openSessions() : null;
 
   if (cmd === 'state') { printState(await getState(s)); s.cdp.close(); return; }
 
@@ -868,6 +872,310 @@ async function main() {
     for (const x of rows) console.log(`${x.pass ? 'PASS' : 'FAIL'} ${x.name} ${x.detail}`);
     console.log(`RESULT ${failed ? 'FAIL' : 'PASS'} parity-ab rows=${rows.length} failed=${failed}`);
     s.cdp.close();
+    if (failed) process.exitCode = 1;
+    return;
+  }
+
+  if (cmd === 'parity-live') {
+    // PARITY IN THE OWNER'S BROWSER (owner order 2026-11-09: "u mesmo kick e
+    // twitch no meu chrome. os dois sendo o canal titiltei. e testa de verdade
+    // ... no background, nao na minha cara").
+    //
+    // This command NEVER touches a tab that already exists: it creates its own
+    // background target per platform, measures it, and closes it. No
+    // `Target.activateTarget`, no `Page.navigate` on his pages. The only state
+    // it may borrow is the player preference, and it is restored verbatim
+    // before the command returns.
+    //
+    // Reference = kick.com's own media element (what its DVR does internally).
+    // Candidate = twitch.tv with OUR bar, seeking through `kickSeekTo` via a
+    // synthetic pointer on `#ko-seekbar`. Synthetic on purpose: the bar sits
+    // where Twitch's own controls sit, and a trusted pointer over his live page
+    // would be a click on HIS player.
+    const channel = String(flags.channel || 'titiltei').toLowerCase();
+    const port = Number(flags.port || 9222);
+    const OFFSETS = String(flags.offsets || '10,60,600').split(',').map((x) => Number(x)).filter((x) => x > 0);
+    const sleepms = (n) => delay(n);
+    const cdp = await connect(port);
+    const opened = [];
+    const log = (...a) => console.log('[parity]', ...a);
+
+    const openTab = async (url, label) => {
+      // `muted: true` matters twice: it never makes a sound in his face, and
+      // a background tab that is NOT muted cannot autoplay (Chrome blocks
+      // audible autoplay without a gesture) - the first run measured exactly
+      // that: kick.com loaded and produced no playing video at all.
+      const { targetId } = await cdp.send('Target.createTarget', { url, background: true, muted: true });
+      opened.push(targetId);
+      const sess = await attach(cdp, { targetId }, label);
+      sess.cdp = cdp;
+      await sess.enable({ page: true });
+      const t0 = Date.now();
+      while (Date.now() - t0 < 30000) {
+        const rs = await sess.evalMain('document.readyState').catch(() => null);
+        if (rs === 'complete') break;
+        await sleepms(400);
+      }
+      log(`${label} tab ready target=${targetId}`);
+      return sess;
+    };
+    // A tab this command created is marked in its URL, so a leftover from a
+    // crashed run is identifiable without guessing which of HIS tabs it is.
+    const MARK = '?omp=parity';
+    const closeTab = async (targetId) => {
+      await cdp.send('Target.detachFromTarget', { targetId }, null).catch(() => null);
+      try {
+        const t = await cdp.send('Target.getTargets');
+        const sess = t.targetInfos.find((x) => x.targetId === targetId);
+        if (sess && sess.sessionId) await cdp.send('Target.detachFromTarget', { sessionId: sess.sessionId }).catch(() => null);
+      } catch { /* ignore */ }
+      await cdp.send('Target.closeTarget', { targetId }).catch(() => null);
+    };
+    const cleanMarks = async () => {
+      const t = await cdp.send('Target.getTargets');
+      const mine = t.targetInfos.filter((x) => x.type === 'page' && (x.url || '').includes('omp=parity'));
+      for (const x of mine) await closeTab(x.targetId);
+      return mine.length;
+    };
+    if (flags.clean) {
+      const n = await cleanMarks();
+      console.log(`[parity] cleaned ${n} leftover measurement tab(s)`);
+      cdp.close();
+      return;
+    }
+    // `refreshContexts()` disables and re-enables Runtime, and on a loaded
+    // browser that call itself times out (measured: `Runtime.enable: timeout`
+    // right after a lifecycle wake). A plain re-attach is the cheap repair: the
+    // context ids are only stale after a navigation.
+    const safeEval = async (sess, expr, main = false) => {
+      const run = () => (main ? sess.evalMain(expr) : sess.evalIsolated(expr));
+      try { return await run(); } catch (e) {
+        if (!/Cannot find context/.test(String(e))) throw e;
+        const fresh = await attach(cdp, { targetId: sess.targetId }, sess.label);
+        if (!fresh) throw e;
+        fresh.cdp = cdp;
+        await fresh.enable({ page: true }).catch(() => null);
+        sess.contexts = fresh.contexts;
+        sess.mainFrameId = fresh.mainFrameId;
+        sess.sessionId = fresh.sessionId;
+        await sleepms(300);
+        return await run();
+      }
+    };
+
+    const refProbe = `(() => {
+      const cands = [...document.querySelectorAll('video')]
+        .map((v) => { const r = v.getBoundingClientRect(); return { v, area: r.width * r.height }; })
+        .filter((x) => x.v.readyState >= 2 && x.area > 100000)
+        .sort((a, b) => b.area - a.area);
+      const out = { n: document.querySelectorAll('video').length, href: location.href, title: document.title.slice(0, 60) };
+      if (!cands.length) return out;
+      const v = cands[0].v;
+      const sk = v.seekable;
+      let end = null, start = 0;
+      if (sk && sk.length) {
+        const e = sk.end(sk.length - 1), b = sk.start(0);
+        if (Number.isFinite(e) && e < 1e6) end = +e.toFixed(2);
+        if (Number.isFinite(b) && b < 1e6) start = +b.toFixed(2);
+      }
+      if (end === null && Number.isFinite(v.duration) && v.duration < 1e6) end = +v.duration.toFixed(2);
+      return { ...out, pos: +v.currentTime.toFixed(2), paused: !!v.paused, end, start, area: Math.round(cands[0].area), dur: Number.isFinite(v.duration) && v.duration < 1e6 ? +v.duration.toFixed(1) : null };
+    })()`;
+    const refSeek = `(t) => {
+      const cands = [...document.querySelectorAll('video')]
+        .map((v) => { const r = v.getBoundingClientRect(); return { v, area: r.width * r.height }; })
+        .filter((x) => x.v.readyState >= 2 && x.area > 100000)
+        .sort((a, b) => b.area - a.area);
+      if (!cands.length) return null;
+      cands[0].v.currentTime = t;
+      return +cands[0].v.currentTime.toFixed(2);
+    }`;
+
+    // A background tab is `visibilityState: 'hidden'` and kick.com mounts its
+    // player only for a visible page - with the OneTrust overlay up, no <video>
+    // existed at all (measured: `{n:0, title:'titiltei Live Stream'}`). Lifecycle
+    // `active` plus a consent dismissal is the strongest thing CDP offers short
+    // of `Page.bringToFront`, which is FORBIDDEN here because it would pull the
+    // tab into his face.
+    const wake = async (sess, label) => {
+      await sess.evalRaw(`(() => {
+        const ids = ['#onetrust-accept-btn-handler', '#accept-recommended-btn-handler'];
+        for (const q of ids) { const b = document.querySelector(q); if (b) { b.click(); return 'consent:' + q; } }
+        const b = [...document.querySelectorAll('button,a')].find((e) => /^(accept all|aceitar tudo|accept|agree)$/i.test((e.textContent || '').trim()));
+        if (b) { b.click(); return 'consent:text'; }
+        return 'no-consent';
+      })()`).then((r) => log(`${label} wake ${r}`)).catch(() => null);
+      // Every CDP call here is bounded at 5 s: on a loaded browser
+      // `Page.setWebLifecycleState` can fail to answer at all, and the default
+      // 30 s timeout turned a stuck browser call into a stuck measurement.
+      await sess.cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true }, sess.sessionId, 5000).catch(() => null);
+      await sess.cdp.send('Page.setWebLifecycleState', { state: 'active' }, sess.sessionId, 5000).catch(() => null);
+      await sleepms(1200);
+      const vis = await sess.cdp.send('Runtime.evaluate', { expression: 'document.visibilityState', returnByValue: true }, sess.sessionId, 5000).then((r) => r.result && r.result.value).catch(() => '?');
+      log(`${label} visibilityState=${vis}`);
+    };
+    const bail = async () => { for (const t of opened) await closeTab(t); };
+    process.on('uncaughtException', async (e) => { console.log('[parity] ABORT', String(e).slice(0, 200)); await bail(); process.exit(1); });
+    const rows = [];
+    const refOut = {};
+    const candOut = {};
+
+    // ---- REFERENCE: kick.com's own player, in its own background tab
+    // MEASURED WALL (2026-11-09, his Chrome): a background kick.com tab mounts
+    // no <video> at all, and after a lifecycle wake its renderer stops
+    // answering CDP (`Runtime.evaluate: timeout` at 8 s, three attempts). The
+    // reference therefore cannot be produced without a RENDERED kick tab, which
+    // would mean pulling a tab into his face. `--skip-ref` measures our side
+    // alone and says so in the verdict.
+    const kickTab = flags['skip-ref'] ? null : await openTab(`https://kick.com/${channel}${MARK}`, 'kick');
+    if (kickTab) await wake(kickTab, 'kick');
+    // kick.com mounts its <video> but leaves it PAUSED (measured: readyState 4,
+    // currentTime 0, paused true, width 0) until it is played, and its seekable
+    // window is 2 s until the replay window lands. Muted `play()` is the one
+    // thing a page may do without a gesture, and the tab is muted at browser
+    // level, so nothing is audible.
+    const primeRef = `(() => {
+      const v = [...document.querySelectorAll('video')][0];
+      if (!v) return 'no-video';
+      v.muted = true;
+      const p = v.play();
+      return p ? (p.then(() => 'play').catch((e) => 'rej:' + e.name)) : 'no-promise';
+    })()`;
+    const primed = kickTab ? await safeEval(kickTab, primeRef, true).catch((e) => 'ERR ' + String(e).slice(0, 60)) : 'skipped';
+    log(`kick prime ${primed}`);
+    let refBase = null;
+    for (let i = 0; kickTab && i < 40; i++) {
+      const v = await safeEval(kickTab, refProbe, true).catch(() => null);
+      // A 2 s window is not the DVR: require a real span before measuring.
+      if (v && v.end !== null && v.pos > 1 && (v.end - (v.start || 0)) > 60) { refBase = v; break; }
+      if (v && v.paused) await safeEval(kickTab, primeRef, true).catch(() => null);
+      await sleepms(1500);
+    }
+    if (!refBase) {
+      const v = await safeEval(kickTab, refProbe, true).catch((e) => ({ err: String(e) }));
+      log(`reference detail ${JSON.stringify(v)}`);
+      rows.push({ name: 'reference', pass: false, detail: `kick.com/${channel} produced no seekable video: ${JSON.stringify(v)} - PARITY UNPROVEN` });
+      log('FAIL reference unavailable; parity stays UNPROVEN');
+    } else {
+      log(`reference kick.com/${channel} ${JSON.stringify(refBase)}`);
+      for (const off of OFFSETS) {
+        const cur = await kickTab.evalMain(refProbe);
+        const edge = cur.end;
+        const target = Math.max(cur.start || 0, edge - off);
+        await kickTab.evalMain(`(${refSeek})(${target})`).catch(() => null);
+        await sleepms(2500);
+        const a = await kickTab.evalMain(refProbe);
+        await sleepms(4000);
+        const b = await kickTab.evalMain(refProbe);
+        const held = !!(a && b) && b.pos - a.pos > 2.5;
+        refOut[off] = { behind: a ? +(edge - a.pos).toFixed(1) : null, held, posA: a && a.pos, posB: b && b.pos };
+        log(`reference back ${off}s -> behind=${refOut[off].behind}s held=${held} (pos ${a && a.pos} -> ${b && b.pos})`);
+      }
+    }
+    if (kickTab) await closeTab(opened[0]);
+
+    // ---- CANDIDATE: twitch.tv + our kick overlay
+    const twitchTab = await openTab(`https://www.twitch.tv/${channel}${MARK}`, 'twitch');
+    // chrome.storage exists only in the content-script world: the first run
+    // asked the MAIN world, got `undefined`, and therefore treated a real
+    // record as absent before overwriting it.
+    const readRec = () => twitchTab.evalIsolated(`new Promise((r) => chrome.storage.local.get('ko.v2', (o) => r(o['ko.v2'] || null)))`).catch(() => null);
+    let rec0 = null;
+    for (let i = 0; i < 30 && !rec0; i++) { rec0 = await readRec(); if (!rec0) await sleepms(500); }
+    const st0 = () => safeEval(twitchTab, `(() => { const k = window.KO && KO.kickState; return k ? { pos: +Number(k.pos||0).toFixed(2), lat: +Number(k.lat||0).toFixed(2), paused: !!k.paused, onDvr: !!KO.kickOnDvr, dur: +Number(KO.kickDur||0).toFixed(1), player: KO.player } : null; })()`).catch(() => null);
+    let cur = null;
+    for (let i = 0; i < 90; i++) {
+      cur = await st0();
+      if (cur && cur.state !== 'Stopped' && cur.pos > 1) break;
+      await sleepms(500);
+    }
+    // The overlay only mounts OUR kick layer when the preference says so. If
+    // the profile prefers another player, borrow it for this measurement and
+    // put it back before returning.
+    let restore = null;
+    if (!cur || cur.player !== 'kick') {
+      const base = rec0 || {};
+      restore = { rec: rec0 };
+      await safeEval(twitchTab, `new Promise((r) => chrome.storage.local.set({ 'ko.v2': ${JSON.stringify({ ...base, player: 'kick', enabled: true })} }, () => r(1)))`);
+      await twitchTab.evalMain('location.reload(), 1').catch(() => null);
+      await sleepms(1500);
+      await twitchTab.refreshContexts();
+      await twitchTab.enable({ page: true }).catch(() => null);
+      for (let i = 0; i < 120; i++) {
+        cur = await st0();
+        if (cur && cur.player === 'kick' && cur.pos > 1) break;
+        await sleepms(500);
+      }
+      log(`borrowed player=kick (was ${(rec0 && rec0.player) || 'unset'}), restored at exit`);
+    }
+    if (!cur || !(cur.pos > 1)) {
+      rows.push({ name: 'candidate', pass: false, detail: `our kick layer never reached playing: ${JSON.stringify(cur)} - CANDIDATE UNPROVEN` });
+      log('FAIL candidate not playing');
+    } else {
+      log(`candidate twitch.tv/${channel} ${JSON.stringify(cur)}`);
+      const seekMark = `(frac) => {
+        const sb = document.getElementById('ko-seekbar');
+        if (!sb) return null;
+        const r = sb.getBoundingClientRect();
+        if (!r.width) return null;
+        const x = r.left + r.width * frac;
+        const y = r.top + r.height / 2;
+        const mk = (type) => new PointerEvent(type, { clientX: x, clientY: y, bubbles: true, cancelable: true, pointerId: 1, pointerType: 'mouse', isPrimary: true, buttons: type === 'pointerdown' ? 1 : 0 });
+        sb.dispatchEvent(mk('pointerdown'));
+        sb.dispatchEvent(mk('pointerup'));
+        return { x: Math.round(x), frac };
+      }`;
+      for (const off of OFFSETS) {
+        let before = await st0();
+        if (!(before.dur > 0)) { await sleepms(3000); before = await st0(); }
+        const base = Math.max(1, before.dur || 1);
+        const edge = before.dur - before.lat;
+        const target = Math.max(1, edge - off);
+        const frac = Math.max(0.002, Math.min(0.998, target / base));
+        await twitchTab.evalIsolated(`(${seekMark})(${frac})`).catch(() => null);
+        await sleepms(2500);
+        const a = await st0();
+        await sleepms(4000);
+        const b = await st0();
+        const held = !!(a && b) && b.pos - a.pos > 2.5;
+        candOut[off] = { behind: a ? +((a.onDvr ? a.pos + a.lat : a.dur) - a.pos).toFixed(1) : null, held, onDvr: a && a.onDvr, posA: a && a.pos, posB: b && b.pos, clicked: +(frac * base).toFixed(1) };
+        log(`candidate back ${off}s -> clicked=${candOut[off].clicked} behind=${candOut[off].behind}s held=${held} onDvr=${a && a.onDvr} (pos ${a && a.pos} -> ${b && b.pos})`);
+      }
+    }
+    await closeTab(opened[1]);
+
+    // ---- restore the borrowed preference, verbatim
+    if (restore) {
+      const back = restore.rec;
+      const tw = await openTab(`https://www.twitch.tv/${channel}${MARK}`, 'restore').catch(() => null);
+      if (tw) {
+        const expr = back
+          ? `new Promise((r) => chrome.storage.local.set({ 'ko.v2': ${JSON.stringify(back)} }, () => r(1)))`
+          : `new Promise((r) => chrome.storage.local.remove('ko.v2', () => r(1)))`;
+        await safeEval(tw, expr).catch(() => null);
+        await closeTab(opened[2]);
+        log(`player preference restored: ${back ? JSON.stringify({ player: back.player }) : 'record removed'}`);
+      }
+    }
+
+    for (const off of OFFSETS) {
+      const r = refOut[off];
+      const c = candOut[off];
+      const ok = !!(r && c && Number.isFinite(r.behind) && Number.isFinite(c.behind));
+      const pass = ok && r.held === c.held && Math.abs(r.behind - c.behind) <= 8;
+      rows.push({
+        name: `parity-back-${off}s`,
+        pass,
+        detail: ok
+          ? `kick behind=${r.behind}s held=${r.held} | ours behind=${c.behind}s held=${c.held} onDvr=${c.onDvr}${pass ? '' : ` (delta=${Math.abs(r.behind - c.behind).toFixed(1)}s)`}`
+          : `kick ${r ? 'held=' + r.held : 'UNMEASURED'} | ours ${c ? 'behind=' + c.behind : 'UNMEASURED'}`,
+      });
+    }
+    const failed = rows.filter((x) => !x.pass).length;
+    console.log('--- parity live table ---');
+    for (const x of rows) console.log(`${x.pass ? 'PASS' : 'FAIL'} ${x.name} ${x.detail}`);
+    console.log(`RESULT ${failed ? 'FAIL' : 'PASS'} parity-live rows=${rows.length} failed=${failed} (his Chrome, port ${port})`);
+    cdp.close();
     if (failed) process.exitCode = 1;
     return;
   }

@@ -165,6 +165,18 @@ Two instruments were added to the one harness, and they are what future waves mu
   playback HELD there for 4 s, and a `PASS`/`FAIL` that requires both to hold AND to land within 8 s of
   each other. A reference that cannot be measured (kick.com login/consent/offline) leaves every row
   `FAIL` with `UNPROVEN`, never a silent pass.
+- `node _tools/ko-harness.mjs parity-live --channel=NAME --port=9222` is the same A/B run **in the
+  owner's own Chrome with his profile** (his order 2026-11-09: *"u mesmo kick e twitch no meu chrome.
+  os dois sendo o canal titiltei. e testa de verdade ... no background, nao na minha cara"*). It never
+  touches a tab that already exists: one `Target.createTarget({background:true})` per platform, its
+  own measurement, `Target.closeTarget` when done, and no `Target.activateTarget` anywhere. The only
+  state it borrows is `ko.v2.player` (set to `kick` for the measurement, restored verbatim at exit,
+  including the "record did not exist" case). The candidate seek is a synthetic `pointerdown`/
+  `pointerup` on `#ko-seekbar`, because a trusted pointer over his live page is a click on HIS player.
+  Two facts it paid for on its first run: the target MUST be created with `muted: true` (a background
+  tab that is not muted cannot autoplay — kick.com loaded and produced no playing video at all), and
+  `chrome.storage` exists ONLY in the content-script world (asking the page's main world returns
+  `undefined`, and a run that believed that overwrote his `ko.v2` record).
 - `node _tools/ko-harness.mjs kickparity` is the answer to "does the kick player inside Twitch behave
   like kick.com's player?" (owner order 2026-11-09). It runs a fixed protocol - pause, resume,
   arrow-back, 60 s rewind, 10 s rewind, seek inside the DVR, go live, quality, latency - with real
@@ -467,3 +479,50 @@ Direct call of `kickBackToLive()` sampled separately: `onDvr=false` and `pos 5.4
 rewind-60s `got=26394.98 advanced=4.00s`, rewind-10s `got=26389.67 advanced=3.00s`,
 seek-within-dvr `26273.26`, go-live `liveClock=true`, quality `480p`, latency `1.84s`.
 Gate `RESULT PASS checks=20 failed=0`.
+
+## omp relay: the sanctioned way to drive the owner's own Chrome (owner order 2026-11-09)
+
+Verbatim: *"por que tu nao ta usando omp relay"* and *"tu ja usou varias vezes antes"*. Driving his
+Chrome by hand over `--remote-debugging-port=9222` with our own CDP client is the wrong tool: the
+relay is the prelude's channel, it keeps its tabs in an `omp` group, and it is the only path that
+survives what killed the hand-rolled attempts (a wedged relay daemon, stale sessions, and 15 s CDP
+timeouts on a loaded browser).
+
+What is installed and measured here (2026-11-09):
+
+- `omp config get browser.relay` → `true`; `browser.relayUrl` → `http://127.0.0.1:9333`.
+- The extension lives at `C:/Users/Administrador/.omp/browser-relay/extension` (manifest
+  `OMP Browser Relay`, build `18.18.5`, same as `omp --version`) and is loaded into
+  `C:\ChromeDebugProfile` as id `jdphdacdpdgbfdcolnnlangmpfajejno`. It was loaded over CDP:
+  `Extensions.loadUnpacked {path}` on the browser endpoint — no clicking in his window.
+- The extension reads its port from `chrome.storage.local {port}` (default 9224). It connects to
+  `ws://127.0.0.1:<port>/ext`. Pointing it at 9333 is what made it work here:
+  `[relay] extension connected {"tabs":12,"version":"Chrome/156.0.0.0","omp":"18.18.5"}`.
+- `omp browser-relay` and `omp browser-relay --port 9333 --verbose` both serve; `--verbose` prints the
+  handshake and each `tab claimed` / `grouped tabs`, which is the only place the truth about a
+  connection is visible (`proc://<service>` shows it live).
+
+The failure mode to expect, and it is NOT "the extension is broken": an MV3 service worker sleeps, and
+while it sleeps the relay answers `its extension disconnected and has not come back` (or
+`its extension never connected`). It reconnects on its own 30 s keepalive alarm, so the repair is to
+wake the worker or wait, never to reinstall:
+`Target.getTargets` → the `service_worker` target of the extension id → attach → evaluate anything.
+
+API shape that works with it:
+
+    const t = await browser.targets({ app: { relay: true } });        // his pages, `shown` = active tab
+    const tab = await browser.open({ name: 'x', url: 'https://…', app: { relay: true } });
+    const tab2 = await browser.open({ name: 'y', app: { relay: true, target: 'kick.com/titiltei' } }); // borrows
+
+`browser.open` with `wait_until: 'load'` TIMES OUT on pages that never fire `load` (kick.com measured:
+tab created, `open` threw after 90 s, tab alive). Open with `wait_until: 'domcontentloaded'`, or adopt
+the tab afterwards with `app.target`. A borrowed tab is HIS page: never navigate it unasked.
+
+**What still cannot be measured this way, and it is not the relay's fault:** kick.com mounts no
+`<video>` in a tab nobody looks at. Measured on his Chrome: `{"n":0, title:"titiltei Live Stream -
+Watch Live on KICK", visibilityState:"hidden"}`; after `Page.setWebLifecycleState('active')` +
+consent dismissal `visibilityState` became `visible` and one `<video>` appeared at `readyState 4,
+paused`, but three later `Runtime.evaluate` calls timed out at 8 s. So the kick.com REFERENCE side of a
+parity run needs a rendered (focused) kick tab, which is exactly what he forbade. Our own side
+(`kickparity`, 9/9 rows) is measurable in the guest; parity stays `UNPROVEN` until someone leaves a
+kick.com tab in front.
