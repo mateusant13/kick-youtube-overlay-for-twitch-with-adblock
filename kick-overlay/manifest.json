@@ -1,7 +1,7 @@
 {
   "name": "Kick & YouTube Overlay for Twitch",
   "description": "Kick & YouTube overlay for Twitch, plus a Twitch adblock: VOD CSAI blocking, and a reduced-quality clean-stream fallback when a live ad is already stitched.",
-  "version": "0.8.76",
+  "version": "0.8.77",
   "manifest_version": 3,
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
@@ -80,7 +80,7 @@
         "ko-audio.js",
         "content.js"
       ],
-      "run_at": "document_idle"
+      "run_at": "document_start"
     }
   ],
   "action": {

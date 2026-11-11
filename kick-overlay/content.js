@@ -273,7 +273,7 @@ const NOT_CHANNEL = new Set([
 
 // Build marker for the diag stream — lets us tell which code a tab runs
 // (content scripts of pre-reload tabs survive extension reloads).
-const KO_VER = '0.8.76';
+const KO_VER = '0.8.77';
 // ONE canonical yt state object: every reset site (boot, teardown, the
 // frame-death watchdog) must agree, or a drained/live flag survives a rebuild.
 function freshYtState() {
@@ -637,6 +637,20 @@ function kickLog(ev, d) {
 
 async function kickPlaybackUrl(slug) {
   if (!plausibleKickSlug(slug)) return { live: false };
+  // A mint started at document_start (init) is CONSUMED here, not repeated: the
+  // cold-open swap pays one API round trip in parallel with the page parse
+  // instead of one after the frame is created.
+  if (KO.kickPrewarm && KO.kickPrewarmSlug === slug) {
+    const p = KO.kickPrewarm;
+    KO.kickPrewarm = null;
+    KO.kickPrewarmSlug = null;
+    try {
+      const pre = await p;
+      if (pre && pre.live && pre.url) return pre;
+    } catch {
+      /* a failed prewarm falls through to a fresh mint */
+    }
+  }
   const enc = encodeURIComponent(slug);
   const probes = [
     `https://kick.com/api/v2/channels/${enc}`,
@@ -1185,7 +1199,14 @@ window.addEventListener('message', (ev) => {
     KO.kickState = m.st;
     KO.lastKickSt = Date.now();
     if (prevKickSig !== String(m.st && m.st.state) + '|' + (m.st && m.st.muted ? '1' : '0')) visAudio('kick-st');
-    if (m.st && m.st.state === 'Playing') KO.kickEverPlayed = true;
+    if (m.st && m.st.state === 'Playing') {
+      KO.kickEverPlayed = true;
+      // Time from navigation to the layer's FIRST picture. The cold-open
+      // swap can only be as fast as this number (owner 2026-11-11: the ad
+      // stayed 3-4 s before the player switched, 'e pra ser instantaneo'),
+      // so it is measured, not estimated.
+      if (!KO.kickFirstPlayAt && typeof performance !== 'undefined') KO.kickFirstPlayAt = Math.round(performance.now());
+    }
     // Reconnect budget replenishes only after a stable Playing stretch —
     // a fresh url that plays 2s then errors must NOT reset the budget
     // (that was the endless reconnect loop: ensureKick reset it per try).
@@ -3350,7 +3371,24 @@ window.addEventListener('kick-overlay:status', () => {
 
 // ---- boot -------------------------------------------------------------------
 
+// document_start is what makes the cold-open swap fast (owner 2026-11-11:
+// "anuncio ficou por uns 3 ou 4 segundos ate trocar de player. e pra ser
+// instantaneo"). Measured with content.js at document_idle: the script began
+// 1135 ms after navigation, the mint took 200 ms, and the first IVS picture
+// arrived 2757 ms in - so 1.1 s of that 2.8 s was the browser simply not
+// running us yet. Everything that needs the DOM waits here instead of the
+// whole script waiting for the browser.
+function domReady() {
+  if (document.readyState !== 'loading' && document.body) return Promise.resolve();
+  return new Promise((res) => {
+    document.addEventListener('DOMContentLoaded', () => res(), { once: true });
+  });
+}
+
 (async function init() {
+  // Navigation -> this line is the floor of the cold-open swap: at
+  // document_idle it is where the mint can first start (owner 2026-11-11).
+  KO.bootAt = typeof performance !== 'undefined' ? Math.round(performance.now()) : 0;
   audioBoot(); // surfaces + intent store must exist before the first state load
   await loadState();
   // URL-param setup (?koyt=<yt channel>&kokick=<slug>&koplayer=<player>):
@@ -3384,6 +3422,18 @@ window.addEventListener('kick-overlay:status', () => {
   if (Object.keys(KO.mappings).length === 0) {
     await saveState();
   }
+  // Storage is loaded (the player preference is known NOW); the mint and the
+  // frame need the DOM, and the mint needs only the slug. Start it in parallel
+  // with the parse so the 200 ms API round trip is already done when the body
+  // appears.
+  if (KO.player !== 'twitch' && !onYtHost()) {
+    const preSlug = KO.kickSlug || currentSlug();
+    if (preSlug) {
+      KO.kickPrewarmSlug = preSlug;
+      KO.kickPrewarm = kickPlaybackUrl(preSlug).catch(() => null);
+    }
+  }
+  await domReady();
   injectStyles();
   startWatchers();
   diag('boot', { ver: KO_VER, url: location.href.slice(0, 70), slug: currentSlug(), enabled: KO.enabled, player: KO.player, kickSlug: KO.kickSlug, hidden: document.hidden });
