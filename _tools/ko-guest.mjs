@@ -15,7 +15,11 @@ const CHROME = process.env.KO_CHROME || 'C:/Program Files/Google/Chrome/Applicat
 // census can measure it: artifact-census.py --own G:/Temp/ko-harness.
 const UDD = process.env.KO_GUEST_UDD || 'G:/Temp/ko-harness/manual';
 const EXT = process.env.KO_EXT_DIR || 'I:/kicktwitchyoutube_instagram/kick-overlay';
-const PORT = process.env.KO_GUEST_PORT || '9333';
+// 9446, never 9333: 9333 is the OWNER's Chrome relay port
+// (browser.relayUrl). Attaching there drove his own browser and closed nine of
+// his tabs on 2026-11-11 - a guest port that can collide with the relay is the
+// defect, not the operator's typing.
+const PORT = process.env.KO_GUEST_PORT || '9446';
 const URL_ = process.argv[3] || process.env.KO_GUEST_URL || 'about:blank';
 const HEADLESS = process.env.KO_HEADLESS !== '0';
 const LOG = 'G:/Temp/opencode/ko-guest.log';
@@ -50,6 +54,7 @@ function killTree() {
 }
 
 if (process.argv[2] === 'stop') {
+  try { rmSync(process.env.KO_MARKER || 'G:/Temp/ko-harness/guest.json', { force: true }); } catch {}
   killTree();
   log('stopped');
   process.exit(0);
@@ -97,6 +102,17 @@ const args = [
 ];
 log('chrome args', args.join(' '));
 const child = spawn(CHROME, args, { stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'], windowsHide: true });
+// THE MARKER. A port alone does not say who is on the other end: 9333 was both
+// this guest's default and the owner's relay port, so `status` attached to HIS
+// Chrome and a cleanup closed nine of his tabs (2026-11-11). The guest records
+// itself here, and the harness refuses a port that has no live marker.
+const MARKER = process.env.KO_MARKER || 'G:/Temp/ko-harness/guest.json';
+try {
+  mkdirSync('G:/Temp/ko-harness', { recursive: true });
+  writeFileSync(MARKER, JSON.stringify({ port: Number(PORT), pid: child.pid, udd: UDD, at: Date.now() }));
+} catch {}
+const clearMarker = () => { try { rmSync(MARKER, { force: true }); } catch {} };
+process.on('exit', clearMarker);
 child.stdio[2].on('data', (d) => { const s = String(d).trim(); if (s && !/TensorFlow|XNNPACK|Fontconfig/.test(s)) log('stderr', s.split('\n').slice(0, 3).join(' | ')); });
 child.on('exit', (c) => { log('chrome exited', c); process.exit(0); });
 

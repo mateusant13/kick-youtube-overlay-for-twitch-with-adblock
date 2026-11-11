@@ -209,6 +209,32 @@ function resolveYtPageKick() {
 }
 // Diagnostics stay inside the extension's service-worker console. Only the
 // event name is logged there; payloads are intentionally not forwarded.
+// Owner report 2026-11-11: "some minutes alt tabbed it pauses or mutes the
+// stream". Nothing in the log said WHICH surface he lost or who paused it: the
+// ad path publishes `audio-state` for the page's own elements only, and the
+// layer he listens to in `player=kick` is a separate frame. One line on every
+// visibility edge and on every player-state change makes the next alt-tab
+// answerable instead of arguable.
+function visAudio(tag) {
+  try {
+    const k = KO.kickState || {};
+    const y = KO.ytState || {};
+    const n = document.querySelector('video');
+    const intent = window.KOAudio ? window.KOAudio.intent(KO.player === 'youtube' ? 'yt' : 'kick') : null;
+    diag('vis-audio', {
+      tag,
+      hidden: !!document.hidden,
+      player: KO.player,
+      kick: { state: k.state || null, pos: k.pos == null ? null : +Number(k.pos).toFixed(1), muted: k.muted == null ? null : !!k.muted },
+      yt: { state: y.state || null, ct: y.ct == null ? null : +Number(y.ct).toFixed(1), muted: y.muted == null ? null : !!y.muted },
+      native: n ? { paused: !!n.paused, muted: !!n.muted } : null,
+      intent: intent ? { muted: !!intent.muted, volume: +Number(intent.volume).toFixed(2) } : null,
+    });
+  } catch {
+    /* a diag line must never break the overlay */
+  }
+}
+
 function diag(ev, data) {
   try {
     chrome.runtime.sendMessage({ __koDiag: { ev, data: data || {} } }, () => void chrome.runtime.lastError);
@@ -1117,8 +1143,10 @@ window.addEventListener('message', (ev) => {
     // Any freshly-assigned kickState (real st message OR a test fixture that
     // assigns a fresh object) is inherently fresh.
     if (m.st && typeof m.st === 'object') m.st.ts = Date.now();
+    const prevKickSig = KO.kickState ? KO.kickState.state + '|' + (KO.kickState.muted ? '1' : '0') : '';
     KO.kickState = m.st;
     KO.lastKickSt = Date.now();
+    if (prevKickSig !== String(m.st && m.st.state) + '|' + (m.st && m.st.muted ? '1' : '0')) visAudio('kick-st');
     if (m.st && m.st.state === 'Playing') KO.kickEverPlayed = true;
     // Reconnect budget replenishes only after a stable Playing stretch —
     // a fresh url that plays 2s then errors must NOT reset the budget
@@ -3200,6 +3228,11 @@ window.addEventListener('kick-overlay:status', () => {
   injectStyles();
   startWatchers();
   diag('boot', { ver: KO_VER, url: location.href.slice(0, 70), slug: currentSlug(), enabled: KO.enabled, player: KO.player, kickSlug: KO.kickSlug, hidden: document.hidden });
+  try {
+    document.addEventListener('visibilitychange', () => visAudio('visibility'), true);
+  } catch {
+    /* a diag listener must never break boot */
+  }
   // Heartbeat: full overlay state every 8s while the page is open.
   setInterval(() => {
     const tv = twitchVideo();

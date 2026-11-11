@@ -14,6 +14,7 @@
 //   node _tools/ko-harness.mjs stop
 //
 // Exit 0 = PASS/SKIP/WARN only; 1 = FAIL or exception.
+import { readFileSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -23,7 +24,8 @@ import { connect, findTargets, attach } from './ko-cdp.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const GUEST = path.join(HERE, 'ko-guest.mjs');
-const PORT = Number(process.env.KO_PORT || 9333);
+// 9446, never 9333: that is the owner's Chrome relay (browser.relayUrl).
+const PORT = Number(process.env.KO_PORT || 9446);
 const OUT_DIR = 'G:/Temp/opencode';
 const DEFAULT_URL = process.env.KO_GUEST_URL || 'https://www.twitch.tv/rodil';
 const DEFAULT_YT = 'https://www.youtube.com/watch?v=3cOk_W3ewcE';
@@ -69,7 +71,23 @@ function pruneProfiles(keep = KEEP_PROFILES) {
   }
 }
 
+const GUEST_MARKER = process.env.KO_MARKER || 'G:/Temp/ko-harness/guest.json';
+
+// A live CDP port is not enough to call something a guest: the owner's Chrome
+// answers on its relay port too, and treating that as a guest drove his browser
+// (measured 2026-11-11: nine of his tabs closed). The marker is written by the
+// guest launcher and deleted by its stop, and the pid must still be alive.
+function guestMarker() {
+  try {
+    const j = JSON.parse(readFileSync(GUEST_MARKER, 'utf8'));
+    if (Number(j.port) !== PORT) return null;
+    try { process.kill(Number(j.pid), 0); } catch { return null; }
+    return j;
+  } catch { return null; }
+}
+
 async function guestUp(timeout = 1500) {
+  if (!guestMarker()) return false;
   try {
     const r = await fetch(`http://127.0.0.1:${PORT}/json/version`, { signal: AbortSignal.timeout(timeout) });
     return r.ok;
@@ -134,7 +152,7 @@ async function stopGuest() {
 // ONE guest browser per box. A second one doubles the process count and the
 // RSS for no measurement that the first cannot do (watcher DM, 2026-11-09).
 // Reuse is cheap: KO_PORT names the browser, and every command attaches to it.
-const GUEST_PORTS = [9333, 9444, 9445, 9446, 9447, 9448, 9449];
+const GUEST_PORTS = [9444, 9445, 9446, 9447, 9448, 9449];
 const flagsAllowSecondGuest = process.argv.includes('--second-guest');
 
 async function otherGuestAlive() {
@@ -189,12 +207,37 @@ async function ensureGuest({ fresh = false, url = DEFAULT_URL, quiet = false } =
   throw new Error('guest Chrome did not open the CDP port');
 }
 
+// The owner's Chrome and the guest are both CDP endpoints, and a collapsed port
+// default made `ko-harness status` attach to HIS browser (measured 2026-11-11:
+// a cleanup closed nine of his tabs). The relay extension id is an unambiguous
+// marker: a browser that carries it is his, never a measurement target.
+const RELAY_EXT_ID = 'jdphdacdpdgbfdcolnnlangmpfajejno';
+async function assertNotOwnerBrowser(cdp) {
+  const ids = new Set();
+  let infos = [];
+  try {
+    const r = await cdp.send('Target.getTargets');
+    infos = r.targetInfos || [];
+  } catch { /* older CDP shape */ }
+  for (const t of infos) {
+    const u = String(t.url || '');
+    if (u.includes(RELAY_EXT_ID)) ids.add(t.targetId);
+  }
+  if (ids.size) {
+    throw new Error(
+      `refusing to drive the OWNER's browser on port ${PORT}: the relay extension (${RELAY_EXT_ID}) is loaded there. ` +
+        'A guest is a different browser on a different port (KO_PORT, default 9446).',
+    );
+  }
+}
+
 async function openSessions({ requireKo = true } = {}) {
   const started = Date.now();
   let lastErr;
   while (Date.now() - started < 45000) {
     try {
       const cdp = await connect(PORT);
+      await assertNotOwnerBrowser(cdp);
       const t = await findTargets(cdp, { pageRe: /twitch\.tv|youtube\.com/ });
       if (!t.page) throw new Error('no Twitch/YouTube page target');
       const page = await attach(cdp, t.page, 'page');
@@ -391,6 +434,19 @@ async function main() {
   if (cmd === 'stop') { await stopGuest(); return; }
   if (cmd === 'status') {
     const up = await guestUp();
+    if (!up) {
+      console.log(JSON.stringify({ up: false, port: PORT }, null, 2));
+      return;
+    }
+    const cdp0 = await connect(PORT);
+    try {
+      await assertNotOwnerBrowser(cdp0);
+    } catch (e) {
+      cdp0.close();
+      console.log(JSON.stringify({ up: false, port: PORT, refused: e.message }, null, 2));
+      return;
+    }
+    cdp0.close();
     console.log(JSON.stringify({ up, port: PORT }, null, 2));
     if (up) {
       const cdp = await connect(PORT);
