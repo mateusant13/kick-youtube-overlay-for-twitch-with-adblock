@@ -526,3 +526,29 @@ paused`, but three later `Runtime.evaluate` calls timed out at 8 s. So the kick.
 parity run needs a rendered (focused) kick tab, which is exactly what he forbade. Our own side
 (`kickparity`, 9/9 rows) is measurable in the guest; parity stays `UNPROVEN` until someone leaves a
 kick.com tab in front.
+
+## Assume this machine is ten times weaker (owner order 2026-11-11, via watcher DM)
+
+Verbatim: *"cancela todos os trabalhos. em todas as lanes. fala pra matar tudo que ta rodando.
+ate a da gravacao. fala que voltamos em breve"* — and the standing demand that came with it: write
+code that assumes the box is **10x weaker than it looks**, so a lane never causes the freeze the
+owner feels.
+
+- **One heavy job at a time, per box.** A second guest browser, a second sweep, a second encoder is a
+  defect, not parallelism: the harness already refuses a second guest (`a guest browser is already
+  running on port N`), and every new instrument inherits that rule.
+- **Declare the ceiling BEFORE the job starts**, not after it hurts: threads (`OMP_NUM_THREADS`,
+  `--jobs`, pool size), MB of RSS, MB/s of I/O, GiB of disk, and the pid + instrument that will prove
+  the number. A limit nobody measured is not a limit.
+- **Throttling is the LAST resort.** Cheaper first, in this order: do less work, do it once, batch it,
+  reuse a cache, make it incremental, delete the duplicate. A CPU cap (`watcher run --cpu`) bounds CPU
+  and NOT I/O — a job that `scandir`s, `stat`s, `git`s or reads bytes needs a duty cycle at the source
+  (measured: 20.5 MB/s on a saturated volume inside a 40 % CPU cage).
+- **Cache and resume by content**, so a re-run of the same question costs a hit, not a re-read: hash
+  the inputs plus the parameters, and print `MISS <key>` / `CACHE HIT <key>` so eleven "measurements"
+  that were nine hits cannot be counted as evidence.
+- **No unbounded loop, fan-out or in-memory accumulation.** No `while true` poll, no per-item bash
+  respawn (coalesce into one supervisor), no array that grows with the session, no log ring read whole
+  into a variable.
+- A measurement taken under starvation is the QUEUE, not the instrument: re-run it once in a quiet
+  window before claiming a floor.
