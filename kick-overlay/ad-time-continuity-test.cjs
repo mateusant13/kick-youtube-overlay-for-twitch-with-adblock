@@ -554,6 +554,111 @@ async function main() {
     });
   }
 
+  // ---- 10b. the hand-back is ONE seek, and the retries never seek --------
+  // Owner report 2026-11-11, right after the pod: "it then came back to the
+  // twitch player and flicked/glitched. showed a part of the livestream, then
+  // advanced and returned". His ko.adlog has that literally: `native-edge-recover
+  // to 554.8` and, one millisecond later, `native-catchup to 531.7` — two seeks
+  // in opposite directions — then three more catchups of 13, 17 and 17 s from
+  // the 300/1200/2500 ms retries.
+  {
+    const page = makeWorld();
+    setNative(page, { ct: 100, edge: 1073741824, bufferedEnd: 101 });
+    await pod(page);
+    await new Promise((r) => setTimeout(r, 2100));
+    // Count every write to the native clock from here on.
+    const writes = [];
+    let clock = page.video.currentTime;
+    Object.defineProperty(page.video, 'currentTime', {
+      configurable: true,
+      get: () => clock,
+      set: (x) => {
+        writes.push(+Number(x).toFixed(1));
+        clock = x;
+      },
+    });
+    page.bypass({ type: 'ad-end' });
+    // The buffer keeps filling after the hand-back, exactly as measured: the
+    // player's own data ran ~30 s ahead of its clock, which is what turned each
+    // retry into a forward seek.
+    await settle(420);
+    page.video.buffered = { length: 1, start: () => 0, end: () => clock + 30 };
+    await settle(4180); // past every retry (300/1200/2500/4000)
+    check('the hand-back seeks once and the retries never seek', () => {
+      assert(writes.length === 1, `the native clock was written ${writes.length} time(s): ${JSON.stringify(writes)}`);
+      assert(writes[0] > 101, `the single seek went to ${writes[0]}, not forward to the live offset`);
+      assert(page.logsOf('native-catchup').length + page.logsOf('native-edge-recover').length === 1,
+        `more than one recovery logged: ${JSON.stringify([...page.logsOf('native-catchup'), ...page.logsOf('native-edge-recover')].map((l) => l.ev))}`);
+    });
+  }
+  {
+    // Mutation: the retries seek again (`if (seek)` -> `if (true)`), which is
+    // the pre-fix shape of the hand-back.
+    const page = makeWorld({ adSource: mutate([['      if (seek) {', '      if (true) {']]) });
+    setNative(page, { ct: 100, edge: 1073741824, bufferedEnd: 101 });
+    await pod(page);
+    await new Promise((r) => setTimeout(r, 2100));
+    let writes = 0;
+    let clock = page.video.currentTime;
+    Object.defineProperty(page.video, 'currentTime', {
+      configurable: true,
+      get: () => clock,
+      set: (x) => { writes++; clock = x; },
+    });
+    page.bypass({ type: 'ad-end' });
+    await settle(420);
+    page.video.buffered = { length: 1, start: () => 0, end: () => clock + 30 };
+    await settle(1300);
+    check('RED: a retry that seeks moves the picture again after the hand-back', () => {
+      assert(writes > 1, `the mutant did not seek on the retry (writes=${writes})`);
+    });
+  }
+
+  // ---- 10c. the swap reconciles the clean player's OWN audio report -------
+  // Owner report 2026-11-11: "just got an ad, player switched, and its muted".
+  // A fresh media element starts muted and a diffed command is never re-sent, so
+  // a frame that reports muted right after the claim has to be corrected inside
+  // the swap window - and never after it (that would be the mute fight 0.8.50
+  // ended).
+  {
+    const page = makeWorld();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    page.bypass({ type: 'ad-hold' });
+    page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+    await settle(20);
+    page.frameMsg({ t: 'ready' });
+    for (let i = 0; i < 3; i++) page.frameMsg(healthySt({ pos: 100, lat: 3, muted: false }));
+    await settle(10);
+    const before = page.muteSent().filter((m) => m === false).length;
+    page.frameMsg(healthySt({ pos: 100, lat: 3, muted: true })); // element remuted underneath
+    await settle(10);
+    check('a frame that reports itself muted during the swap is corrected at once', () => {
+      const mm = page.logsOf('audio-mismatch');
+      assert(mm.length >= 1, 'no mismatch was detected');
+      assert(mm[0].d.phase === 'swap', `mismatch classified as ${mm[0].d.phase}`);
+      assert(page.muteSent().filter((m) => m === false).length > before, 'the unmute was not re-sent');
+    });
+  }
+  {
+    const page = makeWorld();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    page.bypass({ type: 'ad-hold' });
+    page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+    await settle(20);
+    page.frameMsg({ t: 'ready' });
+    for (let i = 0; i < 3; i++) page.frameMsg(healthySt({ pos: 100, lat: 3, muted: false }));
+    await settle(4300); // past AUDIO_ASSERT_MS
+    const before = page.muteSent().filter((m) => m === false).length;
+    page.frameMsg(healthySt({ pos: 100, lat: 3, muted: true }));
+    await settle(10);
+    check('a late disagreement is reported, never overridden (no mute fight)', () => {
+      const mm = page.logsOf('audio-mismatch');
+      assert(mm.length >= 1, 'no mismatch was detected');
+      assert(mm[mm.length - 1].d.phase === 'late', `mismatch classified as ${mm[mm.length - 1].d.phase}`);
+      assert(page.muteSent().filter((m) => m === false).length === before, 'the late report was overridden');
+    });
+  }
+
   // ---- 10. the heartbeat never re-sends the mute the user just changed ---
   // Owner report 2026-11-08: "fica mutando quando eu desmuto o tempo inteiro".
   // `revealOverlay()` runs on every `st` (1/s) and re-sent `mute:true` forever;

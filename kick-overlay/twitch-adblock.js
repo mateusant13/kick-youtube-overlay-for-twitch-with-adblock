@@ -595,6 +595,7 @@
     const last = overlay.audioSent;
     if (last && last.muted === muted && Math.abs(last.volume - volume) < 0.02) return;
     overlay.audioSent = { muted, volume };
+    adLog('overlay-audio', { muted, volume: +Number(volume).toFixed(2), refused: !!overlay.audioRefused });
     overlaySend({ t: 'mute', m: muted });
     overlaySend({ t: 'volume', v: volume });
   }
@@ -683,6 +684,10 @@
     if (overlay.revealed) hideNativeVideos();
   }
 
+  // How long after a reveal the frame's own audio report is allowed to correct
+  // our command (see the `st` handler). Long enough to survive a slow first
+  // report in a throttled tab, short enough that it never looks like a fight.
+  const AUDIO_ASSERT_MS = 4000;
   function overlaySend(msg) {
     if (!overlay.frame || !overlay.token) return;
     // Before the frame's navigation commits its contentWindow still belongs to
@@ -838,7 +843,12 @@
     }
   }
 
-  function resumeNative(v, tag) {
+  // `seek` is only for the hand-back itself. The 300/1200/2500/4000 ms retries
+  // exist to resume a paused element, and each one that ALSO seeked produced a
+  // visible jump: the owner's ko.adlog 2026-11-11 has three consecutive
+  // `native-catchup` rows 13, 17 and 17 s forward after the pod ended
+  // ("flicked/glitched ... then advanced and returned").
+  function resumeNative(v, tag, { seek = true } = {}) {
     if (!v || !v.isConnected) return;
     try {
       // Hand the native back AT THE SAME OFFSET the clean player was showing.
@@ -869,32 +879,56 @@
       // timeline that always exists: the edge advanced by the elapsed time, the
       // element advanced by its currentTime delta, and the difference is what
       // was missed. Seek that difference forward; nothing is fabricated.
-      if (se <= 0 && overlay.holdAt) {
-        const at = overlay.holdAt;
-        const ct0 = Number(overlay.holdCt || 0);
-        overlay.holdAt = 0;
-        const elapsed = (Date.now() - at) / 1000;
-        const advanced = from - ct0;
-        const behind = elapsed - advanced;
-        if (behind > RESUME_GAP_SEC && behind < 3600) {
-          v.currentTime = from + behind;
-          adLog('native-edge-recover', {
-            from: +from.toFixed(1),
-            to: +(from + behind).toFixed(1),
-            behind: +behind.toFixed(1),
-            elapsed: +elapsed.toFixed(1),
-          });
+      // ONE seek per hand-back. Both recovery paths used to run in the same
+      // call against the pre-seek `from`, so the element jumped forward by the
+      // pod's cost and then back to the newest buffered frame - measured in the
+      // owner's log 2026-11-11: `native-edge-recover to 554.8` followed by
+      // `native-catchup to 531.7` one millisecond later ("showed a part of the
+      // livestream, then advanced and returned").
+      //
+      // The target is the wall-clock position the stream should be at, clamped
+      // to the newest frame the element actually holds: seeking past
+      // `buffered.end` is a guaranteed stall, and Twitch then yanks the element
+      // back to the buffer head, which is the second half of the same flick.
+      if (seek) {
+        let want = from;
+        let why = null;
+        if (se <= 0 && overlay.holdAt) {
+          const at = overlay.holdAt;
+          const ct0 = Number(overlay.holdCt || 0);
+          const elapsed = (Date.now() - at) / 1000;
+          const advanced = from - ct0;
+          const behind = elapsed - advanced;
+          if (behind > RESUME_GAP_SEC && behind < 3600) {
+            want = from + behind;
+            why = 'edge-recover';
+            overlay.recoverBehind = +behind.toFixed(1);
+          }
         }
-      }
-      if (target > from + RESUME_GAP_SEC) {
-        v.currentTime = target;
-        adLog('native-catchup', {
-          from: +from.toFixed(1),
-          to: +target.toFixed(1),
-          lat: +(se > 0 ? se - target : -1).toFixed(1),
-          gap: +(target - from).toFixed(1),
-          edge: se > 0 ? 'seekable' : 'buffered',
-        });
+        if (target > want) {
+          want = target;
+          why = why ? 'edge-recover+catchup' : 'catchup';
+        }
+        // NOT clamped to `buffered.end`: on a live stream that is not a ceiling,
+        // it is simply how much media is downloaded at the OLD position, and the
+        // wall-clock target is a real seekable offset (his own log: buffer ended
+        // at 532.2 while the live offset was 554.8, so clamping would have kept
+        // 23 s of delay for good). One target, one seek.
+        if (want > from + RESUME_GAP_SEC) {
+          v.currentTime = want;
+          const payload = {
+            from: +from.toFixed(1),
+            to: +want.toFixed(1),
+            gap: +(want - from).toFixed(1),
+            lat: +(se > 0 ? se - want : -1).toFixed(1),
+            edge: se > 0 ? 'seekable' : 'buffered',
+            why,
+          };
+          if (why.startsWith('edge-recover')) payload.behind = overlay.recoverBehind;
+          overlay.recoverBehind = 0;
+          adLog(why.startsWith('edge-recover') ? 'native-edge-recover' : 'native-catchup', payload);
+        }
+        overlay.holdAt = 0;
       }
       // readyState 2 with paused=false is still a frozen frame. Nudge behind
       // live and call play() even when the element claims it is not paused.
@@ -954,7 +988,7 @@
     try { document.addEventListener('visibilitychange', onVisible, true); } catch { /* ignore */ }
   }
 
-  function resumeNativeIfAllowed(v, tag) {
+  function resumeNativeIfAllowed(v, tag, opts) {
     if (!v || !v.isConnected) return;
     if (overlay.adActive) return;
     if (overlay.frame && !overlay.standby) return;
@@ -963,7 +997,7 @@
       if (!(overlay.pauseBeforeAd && !overlay.coldPreroll)) armResumeWhenVisible(v, tag);
       return;
     }
-    resumeNative(v, tag);
+    resumeNative(v, tag, opts);
   }
 
   function clearOverlayStall() {
@@ -1143,15 +1177,18 @@
         // the user-intent guard applies here.
         if (!resumeRefusedByUser(v)) resumeNative(v, 'ad-end');
         else if (!(overlay.pauseBeforeAd && !overlay.coldPreroll)) armResumeWhenVisible(v, 'ad-end');
+        // Retries resume, they do not seek: `seek: false`. Each seek after the
+        // hand-back was a visible jump (measured 2026-11-11: three catchups of
+        // 13, 17 and 17 s in the five seconds after ad-end).
         setTimeout(() => {
           // A new *hidden standby* must not block the native resume retries;
           // only a visible/held ad overlay should. Measured: starting the new
           // standby at ~1s prevented the 1200ms retry and left Twitch paused.
-          resumeNativeIfAllowed(v, '300ms');
+          resumeNativeIfAllowed(v, '300ms', { seek: false });
         }, 300);
-        setTimeout(() => resumeNativeIfAllowed(v, '1200ms'), 1200);
-        setTimeout(() => resumeNativeIfAllowed(v, '2500ms'), 2500);
-        setTimeout(() => resumeNativeIfAllowed(v, '4000ms'), 4000);
+        setTimeout(() => resumeNativeIfAllowed(v, '1200ms', { seek: false }), 1200);
+        setTimeout(() => resumeNativeIfAllowed(v, '2500ms', { seek: false }), 2500);
+        setTimeout(() => resumeNativeIfAllowed(v, '4000ms', { seek: false }), 4000);
         // A stalled clean overlay can leave Twitch's native player parked at
         // the live edge, paused, with no forward buffer. Four one-shot retries
         // are not enough: measured 2026-10-23 `jynxzi` stayed paused for ~7s
@@ -1275,8 +1312,13 @@
       overlay.coldCover = false;
       // Claim BEFORE the frame is raised and before the native is hidden: one
       // synchronous task, so the sound moves in the same tick as the picture
-      // and neither surface is briefly doubled nor briefly silent.
+      // and neither surface is briefly doubled nor briefly silent. The
+      // assertion window covers the swap: the frame's own report is reconciled
+      // for AUDIO_ASSERT_MS, because a fresh media element starts muted and a
+      // diffed command is never re-sent (owner report 2026-11-11: "player
+      // switched, and its muted").
       audioClaim(true);
+      overlay.audioAssertUntil = Date.now() + AUDIO_ASSERT_MS;
     try { clearTimeout(overlay.coldTimer); } catch { /* ignore */ }
     overlay.coldTimer = 0;
       // The clean picture is up: drop the notice panel in the same tick as the
@@ -1709,6 +1751,35 @@
         if (gap > 0) overlay.stGapMs = gap;
         overlay.lastSt = m.st;
         overlay.lastStAt = nowSt;
+        // The frame reports what its OWN element is doing. If it disagrees with
+        // the state we commanded, the element was replaced or muted underneath
+        // (a fresh media element starts muted, and a diffed command is never
+        // re-sent). Owner report 2026-11-11: "just got an ad, player switched,
+        // and its muted" — the log could not answer it because nothing recorded
+        // either side. Re-assert on the DISAGREEMENT, once per change.
+        // The assertion window is the SWAP (AUDIO_ASSERT_MS after the claim):
+        // there, a disagreement is ours to fix and is re-sent until the frame
+        // agrees. After it, the frame's own state is reported, never overridden —
+        // a late disagreement is the user on the frame's controls or a browser
+        // policy, and re-sending would be the mute fight the 0.8.50 wave ended.
+        if (overlay.revealed && overlay.audioSent && typeof m.st.muted === 'boolean') {
+          const cmd = overlay.audioSent;
+          const volDiff = typeof m.st.volume === 'number' && Math.abs(Number(m.st.volume) - cmd.volume) > 0.02;
+          if (m.st.muted !== cmd.muted || volDiff) {
+            const inSwap = Date.now() < (overlay.audioAssertUntil || 0);
+            adLog('audio-mismatch', {
+              phase: inSwap ? 'swap' : 'late',
+              wantMuted: !!cmd.muted,
+              frameMuted: !!m.st.muted,
+              wantVol: +Number(cmd.volume).toFixed(2),
+              frameVol: typeof m.st.volume === 'number' ? +Number(m.st.volume).toFixed(2) : null,
+            });
+            if (inSwap) {
+              overlay.audioSent = null; // force the next apply to re-send
+              applyOverlayAudio();
+            }
+          }
+        }
         // A clean player that drifted behind live must not be revealed: the
         // user would see a delayed stream and a jump at ad-end. Seek forward
         // inside the live window, at most every 2s, and let the healthy gate
