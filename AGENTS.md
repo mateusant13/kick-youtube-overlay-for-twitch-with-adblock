@@ -161,6 +161,33 @@ candidate tab was closed afterwards (`/json/close/<id>`, no focus, no activation
 proven 9/9 above; the comparison needs an instrument that reads kick.com's DVR through its own player
 API rather than the media element's `seekable`.
 
+## Wave record — 2026-11-11 (later 5), the cold-open swap is a latency budget (0.8.77)
+
+Owner, verbatim: *"anuncio ficou por uns 3 ou 4 segundos ate trocar de player. e pra ser instantaneo.
+foi um ad assim que abri a live."* That is not an adblock defect: in kick mode the picture comes from
+IVS, which has no ads at all, so the 3-4 s IS the time the layer needs to paint, and the ad path's
+`COLD_COVER_BOUND_MS = 3000` simply ran out.
+
+Instrumented instead of guessed. `KO.bootAt` (performance.now when `init()` starts),
+`KO.kickUrlT` (when the minted url was handed to the frame) and `KO.kickFirstPlayAt` (first
+`state:'Playing'` from the frame) are the three phases, read over CDP in the guest on a real
+`twitch.tv/titiltei` reload:
+
+| phase | 0.8.76 (`document_idle`) | 0.8.77 (`document_start`) |
+|---|---|---|
+| navigation -> content.js runs | 1135 ms | **286 ms** |
+| -> minted url in the frame | 1343 ms | **810 ms** |
+| -> first kick picture | 2757 ms | **1944 ms** |
+
+Two changes, both measured: `manifest.json` runs `content.js` at `document_start` and the DOM work
+(`injectStyles`, `startWatchers`) waits on `domReady()` instead of the whole script waiting for the
+browser; and `init()` starts `kickPlaybackUrl()` in parallel with the parse (`KO.kickPrewarm` +
+`KO.kickPrewarmSlug`, consumed once by `kickPlaybackUrl` for the same slug, so no second round trip).
+Gate `RESULT PASS checks=20 failed=0` after both. The remaining ~1.1 s is IVS: manifest + first
+segment after the url is handed over, which no scheduling on our side removes — so "instant" on a cold
+open is bounded by the decoder, and any claim of a sub-second swap would need a different source, not
+another timer.
+
 ## Project notes
 
 - The extension is in `kick-overlay/`.
