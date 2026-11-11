@@ -243,6 +243,7 @@
     pauseBeforeAd: false, // the native was PAUSED when the pod took over
     coldPreroll: false, // ...and it had never played (page had just loaded)
     held: false,
+    claimTimer: 0, // bound on a claim taken before the cover is up (silence)
     hiddenVideos: [],
     startedAt: 0,
     positionTimer: 0,
@@ -559,6 +560,31 @@
     } catch {
       /* ignore */
     }
+  }
+
+  // A claim taken at TAKE-OVER silences the page seconds before the clean
+  // picture exists, and the page is the surface the user is watching: owner
+  // ko.adlog 2026-11-11 shows `video-emptied {targetMuted:true}` 1.08 s ahead of
+  // `overlay-reveal`, and an earlier cycle of the same pod with
+  // `audio-state {audible:0, vis:"ad", wt:"1"}` for 8.66 s - the Twitch player
+  // on screen with no sound from anywhere ("voltou pro player, mutado"). The
+  // claim that exists to hand the sound to the clean frame is now BOUNDED: if
+  // the cover is not revealed inside the grace, the page gets its sound back and
+  // revealOverlay() claims it again in the same tick it paints.
+  const CLAIM_GRACE_MS = 3000;
+  function armClaimGrace() {
+    if (overlay.claimTimer) return;
+    overlay.claimTimer = setTimeout(() => {
+      overlay.claimTimer = 0;
+      if (!overlay.frame || overlay.revealed) return;
+      adLog('claim-grace', { ms: CLAIM_GRACE_MS, playing: !!overlay.playing, adActive: !!overlay.adActive });
+      audioClaim(false);
+    }, CLAIM_GRACE_MS);
+  }
+
+  function clearClaimGrace() {
+    try { clearTimeout(overlay.claimTimer); } catch { /* ignore */ }
+    overlay.claimTimer = 0;
   }
 
   // A user gesture the authority cannot see (a click on OUR badge, inside our
@@ -1036,6 +1062,7 @@
       overlay.hideTimer = 0;
     }
     if (overlay.held) restoreHeldMute();
+    clearClaimGrace();
     // ONE release site for every exit, including the frame-less early return
     // below. A source switch can null overlay.frame while the claim is still
     // set; the early return used to skip the release, and the page stayed
@@ -1262,6 +1289,7 @@
     if (!overlay.revealed) {
       overlay.revealed = true;
       overlay.coldCover = false;
+      clearClaimGrace();
     try { clearTimeout(overlay.coldTimer); } catch { /* ignore */ }
     overlay.coldTimer = 0;
       // The clean picture is up: drop the notice panel in the same tick as the
@@ -1949,7 +1977,10 @@
         // the second writer. Do not hide the video yet: the clean source is
         // still being probed, and a black frame is worse than one second of
         // muted ad. startAdOverlay() covers it as soon as the source is ready.
+        // Bounded: a cover that never arrives must not leave the page silent
+        // (see armClaimGrace; owner ko.adlog 2026-11-11).
         audioClaim(true);
+        armClaimGrace();
         overlay.adActive = true;
         // The clean source is still minting. Do NOT paint over the native yet:
         // raising the frame here (and hiding every native <video>) is exactly

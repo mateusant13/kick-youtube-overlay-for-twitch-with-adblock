@@ -505,6 +505,41 @@ async function main() {
     });
   }
 
+  // ---- 10. the claim taken at take-over is bounded ----------------------
+  // Owner report 2026-11-11: "voltou pro player, mutado ... de volta pro player
+  // normal da twitch, mutado". The claim that hands the sound to the clean frame
+  // was taken at TAKE-OVER, so the page was silenced while it was still the
+  // surface on screen: his ko.adlog has `video-emptied {targetMuted:true}` 1.08 s
+  // before `overlay-reveal` and an earlier cycle with
+  // `audio-state {audible:0, vis:"ad", wt:"1"}` for 8.66 s.
+  {
+    const page = makeWorld();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    page.bypass({ type: 'ad-hold' });
+    page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+    await settle(20);
+    const silentAtHold = page.video.muted;
+    await settle(3200);
+    check('a hold whose cover never arrives gives the page its sound back inside the grace', () => {
+      assert(silentAtHold === true, `precondition: take-over left the page audible (muted=${silentAtHold})`);
+      const g = page.logsOf('claim-grace');
+      assert(g.length === 1, `claim-grace logged ${g.length} time(s)`);
+      assert(g[0].d.ms <= 3000, `the grace ran at ${g[0].d.ms} ms`);
+      assert(page.video.muted === false, `the page stayed silenced after the grace (muted=${page.video.muted})`);
+    });
+  }
+  {
+    const page = makeWorld({ adSource: mutate([['    armClaimGrace();', '']]) });
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    page.bypass({ type: 'ad-hold' });
+    page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+    await settle(3220);
+    check('RED: without the grace the page stays silent under a cover that never arrives', () => {
+      assert(page.logsOf('claim-grace').length === 0, 'the mutation did not remove the grace');
+      assert(page.video.muted === true, 'the pre-fix behaviour was not reproduced');
+    });
+  }
+
   // ---- 10. the heartbeat never re-sends the mute the user just changed ---
   // Owner report 2026-11-08: "fica mutando quando eu desmuto o tempo inteiro".
   // `revealOverlay()` runs on every `st` (1/s) and re-sent `mute:true` forever;
