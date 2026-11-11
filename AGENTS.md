@@ -596,6 +596,18 @@ suppresses it; RED: the pre-fix hand-back leaves it delayed), `mute-decision` 24
 right after the hand-back is not intent; a mute 3 s later IS; RED: the pre-fix guard records it),
 `tab-audio-scope` 19. Installed copy reloaded: `loaded=0.8.61`. Live steady state on his tab
 (`twitch.tv/shygo`): `vis=twitch, wt=0, it=0, el muted=false`.
-**Still owed:** a real pod on 0.8.61, read as `audio-state` transitions — the first one that shows
-`wt=0` while the element is muted, or a `native-edge-recover` that closes the pod's deficit, is the
-row that turns this from `fixed` to `verified`.
+**Verified live on 0.8.63, his own tab (`twitch.tv/pinnkpawz`), his own `ko.adlog`** — two real pods
+in one window:
+
+```
+050781 native-handoff      {"ct":7.9,"cleanLat":2.4,"cleanLatSrc":"hls","se":1073741824}
+050782 native-edge-recover {"behind":16.7,"elapsed":24.6,"from":7.9,"to":24.6}
+095471 audio-state         {"audible":0,"el":"1|1.00","it":"0","playing":1,"vis":"ad","wt":"1"}
+102530 audio-state         {"audible":1,"el":"0|1.00","it":"0","playing":0,"vis":"twitch","wt":"0"}
+102533 native-edge-recover {"behind":5.7,"elapsed":7.1,"from":8,"to":13.7}
+```
+
+The pod's cost is closed at the hand-back (16.7 s and 5.7 s of deficit seeked forward, no guessing),
+and the hand-back lands with the element unmuted, `it=0`, `vis=twitch`, `audible=1` — sound back with
+no click. `cleanLatSrc` now says `hls` (2.2-2.4 s), so the clean picture sits at the sync target
+instead of the old `lat 9`.
