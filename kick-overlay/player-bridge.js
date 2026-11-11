@@ -484,7 +484,19 @@ if (HLS_MODE) {
         break;
       case 'seekToLive':
         try {
-          if (V.seekable && V.seekable.length) V.currentTime = V.seekable.end(V.seekable.length - 1);
+          if (V.seekable && V.seekable.length) {
+            const se = V.seekable.end(V.seekable.length - 1);
+            const be = V.buffered && V.buffered.length ? V.buffered.end(V.buffered.length - 1) : 0;
+            // Aim at the newest frame that can PLAY, never at `seekable.end`.
+            // `seekable.end` is where the playlist says live is, not data this
+            // player holds: seeking there parks the picture until the next
+            // segment arrives — the owner's "chega ao final e trava, fica
+            // pausado por 1 segundo, e o slider fica atrasado" (2026-11-11).
+            // A buffered end ahead of us is playable right now; with nothing
+            // buffered ahead, one sync window behind the edge is.
+            const target = be > V.currentTime + 0.25 ? be : Math.max(0, se - LIVE_TARGET_SEC);
+            V.currentTime = Math.min(target, Math.max(0, se - 0.2));
+          }
         } catch { /* ignore */ }
         break;
       case 'quality':

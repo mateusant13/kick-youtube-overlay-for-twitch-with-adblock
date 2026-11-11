@@ -505,38 +505,52 @@ async function main() {
     });
   }
 
-  // ---- 10. the claim taken at take-over is bounded ----------------------
-  // Owner report 2026-11-11: "voltou pro player, mutado ... de volta pro player
-  // normal da twitch, mutado". The claim that hands the sound to the clean frame
-  // was taken at TAKE-OVER, so the page was silenced while it was still the
-  // surface on screen: his ko.adlog has `video-emptied {targetMuted:true}` 1.08 s
-  // before `overlay-reveal` and an earlier cycle with
-  // `audio-state {audible:0, vis:"ad", wt:"1"}` for 8.66 s.
+  // ---- 10. the sound hands over in the same tick as the picture ----------
+  // Owner correction 2026-11-11: "se tu implementou de maneira burra, arruma. é
+  // pra ser smooth/acontecer na hora/tempo real". A grace timer does not fix a
+  // silence, it bounds it: the claim is taken in revealOverlay() only, in the
+  // same synchronous task that raises the frame, and released at teardown. While
+  // the page is the surface on screen it keeps its own sound, ad included.
+  {
+    const page = makeWorld();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    page.bypass({ type: 'ad-hold' });
+    page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+    await settle(3200);
+    const revealed = page.logsOf('overlay-reveal').length;
+    check('take-over never silences the page that is still on screen', () => {
+      assert(revealed === 0, `precondition: a cover revealed without a healthy sample (${revealed})`);
+      assert(page.logsOf('claim-grace').length === 0, 'the grace machinery still exists');
+      assert(page.video.muted === false, `the page was muted at take-over (muted=${page.video.muted})`);
+    });
+  }
   {
     const page = makeWorld();
     setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
     page.bypass({ type: 'ad-hold' });
     page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
     await settle(20);
-    const silentAtHold = page.video.muted;
-    await settle(3200);
-    check('a hold whose cover never arrives gives the page its sound back inside the grace', () => {
-      assert(silentAtHold === true, `precondition: take-over left the page audible (muted=${silentAtHold})`);
-      const g = page.logsOf('claim-grace');
-      assert(g.length === 1, `claim-grace logged ${g.length} time(s)`);
-      assert(g[0].d.ms <= 3000, `the grace ran at ${g[0].d.ms} ms`);
-      assert(page.video.muted === false, `the page stayed silenced after the grace (muted=${page.video.muted})`);
+    const audibleAtTakeover = page.video.muted === false;
+    page.frameMsg({ t: 'ready' });
+    for (let i = 0; i < 3; i++) page.frameMsg(healthySt({ pos: 100, lat: 3 }));
+    await settle(10);
+    check('the claim lands in the tick the clean picture appears', () => {
+      assert(audibleAtTakeover, 'precondition: the page was already silenced at take-over');
+      assert(page.logsOf('overlay-reveal').length === 1, 'precondition: the cover did not reveal');
+      assert(page.frame.style.opacity === '1', 'precondition: the frame is not the surface');
+      assert(page.video.muted === true, `the native kept its sound over the clean picture (muted=${page.video.muted})`);
     });
   }
   {
-    const page = makeWorld({ adSource: mutate([['    armClaimGrace();', '']]) });
+    const page = makeWorld({
+      adSource: mutate([['        // writer the arbiter replaced.', '        audioClaim(true);\n        // writer the arbiter replaced.']]),
+    });
     setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
     page.bypass({ type: 'ad-hold' });
     page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
-    await settle(3220);
-    check('RED: without the grace the page stays silent under a cover that never arrives', () => {
-      assert(page.logsOf('claim-grace').length === 0, 'the mutation did not remove the grace');
-      assert(page.video.muted === true, 'the pre-fix behaviour was not reproduced');
+    await settle(20);
+    check('RED: a claim taken at take-over silences a page that still has its picture', () => {
+      assert(page.video.muted === true, 'the mutant did not restore the pre-fix claim');
     });
   }
 
