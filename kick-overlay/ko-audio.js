@@ -30,6 +30,13 @@
 // Writers are registered, never inline: a native surface iterates the elements
 // it owns, a command surface receives one state object. Nothing outside this
 // file writes `.muted`, `.volume` or sends a mute command.
+//
+// The derived state is also ENFORCED, not only applied on change: an element
+// that appears after the last apply (Twitch builds ad/preview/PBP videos while
+// the overlay owns the picture) starts audible and no caller will ever report
+// it. `enforceSilence()` re-closes such an element on a 400 ms tick and on the
+// media events that mark one becoming audible. It only writes `muted = true`,
+// so it can neither invent a user mute nor un-mute what the page silenced.
 
 (function () {
   'use strict';
@@ -233,6 +240,143 @@
     delete sent[surface];
   }
 
+  // ---- the silencing guard -------------------------------------------------
+  // `apply()` writes only when the arbiter is TOLD something changed, and the
+  // page's layers are what tell it. One gap in that model is audible: an element
+  // that appears AFTER the last apply. Twitch builds ad/preview/PBP <video>s
+  // while the overlay owns the picture, every new element starts `muted:false`
+  // by default, and nothing ever asks it to close. Measured in the owner's
+  // Chrome (0.8.75, twitch.tv/titiltei, player=kick):
+  //
+  //   data-ko-owner="kick"
+  //   [...document.querySelectorAll('video')] -> [{muted:false, paused:true, videoHeight:0}]
+  //
+  // The convergence that content.js runs every 400 ms compares each element
+  // against `wanted(visibleSurface())`, and for the visible OVERLAY that is the
+  // layer's own "sound on", so a page element opened by the page is not drift to
+  // it. The authority cannot depend on a caller being right, so it enforces the
+  // one direction that is audible: no element of a surface may be OPEN unless
+  // the derived state allows it (its main element while that surface is heard).
+  //
+  // The guard only ever writes `muted = true`. It never un-mutes anything, so
+  // the intent rule keeps its shape (a machine mute is never read back as the
+  // user's choice) and no state the page set is overwritten in the direction the
+  // user would hear. It runs on a tick, because an element that never fires an
+  // event still starts open, and on the media events that mark an element about
+  // to be audible, so the tick is the backstop rather than the only answer.
+  const SILENCE_MS = 400; // = content.js's enforcement tick
+  const AUDIBLE_EVENTS = ['play', 'playing', 'loadedmetadata', 'loadeddata', 'emptied'];
+  let silenceTimer = 0;
+  let silenceListening = false;
+
+  function enforceSilence() {
+    for (const name of Object.keys(writers)) {
+      const w = writers[name];
+      if (!w || w.kind !== 'native') continue;
+      let els;
+      try {
+        els = w.elements ? w.elements() : [];
+      } catch {
+        els = [];
+      }
+      if (!els || !els.length) continue;
+      let main = null;
+      if (typeof w.main === 'function') {
+        try {
+          main = w.main();
+        } catch {
+          main = null;
+        }
+      }
+      const target = want(name);
+      for (const el of els) {
+        if (!el || !el.isConnected || el.muted) continue; // already silent
+        // The surface's MAIN element is the one voice: open is correct only in
+        // the state the arbiter derived for the surface.
+        if ((!main || el === main) && !target.muted) continue;
+        try {
+          el.muted = true;
+          markWrite(el);
+        } catch {
+          /* a detached element mid-write */
+        }
+      }
+    }
+  }
+
+  function armSilence() {
+    if (silenceTimer || typeof setTimeout !== 'function') return;
+    let native = false;
+    for (const name of Object.keys(writers)) {
+      if (writers[name] && writers[name].kind === 'native') native = true;
+    }
+    if (!native) return; // only an element surface can open on its own
+    silenceTimer = setTimeout(silenceTick, SILENCE_MS) || 1;
+  }
+
+  function silenceTick() {
+    silenceTimer = 0;
+    try {
+      enforceSilence();
+    } finally {
+      armSilence();
+    }
+  }
+
+  // An element that the page INSERTS is not a timer: a hidden tab throttles
+  // timers (measured in the owner's Chrome 2026-11-11: a 500 ms setTimeout had
+  // not fired 1.5 s later), so the tick cannot be the only way to see one. The
+  // observer is not throttled, and it is what a source-less <video> (no media
+  // event ever fires) has as its only signal.
+  let silenceObserving = false;
+  function installSilenceObserver() {
+    if (silenceObserving || typeof MutationObserver !== 'function') return;
+    if (typeof document === 'undefined' || !document) return;
+    silenceObserving = true;
+    try {
+      const observer = new MutationObserver((records) => {
+        for (const rec of records) {
+          const added = rec && rec.addedNodes;
+          if (!added || !added.length) continue;
+          for (const n of added) {
+            if (!n) continue;
+            const video = n.tagName === 'VIDEO' || (typeof n.querySelector === 'function' && n.querySelector('video'));
+            if (video) {
+              enforceSilence();
+              return;
+            }
+          }
+        }
+      });
+      observer.observe(document.documentElement || document, { childList: true, subtree: true });
+    } catch {
+      /* no observer: the tick and the media events still cover a visible tab */
+    }
+  }
+
+  function installSilenceGuard() {
+    if (silenceListening || typeof document === 'undefined' || !document) return;
+    if (typeof document.addEventListener !== 'function') return;
+    silenceListening = true;
+    armSilence();
+    installSilenceObserver();
+    for (const type of AUDIBLE_EVENTS) {
+      try {
+        document.addEventListener(
+          type,
+          (ev) => {
+            const el = ev && ev.target;
+            if (!el || el.tagName !== 'VIDEO') return;
+            enforceSilence();
+          },
+          true,
+        );
+      } catch {
+        /* an engine without capture must not blind the guard */
+      }
+    }
+  }
+
   function register(surface, spec) {
     writers[surface] = Object.assign({ kind: 'command' }, spec);
     if (spec && spec.shares) shares[surface] = spec.shares;
@@ -244,6 +388,7 @@
     writers[surface] = Object.assign({ kind: 'native' }, spec);
     if (spec && spec.shares) shares[surface] = spec.shares;
     installGestureReader();
+    installSilenceGuard();
     return KOAudio;
   }
 
@@ -375,22 +520,47 @@
       const el = ev && ev.target;
       if (!el || el.tagName !== 'VIDEO' || !el.isConnected) return;
       if (isOwnWrite(el, el.muted, el.volume)) return; // our own write echoing
+      // Which surface holds this element, and is it that surface's MAIN element?
+      // Only a main element can carry the user's decision; a secondary one is
+      // held muted by the one-voice rule, so whatever opened it is the page (or
+      // the browser) and must be silenced instead of read as a gesture. This is
+      // the second way the stream got a second audible copy in the owner's tab.
       let owner = null;
+      let isMain = true;
       for (const name of Object.keys(writers)) {
         const w = writers[name];
-        if (w.kind !== 'native' || typeof w.main !== 'function') continue;
-        let main = null;
+        if (!w || w.kind !== 'native' || typeof w.elements !== 'function') continue;
+        let els;
         try {
-          main = w.main();
+          els = w.elements() || [];
         } catch {
-          main = null;
+          els = [];
         }
-        if (main && main === el) {
-          owner = name;
-          break;
+        let holds = false;
+        for (const e of els) {
+          if (e === el) {
+            holds = true;
+            break;
+          }
         }
+        if (!holds) continue;
+        owner = name;
+        let main = null;
+        if (typeof w.main === 'function') {
+          try {
+            main = w.main();
+          } catch {
+            main = null;
+          }
+        }
+        isMain = !main || main === el;
+        break;
       }
-      if (!owner) return; // not a surface's main element: not a user decision
+      if (!owner) return; // not a surface this tab owns: not ours to read
+      if (!isMain) {
+        enforceSilence(); // a secondary element never carries the user's decision
+        return;
+      }
       // Only a FRESH input can have produced this volumechange. A stale one is
       // the machine: Twitch's player muting itself on an ad, the ad path's
       // claim silencing the page, or the player restarting. Recording it as
@@ -460,6 +630,10 @@
     claim,
     setPolicy,
     apply,
+    // MUTE-ONLY convergence, for a caller that wants to re-assert without ever
+    // taking a machine-muted element back to audible (content.js's 400 ms
+    // drift check should call this instead of apply()). Never un-mutes.
+    enforceSilence,
     forget,
     // ---- wiring
     register,

@@ -84,6 +84,67 @@ Cap: one visible pane per canonical project across workspaces/worktrees. Create 
 - `kick-overlay/content-fix-test.cjs` is NOT wired into the gate and its H4 arm ('the re-pick re-mints exactly once') FAILS at HEAD; measured 2026-11-08 by running it against `git show HEAD:kick-overlay/content.js`, so it is drift from the 0.8.47 frame-ready gate, not a live defect. Run it from `kick-overlay/` (it reads `manifest.json` from the cwd). Do not read its red as a regression you caused.
 - agent-browser: `H:\env\npm-global\agent-browser.cmd`, `connect 9222`. Use it for page UI, not for the extension service worker or `ko.adlog`.
 
+## Wave record — 2026-11-11 (later 4), one player per page, a seek that keeps running, no proxy (0.8.75)
+
+Owner reports answered in one build, each verbatim: *"o player da twitch ta funcionando ao mesmo tempo
+que o da kick"*, *"o player vem ... ai o da twitch volta ... e fica a 360p"*, *"quando eu clico pra dar
+seek no player da kick nao e pra ele pausar e despausar. e pra continuar rodando"*, *"passar o mouse e
+fazer hover pra mostrar o player tambem e inconsistente"*, *"tira completamente a opcao de proxy"*,
+*"tinha uma tela totalmente verde ... tira esse verde. deixa preto"*.
+
+- **One owner per page.** `content.js` publishes `data-ko-owner` (`kick`/`yt`/`twitch`) on the document,
+  and `twitch-adblock.js` reads it through its attribute observer: while the overlay owns playback it
+  refuses `ad-hold`/`ad-start`, tears down a cover or a standby it left behind, and never starts the
+  native. That is the "ao mesmo tempo" and the "volta 360p" half: the ad path used to mount its standby
+  while the kick layer already had the screen.
+- **One voice per surface** in `ko-audio.js`: the arbiter mutes every element a surface owns, not just
+  the primary one, so Twitch's second `<video>` cannot keep playing under the kick view.
+- **A seek inside the live window is in place.** `kickSeekTo()` sends `{t:'seek'}` when the target is
+  within the live element's own `st.win`; the replay url is loaded only for a target the window cannot
+  reach, because that reload is the pause the owner sees. Arm: `content-fix-test.cjs` P1b2 (in place
+  inside `st.win`, reload outside it, plus a no-window RED) — driven through `mountApi.KO`, not through
+  the top-level `KO` of the other evaluation; `content.js` is loaded twice by that harness and the two
+  instances own separate state objects.
+- **Hover is a frame pointer, not a re-layout.** The bar is revealed by pointer entry on the frame's own
+  wrapper, so a rect miss cannot swallow it.
+- **Black, never green.** `syncCover()` paints the player's rect (never the viewport) `#000` during a
+  hold; that is where Twitch's undecoded ad frame used to show through.
+- **Proxy feature removed** by owner order: the code, the popup rows, the storage keys and the
+  `twitch-proxy/` tree are gone; `ADBLOCK-FINDINGS.md` keeps a REMOVED banner over the historical text.
+  Sweep receipt: `grep -rnI -E "chrome\.proxy|webRequest|onAuthRequired|8899|twitch-proxy"` over
+  `kick-overlay/` → no hits; `node --check` clean on `background.js` and `popup.js`.
+
+Status, per the live-proof rule at the top of this file: the units are green (`mute-decision` 26,
+`ad-time-continuity` 43, `cold-cover-fixture` 18, `content-fix` all checks incl. P1b2 and P2e, gate
+`RESULT PASS checks=20 failed=0`), and the LIVE half is now measured in the guest on a real broadcast
+(`twitch.tv/titiltei`, `player=kick`, 0.8.75 + the sentinel clamp): `kickparity RESULT PASS rows=9
+failed=0` — `preflight Playing q=1080p60 dur=11125`, `pause-freezes moved=0.00s`,
+`resume-advances moved=0.99s`, `arrow-back-5s back=5.00s`, `rewind-60s got=11003.47 advanced=2.94s`,
+`rewind-10s got=10996.87`, `seek-within-dvr 10879.9`, `go-live liveClock=true`,
+`quality-480p 720p60->480p`, `latency-at-edge lat=1.56s`. In his own Chrome (0.8.76, `player=kick`)
+the ad path logged `ad-skip {"owner":"kick","reason":"overlay-owns"}` and `audio-state audible:0`, so
+the pod refusal and the one-voice rule are both live facts, not unit claims.
+
+**The kick layer mounts, and the cause was NOT the mint.** Two changes were in the tree when it started
+playing, and only one of them is load-bearing: the `win` sentinel clamp above (proven by
+`content-fix-test.cjs` P1b2 and by the rewind rows going from `got=21.05` to `got=11003.47`). The DNR
+rule 2 I added (`access-control-allow-origin: *` for `||playback.live-video.net`) is NOT the mount
+cause, and that was measured, not assumed: with rule 2 removed and the guest restarted, the layer still
+reached `Playing q=1080p60`. It stays because the block it covers is real and measured — an XHR from
+`chrome-extension://…` gets `access-control-allow-origin: null` on the master playlist (a document
+`fetch` is exempt through host permissions, which is why the earlier probe looked fine), while kick's
+own origins get their origin echoed. The frame's IVS wasm worker is a CORS-checking context and cannot be
+inspected from outside. Any earlier "the layer never mounts" reading came from a guest whose profile
+still served an older build: `--fresh` (or `stop`+`start`) is required, a page reload is not.
+
+**Parity with kick.com's own player stays `UNPROVEN`, and the instrument says why.** `parity-live`
+against his Chrome ran the full 420 s window: the kick.com reference tab reported
+`{n:2, pos:37.45, paused:false, area:986049, end:null, dur:null}` — the reference PLAYS, but exposes no
+`seekable` range, so the harness's reference gate refuses it rather than inventing a number. The
+candidate tab was closed afterwards (`/json/close/<id>`, no focus, no activation). Our own side is
+proven 9/9 above; the comparison needs an instrument that reads kick.com's DVR through its own player
+API rather than the media element's `seekable`.
+
 ## Project notes
 
 - The extension is in `kick-overlay/`.
@@ -700,6 +761,17 @@ paused`, but three later `Runtime.evaluate` calls timed out at 8 s. So the kick.
 parity run needs a rendered (focused) kick tab, which is exactly what he forbade. Our own side
 (`kickparity`, 9/9 rows) is measurable in the guest; parity stays `UNPROVEN` until someone leaves a
 kick.com tab in front.
+
+**Corrected 2026-11-11: the reference side IS measurable in his Chrome without stealing focus.** A
+relay tab (`browser.open({app:{relay:true}, url:'https://kick.com/titiltei', wait_until:'domcontentloaded'})`)
+reported `{n:2, vis:"visible"}` about 6 s later with the page never activated by the owner: the main
+`<video>` at `rs=4, paused=false, ct=15.01, h=720`, plus kick.com's own pre-roll
+`static.kick.com/ads/black_2s.mp4` (paused, muted). So the previous "no video in a tab nobody looks
+at" was the `hidden` lifecycle of that particular create, not a property of kick.com. Two caveats,
+both measured: the element's `seekable.end` is the literal sentinel `1073741824`, so the reference's
+live edge has to come from its player (not from `seekable`), and one CDP round-trip after
+`Page.setWebLifecycleState('active')` hung the tab past the grace window and the handle was killed —
+probe first, mutate the lifecycle last, and treat a killed handle as a released tab.
 
 ## Assume this machine is ten times weaker (owner order 2026-11-11, via watcher DM)
 

@@ -159,6 +159,10 @@ page reports an ad; results go to `G:\Temp\opencode\necros-ad-matrix.log`.
 
 ## 1.3 0.8.19: proxy mode (HD, native player, no SSAI)
 
+**REMOVED on 2026-11-11 by owner order.** The proxy option, its popup rows, the
+`proxy`/`webRequest`/`webRequestAuthProvider` permissions and the `twitch-proxy/` server are
+gone; the extension never touches the browser proxy. The text below is kept as history.
+
 The user chose the only path that can satisfy **HD + no ads + native player**:
 a TTV LOL PRO-style egress proxy. Twitch decides SSAI from the **egress
 IP/region of the playlist request**, so a proxy in a region where Twitch does

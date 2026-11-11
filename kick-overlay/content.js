@@ -273,7 +273,7 @@ const NOT_CHANNEL = new Set([
 
 // Build marker for the diag stream — lets us tell which code a tab runs
 // (content scripts of pre-reload tabs survive extension reloads).
-const KO_VER = '0.8.75';
+const KO_VER = '0.8.76';
 // ONE canonical yt state object: every reset site (boot, teardown, the
 // frame-death watchdog) must agree, or a drained/live flag survives a rebuild.
 function freshYtState() {
@@ -619,6 +619,22 @@ function plausibleKickSlug(slug) {
   return KICK_SLUG_RE.test(s) && !/^uc[0-9a-z_-]{22}$/i.test(s);
 }
 
+// The mint is the one place the kick layer can die silently, and it did
+// (2026-11-11: the frame sat at state Ready with a media element of
+// readyState 0). Record what the API actually answered, once per outcome.
+// `diag()` is a service-worker console.debug only, and the owner's log is
+// `chrome.storage.local['ko.adlog']`, so the same line also rides the
+// `ko-adlog` CustomEvent the bridge persists (that is how `vis-audio` lands).
+// Without this the next pod has to re-derive the mint by hand.
+function kickLog(ev, d) {
+  diag(ev, d);
+  try {
+    document.dispatchEvent(new CustomEvent('ko-adlog', { detail: JSON.stringify({ ev, d }) }));
+  } catch {
+    /* a diag line must never break the mint */
+  }
+}
+
 async function kickPlaybackUrl(slug) {
   if (!plausibleKickSlug(slug)) return { live: false };
   const enc = encodeURIComponent(slug);
@@ -629,14 +645,11 @@ async function kickPlaybackUrl(slug) {
   for (const url of probes) {
     try {
       const r = await fetch(url, { credentials: 'omit' });
-      // The mint is the one place the kick layer can die silently, and it did
-      // (2026-11-11: the frame sat at state Ready with a media element of
-      // readyState 0). Record what the API actually answered, once per outcome.
       const api = url.replace('https://kick.com/api/', '');
       if (!r.ok) {
         if (KO.kickMintSig !== `${api}|${r.status}`) {
           KO.kickMintSig = `${api}|${r.status}`;
-          diag('kick_probe', { api, status: r.status });
+          kickLog('kick_probe', { api, status: r.status });
         }
         continue;
       }
@@ -645,7 +658,7 @@ async function kickPlaybackUrl(slug) {
       const shape = ls ? (ls.playback_url ? 'ls.url' : (d.playback_url ? 'top.url' : 'no.url')) : 'no.ls';
       if (KO.kickMintSig !== `${api}|${shape}`) {
         KO.kickMintSig = `${api}|${shape}`;
-        diag('kick_probe', { api, status: r.status, shape, live: !!ls });
+        kickLog('kick_probe', { api, status: r.status, shape, live: !!ls });
       }
       if (ls) {
         if (ls.playback_url) return { live: true, url: ls.playback_url, streamId: ls.id || null };
@@ -1329,8 +1342,16 @@ function kickSeekTo(target) {
   // target the live window cannot reach, and that path is the only one that can
   // cost a visible stop ("quando eu clico pra dar seek no player da kick nao e
   // pra ele pausar e despausar. e pra continuar rodando", owner 2026-11-11).
+  // `win` is the element's own rewind window, and IVS/Twitch both publish the
+  // literal sentinel 1073741824 in `seekable.end` when the window is unknown
+  // (measured 2026-11-11: the kick bridge reported win=1073741824 on a live
+  // url). A sentinel makes EVERY target look reachable, so a 60 s rewind was
+  // "seeked in place" on a live timeline that cannot hold it and the frame
+  // bounced back to the edge - the owner's "volta UM segundo e a live avanca".
+  // A real window is seconds-to-hours; anything past 1e6 is "unknown".
   const win = Number(st.win) || 0;
-  if (!KO.kickOnDvr && win > 4 && edge - t <= win - 2) {
+  const winReal = win > 4 && win < 1e6 ? win : 0;
+  if (!KO.kickOnDvr && winReal && edge - t <= winReal - 2) {
     kickSend({ t: 'seek', s: t });
     diag('live_seek', { target: Math.round(t), behind: Math.round(edge - t), win: Math.round(win) });
     updateKickBar();
@@ -1482,8 +1503,16 @@ function syncOwner() {
   // depois o outro player volta de novo, segundos atras ... e fica a 360p",
   // 2026-11-11). While an overlay player is SELECTED it is the picture, whether
   // or not its bar happens to be painted.
-  const overlay = KO.player !== 'twitch' && !!KO.wrap;
-  const want = overlay ? KO.player : '';
+  //
+  // SELECTED IS NOT ENOUGH (2026-11-11). The preference used to be the whole
+  // term, so a layer that had no picture yet (kick `state:'Ready'` with the
+  // media element at readyState 0, the IVS rs=0 defect) still held the
+  // attribute: `twitch-adblock.js` reads "the attribute is non-empty" as "the
+  // native is covered, do not fight a pod", so a broken layer also cost the ad
+  // protection, on a player the user can see is not ours. The term is the
+  // PICTURE now — a mount attempt always has a gap with no picture, and that
+  // gap must belong to the native player.
+  const want = overlayOwnsPicture() ? KO.player : '';
   if (KO.ownerAttr === want) return;
   KO.ownerAttr = want;
   try { document.documentElement.setAttribute('data-ko-owner', want); } catch { /* teardown */ }
@@ -1494,12 +1523,28 @@ function syncOwner() {
 // ended has nothing to show, and leaving the native paused would be a dead
 // screen; a layer that is playing owns the screen even while its bar is hidden.
 function overlayHasPicture() {
-  const st = KO.player === 'twitch' ? null : KO.kickState;
+  if (KO.player === 'twitch' || !KO.wrap) return false;
+  // Each layer reports on its OWN surface. This used to read `KO.kickState` for
+  // the youtube player too, so an eagerly-mounted (paused) kick frame made the
+  // yt layer read as "no picture" — and, after the ownership change below, a
+  // playing yt layer would read the same way and hand the screen to the native
+  // underneath it.
+  if (KO.player === 'youtube') {
+    const y = KO.ytState || {};
+    return !!(y.ready && y.playing && !y.ended);
+  }
+  const st = KO.kickState;
   if (!st) return false;
-  if (KO.player === 'youtube' && !KO.kickState) return false;
   const state = String(st.state || '');
   if (state) return /playing|buffering|loading/i.test(state) && !/ended|idle|failed/i.test(state);
   return st.paused === false;
+}
+
+// Playback ownership, in one place: the selected overlay layer owns the native
+// player only while it can actually paint. Both the 400 ms pause loop and the
+// published `data-ko-owner` term read this, so they cannot disagree.
+function overlayOwnsPicture() {
+  return KO.player !== 'twitch' && !!KO.wrap && overlayHasPicture();
 }
 
 // Which surface is being LISTENED to — one answer, from the same predicate that
@@ -1518,8 +1563,13 @@ function syncMute() {
   // the native must never be the picture and never make a sound, whether or not
   // the bar is currently painted ("o player da twitch ta funcionando ao mesmo
   // tempo que o da kick. para com isso", owner 2026-11-11).
-  const overlaySelected = KO.player !== 'twitch' && !!KO.wrap;
-  if (overlaySelected) {
+  //
+  // But a layer with no picture is not the picture. The preference-only term
+  // paused the native on every 400 ms tick while the kick layer sat at
+  // readyState 0, and the tick's fallback resumed it again: a pause/resume
+  // churn on the user's player, with the ad path also standing down for an
+  // owner that was not on screen. Only pause what the overlay can replace.
+  if (overlayOwnsPicture()) {
     for (const v of document.querySelectorAll('video')) {
       if (v.paused) continue;
       v.pause();
@@ -1541,17 +1591,20 @@ function syncMute() {
   // `muted:false` while the overlay owns the screen (measured in the owner's
   // Chrome, 0.8.73: `{muted:false, paused:true, h:0}` with owner=kick). The
   // derived state is the whole surface's, so one apply() settles all of them.
+  // The arbiter owns this now: `enforceSilence()` is MUTE-ONLY (it can never
+  // un-mute, so it cannot overwrite the user's choice) and it derives each
+  // element's state from the surface it belongs to, so it does not depend on
+  // `want(visibleSurface())` being the right row - with the overlay visible that
+  // row is the LAYER's "sound on", which is why the old drift check below never
+  // saw a page video sitting open under the layer (measured 0.8.73:
+  // `{muted:false, paused:true, h:0}` with owner=kick).
   try {
-    const want = window.KOAudio.wanted(visibleSurface());
-    let drifted = false;
-    for (const v of document.querySelectorAll('video')) {
-      if (!v || !v.isConnected) continue;
-      if (window.KOAudio.isOwnWrite(v, v.muted, v.volume)) continue;
-      if (!!v.muted !== !!want.muted) { drifted = true; break; }
-    }
-    if (drifted) {
-      window.KOAudio.apply();
-      diag('audio-reassert', { want: !!want.muted, vis: visibleSurface() });
+    const audio = window.KOAudio;
+    if (typeof audio.enforceSilence === 'function') {
+      const open = [...document.querySelectorAll('video')].filter((v) => v.isConnected && !v.muted).length;
+      audio.enforceSilence();
+      const after = [...document.querySelectorAll('video')].filter((v) => v.isConnected && !v.muted).length;
+      if (after !== open) diag('audio-reassert', { open, after, vis: visibleSurface() });
     }
   } catch {
     /* a detached element mid-swap */
@@ -2495,7 +2548,7 @@ async function probeKickLayer() {
     return;
   }
   const k = await kickPlaybackUrl(KO.kickSlug);
-  diag('kick_probe', { slug: KO.kickSlug, live: k.live, url: k.url ? 'yes' : 'no' });
+  kickLog('kick_probe', { slug: KO.kickSlug, live: k.live, url: k.url ? 'yes' : 'no', at: 'poll' });
   if (k.live && k.url) {
     KO.kickStreamId = k.streamId || null;
     // Live CONFIRMED: anchor the keep-up clock. A first frame slower than
@@ -2510,7 +2563,7 @@ async function probeKickLayer() {
   // P8 (0.8.6): log only the slug + a short live/url status — the full
   // kickPlaybackUrl payload (playback_url) never hits the console.
   console.log('[ko] kick offline or unreachable', KO.kickSlug, 'live:', k.live, 'url:', k.url ? 'yes' : 'no');
-  diag('kick_offline', { slug: KO.kickSlug, live: k.live, url: k.url ? 'yes' : 'no' });
+  kickLog('kick_offline', { slug: KO.kickSlug, live: k.live, url: k.url ? 'yes' : 'no', why: KO.kickMintSig || null });
   // Honest offline badge: after a yt→kick fallback the layer the user
   // actually chose is the failed one — say so instead of a KICK that
   // implies their own kick choice.

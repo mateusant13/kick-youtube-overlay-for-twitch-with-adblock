@@ -92,6 +92,27 @@ function makeWorld(opts, extra) {
     }
   };
 
+  // A real DOM notifies childList observers of every insertion (ko-audio.js's
+  // silencing guard uses one to see a <video> the page inserts after the last
+  // apply; a hidden tab throttles its tick, so the observer is the signal that
+  // still arrives). Only observers that asked for childList and whose target is
+  // the parent (or an ancestor, with subtree) are notified.
+  const notifyAdded = (parent, child) => {
+    for (const o of observers) {
+      if (!o.opts || !o.opts.childList) continue;
+      let inScope = o.target === parent;
+      if (!inScope && o.opts.subtree) {
+        for (let p = parent; p && !inScope; p = p.parentElement) inScope = p === o.target;
+      }
+      if (!inScope) continue;
+      try {
+        o.cb([{ type: 'childList', target: parent, addedNodes: [child], removedNodes: [] }], o);
+      } catch {
+        /* an observer callback must not break the run */
+      }
+    }
+  };
+
   const node = (tag) => {
     const n = makeTarget({
       tag,
@@ -107,6 +128,7 @@ function makeWorld(opts, extra) {
       removed: false,
       appendChild(c) {
         c.parentElement = this;
+        notifyAdded(this, c);
         return c;
       },
       remove() {
@@ -521,7 +543,13 @@ async function main() {
     // The mutation lives HERE, in the source of truth the arm measures: the old
     // arm read `G:/Temp/ko-audio-nopreclaim.js`, a file nothing generates any
     // more, so the arm failed with ENOENT instead of measuring anything.
-    const noRelease = AUDIO.split('const CLAIM_RELEASE_MS = 2500;').join('const CLAIM_RELEASE_MS = 0;');
+    //
+    // -1, not 0: the window is `Date.now() - releasedAt <= WINDOW`, so a zero
+    // window is still OPEN in the same millisecond as the release and the arm
+    // went red/green on sub-millisecond scheduling (measured 2 of 8 runs). A
+    // negative window is closed at every offset, which is what "no release
+    // window" means.
+    const noRelease = AUDIO.split('const CLAIM_RELEASE_MS = 2500;').join('const CLAIM_RELEASE_MS = -1;');
     if (noRelease === AUDIO) throw new Error('the release-window mutation did not apply');
     const mutated = noRelease;
     const page = makeWorld({ audioSource: mutated });
@@ -707,6 +735,117 @@ async function main() {
       second.muted = false;
       const caught = second.muted === false && page.video.muted === false;
       assert(caught, 'the duplication detector cannot see two audible videos');
+    });
+  }
+
+  // ---- 9c: THE SILENCING GUARD -------------------------------------------
+  // Measured in the owner's Chrome (0.8.75, twitch.tv/titiltei, player=kick):
+  // `data-ko-owner="kick"` and every page <video> reading
+  // `{muted:false, paused:true, videoHeight:0}`. The element appeared AFTER the
+  // last apply() (Twitch builds ad/preview/PBP videos while the overlay owns the
+  // picture), a new element starts `muted:false` by default, and the only
+  // convergence outside ko-audio.js compares it against
+  // `wanted(visibleSurface())` — the OVERLAY's own "sound on" — so nothing ever
+  // asked that element to close. The authority cannot wait for a caller to be
+  // right: it enforces the audible direction itself, mutes only, on three
+  // signals — a 400 ms tick, the media events that mark an element becoming
+  // audible, and a childList observer for the insertion itself (a hidden tab
+  // throttles timers: measured in the owner's Chrome, a 500 ms setTimeout had
+  // not fired 1.5 s later, and a source-less <video> fires no media event).
+  {
+    const page = makeWorld();
+    page.audio.setVisible('kick'); // the overlay layer owns the picture and the sound
+    const late = page.extraVideo({ muted: false, paused: true, videoHeight: 0 });
+    await settle(700); // past one guard tick
+    check('a page video created after the last apply is silenced while the layer owns the picture', () => {
+      assert(late.muted === true,
+        `late page video still open (muted=${late.muted}) while the overlay owns playback: audible leak`);
+      assert(page.video.muted === true, `the main page video is audible (muted=${page.video.muted}) beside the layer`);
+    });
+  }
+  {
+    const noGuard = AUDIO.split('\n    armSilence();').join('\n    /* mutant: guard disarmed */');
+    check('mutation: the silencing guard exists to be disarmed', () => {
+      assert(noGuard !== AUDIO, 'the guard arming site was not found');
+    });
+    const page = makeWorld({ audioSource: noGuard });
+    page.audio.setVisible('kick');
+    const late = page.extraVideo({ muted: false, paused: true, videoHeight: 0 });
+    await settle(700);
+    check('RED: without the guard that element stays open (the measured leak)', () => {
+      assert(late.muted === false, `the mutant silenced it (muted=${late.muted}): the arm above measures nothing`);
+    });
+  }
+  {
+    const page = makeWorld();
+    page.audio.setVisible('kick');
+    const fresh = page.extraVideo({ muted: false, paused: true });
+    page.document.fire({ type: 'play', target: fresh }); // the page starts an element NOW
+    check('a page video that starts playing under the layer is silenced in the same task', () => {
+      assert(fresh.muted === true,
+        `a video started playing while the overlay owns playback (muted=${fresh.muted}): a tick would be too late`);
+    });
+    const noEvents = AUDIO.split('    for (const type of AUDIBLE_EVENTS) {').join('    for (const type of []) {');
+    check('mutation: the media-event arm exists to be disarmed', () => {
+      assert(noEvents !== AUDIO, 'the media-event listener loop was not found');
+    });
+    const deaf = makeWorld({ audioSource: noEvents });
+    deaf.audio.setVisible('kick');
+    const hole = deaf.extraVideo({ muted: false, paused: true });
+    deaf.document.fire({ type: 'play', target: hole });
+    check('RED: without the media events that element stays audible until the tick (RED)', () => {
+      assert(hole.muted === false, `the mutant silenced it synchronously (muted=${hole.muted}): the arm is not live`);
+    });
+  }
+  {
+    // The insertion itself, with no media event and no time passing: this is the
+    // shape of the element measured in the owner's tab (`src:""`, `h:0`, so no
+    // `play`/`loadedmetadata` will ever fire for it) and the only signal a hidden
+    // tab still delivers, because its timers are throttled.
+    const page = makeWorld();
+    page.audio.setVisible('kick');
+    const inserted = page.extraVideo({ muted: false, paused: true, videoHeight: 0 });
+    page.docEl.appendChild(inserted);
+    check('a page video inserted after the last apply is silenced without a timer', () => {
+      assert(inserted.muted === true, `inserted page video still open (muted=${inserted.muted}) under the layer`);
+    });
+    const noObserver = AUDIO.split('    installSilenceObserver();').join('    /* mutant: no observer */');
+    check('mutation: the insertion observer exists to be disarmed', () => {
+      assert(noObserver !== AUDIO, 'the observer install site was not found');
+    });
+    const blind = makeWorld({ audioSource: noObserver });
+    blind.audio.setVisible('kick');
+    const v = blind.extraVideo({ muted: false, paused: true, videoHeight: 0 });
+    blind.docEl.appendChild(v);
+    check('RED: without the observer the inserted element stays open (RED)', () => {
+      assert(v.muted === false, `the mutant silenced it (muted=${v.muted}): the arm is not live`);
+    });
+  }
+  {
+    const page = makeWorld();
+    page.audio.setVisible('twitch'); // the page surface is the one being listened to
+    const second = page.extraVideo({ muted: true });
+    page.audio.apply(); // the one-voice rule holds it muted
+    second.muted = false; // Twitch opens its own secondary element
+    page.document.fire({ type: 'volumechange', target: second });
+    check('a secondary page video opened by the page is silenced, not read as a gesture', () => {
+      assert(second.muted === true, `a second audible copy of the stream (muted=${second.muted})`);
+      assert(page.audio.intent('twitch').muted === false, 'the page opened element wrote the user intent');
+    });
+    const noBranch = AUDIO
+      .split('        enforceSilence(); // a secondary element never carries the user')
+      .join('        void 0; // mutant: secondary element left alone');
+    check('mutation: the secondary-element branch exists to be disarmed', () => {
+      assert(noBranch !== AUDIO, 'the secondary-element branch was not found');
+    });
+    const loose = makeWorld({ audioSource: noBranch });
+    loose.audio.setVisible('twitch');
+    const copy = loose.extraVideo({ muted: true });
+    loose.audio.apply();
+    copy.muted = false;
+    loose.document.fire({ type: 'volumechange', target: copy });
+    check('RED: without that branch the secondary element stays open (RED)', () => {
+      assert(copy.muted === false, `the mutant silenced it (muted=${copy.muted}): the arm is not live`);
     });
   }
 

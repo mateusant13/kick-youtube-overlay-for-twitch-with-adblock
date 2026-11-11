@@ -14,7 +14,29 @@
     },
     "condition": {
       "urlFilter": "||youtube.com/youtubei/v1/player",
-      "resourceTypes": ["xmlhttprequest"]
+      "resourceTypes": [
+        "xmlhttprequest"
+      ]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "responseHeaders": [
+        {
+          "header": "access-control-allow-origin",
+          "operation": "set",
+          "value": "*"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "||playback.live-video.net",
+      "resourceTypes": [
+        "xmlhttprequest"
+      ]
     }
   }
 ]

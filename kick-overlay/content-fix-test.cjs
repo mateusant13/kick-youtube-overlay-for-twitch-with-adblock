@@ -224,7 +224,7 @@ const bridgeSrc = fs.readFileSync('player-bridge.js', 'utf8');
 const scope = {};
 const fn = new Function('window', 'document', 'location', 'navigator', src + '\n;return {KO, probe, apply, ensureYtHls, injectStyles, teardown, setPlayer, saveState, ' +
   'loadState, rectTick, rectFromHost, currentSlug, resolveYtPageKick, ensureYtIframe, ensureKick, showKickLayer, showYtLayer, hideWrap, hideWrapForProbe, ' +
-  'renderQualityMenu, mount, updateKickBar, seekOverlayStep, onOverlayKeydown};');
+  'renderQualityMenu, mount, updateKickBar, seekOverlayStep, onOverlayKeydown, syncMute, overlayOwnsPicture};');
 const api = fn(global, doc, global.location, global.navigator);
 const KO = api.KO;
 
@@ -885,7 +885,7 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
     addEventListener() {},
     removeEventListener() {},
   };
-  const mountApi = new Function('window', 'document', 'location', 'navigator', src + '\n;return {KO, mount, updateKickBar, teardown, injectStyles, rectTick, syncMute, setupHotBar, teardownHotBar, renderQualityMenu};')(
+  const mountApi = new Function('window', 'document', 'location', 'navigator', src + '\n;return {KO, mount, updateKickBar, teardown, injectStyles, rectTick, syncMute, setupHotBar, teardownHotBar, renderQualityMenu, kickSeekTo, kickBackToLive};')(
     global, mountDoc, global.location, global.navigator,
   );
   const mKO = mountApi.KO;
@@ -908,6 +908,10 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
   nativeVideo.paused = false;
   nativeVideo.muted = false;
   mKO.player = 'youtube';
+  // The layer must HAVE a picture for the native to be handed over (P2e: the
+  // ownership term is the picture, not the preference - a selected layer with
+  // nothing to show leaves the user's player alone).
+  mKO.ytState = { ready: true, playing: true, live: true, muted: false, dur: 0, ct: 0, error: 0 };
   mKO.wrap.style.display = 'block';
   mountApi.syncMute();
   assert.strictEqual(nativeVideo.paused, true, 'overlay pauses Twitch playback');
@@ -919,6 +923,9 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
     && /\b(v|el|video|native|hidden|vid)\.(muted|volume)\s*=[^=]/.test(l));
   assert.strictEqual(elementAudioWrites.length, 0, 'no element.muted/.volume write anywhere in content.js');
   mKO.wrap.style.display = 'none';
+  // ...and the resume half is about a layer that FAILED (no picture), which is
+  // why the fixture drops its report here.
+  mKO.ytState = { ready: false, playing: false, live: false, muted: true, dur: 0, ct: 0, error: 0 };
   mountApi.rectTick();
   assert.strictEqual(nativeVideo.paused, false, 'hidden failed overlay resumes Twitch playback');
   assert.strictEqual(nativeVideo.muted, false, 'still no mute write on the way out');
@@ -1627,6 +1634,59 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   assert.strictEqual(p1bDvr, 1, 'kick DVR: back-seek routes to the DVR path (load/seek), not seekToLive');
   console.log('P1b kick edge: live-url forward press = seekToLive only (no reload); DVR rewind preserved — OK');
 
+  // P1b2: a back-seek INSIDE the live element's own window is done in place.
+  // Owner 2026-11-11: "quando eu clico pra dar seek no player da kick nao e pra
+  // ele pausar e despausar. e pra continuar rodando" — the reload of the DVR url
+  // is the stop, so it may only happen when the window cannot reach the target.
+  // The shipped module's own send counters are the observable (kickDiag), reset
+  // per call so the arm measures exactly one decision.
+  // The functions being measured are mountApi's, so their state object is
+  // mountApi.KO (content.js is evaluated twice by this harness: `api` and
+  // `mountApi` each own a KO; the ones that matter here are mKO's).
+  const K2 = mKO;
+  K2.kickOnDvr = false;
+  K2.kickDvrUrl = 'https://dvr.example/p1b2';
+  K2.activeUrl = 'https://ivs.example/live-p1b2';
+  K2.kickDur = 0; // the bar's max comes from pos+lat, so the edge is 1000
+  K2.kickState = { state: 'Playing', pos: 1000, lat: 2, dur: 0, win: 40, ts: Date.now() };
+  fakeFrame = { ...el('iframe'), dataset: { koToken: 'p1b2' }, contentWindow: { postMessage: (m) => framePosts.push(m) } };
+  K2.kickFrame = fakeFrame; K2.kickWin = fakeFrame.contentWindow;
+  const sendCounts = () => {
+    const d = K2.kickDiag || {};
+    const b = d.sentByType || {};
+    return { seek: b.seek || 0, load: b.load || 0, live: b.seekToLive || 0 };
+  };
+  K2.kickDiag = null;
+  mountApi.kickSeekTo(970); // 30 s behind the edge, inside a 40 s window
+  const inPlace = sendCounts();
+  assert.strictEqual(inPlace.seek, 1, `live window: back-seek must send exactly one in-place seek (got ${JSON.stringify(inPlace)})`);
+  assert.strictEqual(inPlace.load, 0, 'live window: back-seek must NOT reload the source (that is the visible stop)');
+  K2.kickDiag = null;
+  mountApi.kickSeekTo(800); // 200 s back, OUTSIDE the 40 s window
+  const deep = sendCounts();
+  assert.strictEqual(deep.load, 1, `outside the live window the DVR url is still loaded (got ${JSON.stringify(deep)})`);
+  assert.strictEqual(deep.seek, 0, 'outside the live window an in-place seek cannot reach the target');
+  // RED for the same decision: with NO window published (the pre-fix state,
+  // where `st.win` did not exist at all) the same 30 s back-seek reloads the
+  // source. If this ever stops reloading, the arm above proves nothing.
+  // Sentinel guard: `seekable.end` is 1073741824 when the window is unknown
+  // (measured on a live IVS url). A 30 s back-seek must NOT be treated as
+  // reachable in place on that number - a live timeline cannot hold it and the
+  // frame bounces back to the edge.
+  K2.kickOnDvr = false;
+  K2.kickState = { state: 'Playing', pos: 1000, lat: 2, dur: 0, win: 1073741824, ts: Date.now() };
+  K2.kickDiag = null;
+  mountApi.kickSeekTo(970);
+  const sentinel = sendCounts();
+  assert.strictEqual(sentinel.load, 1, `sentinel win must not authorise an in-place seek (got ${JSON.stringify(sentinel)})`);
+  K2.kickOnDvr = false; // the deep seek above switched the frame to the replay
+  K2.kickState = { state: 'Playing', pos: 1000, lat: 2, dur: 0, ts: Date.now() };
+  K2.kickDiag = null;
+  mountApi.kickSeekTo(970);
+  const noWindow = sendCounts();
+  assert.strictEqual(noWindow.load, 1, `pre-fix (no window): the same seek must reload (got ${JSON.stringify(noWindow)})`);
+  console.log('P1b2 live-window seek: in place inside st.win, reload only outside it — OK');
+
   // P1b clean-room variant: self-contained (explicit kickOnDvr=false +
   // activeUrl + kickState with a fresh st.ts, NO reliance on clobbered state
   // from earlier sections) and proves the 0.8.5 reload cliff is gone even
@@ -1773,6 +1833,79 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   framePosts.length = 0;
   mountApi.teardown();
   console.log('P2d wrap focus: tabIndex=0 + single dispatch per press (no dead bubble listener) — OK');
+
+  // ---- P2e: playback ownership is the PICTURE, not the preference -----------
+  // Measured 2026-11-11 in the owner's Chrome: the kick layer was SELECTED with
+  // no picture (frame at state `Ready`, its media element at readyState 0).
+  // The old term (`player !== 'twitch' && wrap`) paused the native on every
+  // 400 ms tick and published `data-ko-owner` anyway, so the native got a
+  // pause/resume churn AND `twitch-adblock.js` (which only asks whether the
+  // attribute is non-empty) stood down for a layer that was not on screen.
+  const ownershipVideo = videoEl('tw-owner');
+  ownershipVideo.paused = false;
+  fakeVideos.length = 0;
+  fakeVideos.push(ownershipVideo);
+  KO.player = 'kick';
+  KO.wrap = el('div');
+  const prefOnly = KO.player !== 'twitch' && !!KO.wrap; // the term that shipped before
+  // (a) selected, no picture (the Idle / rs=0 shape): native keeps playing, owner empty
+  KO.kickState = { state: 'Idle', paused: true, muted: true, pos: 0, lat: 0, dur: 0, ts: Date.now() };
+  KO.ownerAttr = undefined;
+  api.syncMute();
+  assert.strictEqual(ownershipVideo.paused, false, 'no picture: the native player is NOT paused');
+  assert.strictEqual(doc.documentElement.attrs['data-ko-owner'] || '', '', 'no picture: data-ko-owner is empty (the ad path still owns the page)');
+  // (c) the mutation proof for (a): the preference-only term was TRUE in this
+  // exact state, so the shipped behaviour above is only reachable by the
+  // picture term. Reverting the term makes (a) fail on both asserts.
+  assert.ok(prefOnly, 'mutant check: the preference-only term was true here and would have paused the native');
+  // No frame report yet is the same answer (a mount attempt has this gap).
+  KO.kickState = null;
+  KO.ownerAttr = undefined;
+  api.syncMute();
+  assert.strictEqual(ownershipVideo.paused, false, 'no frame report: the native is NOT paused either');
+  assert.strictEqual(doc.documentElement.attrs['data-ko-owner'] || '', '', 'no frame report: data-ko-owner is empty');
+  // (b) playing: the layer owns the screen, so the native is paused and published
+  KO.kickState = { state: 'Playing', paused: false, muted: false, pos: 10, lat: 2, dur: 120, ts: Date.now() };
+  KO.ownerAttr = undefined;
+  api.syncMute();
+  assert.strictEqual(ownershipVideo.paused, true, 'a playing layer pauses the native');
+  assert.strictEqual(doc.documentElement.attrs['data-ko-owner'], 'kick', 'a playing layer publishes data-ko-owner=kick');
+  // (d) the yt branch reads ITS OWN report: the eagerly mounted kick frame is
+  // paused there, and reading kickState (the old code) said "no picture" while
+  // youtube played - exactly the state that would hand the screen back.
+  KO.player = 'youtube';
+  KO.kickState = { state: 'Playing', paused: false, muted: false, pos: 10, lat: 2, dur: 0, ts: Date.now() };
+  KO.ytState = { ready: true, playing: false, muted: true, live: true, dur: 0, ct: 0, error: 0 };
+  ownershipVideo.paused = false;
+  KO.ownerAttr = undefined;
+  api.syncMute();
+  assert.strictEqual(ownershipVideo.paused, false, 'yt loading: the native is not paused (kickState is not the yt report)');
+  assert.strictEqual(doc.documentElement.attrs['data-ko-owner'] || '', '', 'yt loading: data-ko-owner is empty');
+  KO.ytState = { ready: true, playing: true, muted: false, live: true, dur: 0, ct: 0, error: 0 };
+  KO.ownerAttr = undefined;
+  api.syncMute();
+  assert.strictEqual(ownershipVideo.paused, true, 'yt playing pauses the native');
+  assert.strictEqual(doc.documentElement.attrs['data-ko-owner'], 'youtube', 'yt playing publishes its own owner');
+  // (e) the bar being hidden is not "no picture": the hidden wrap is still a
+  // picture, and the pause loop must keep treating the layer as on screen.
+  KO.player = 'kick';
+  KO.kickState = { state: 'Playing', paused: false, muted: false, pos: 10, lat: 2, dur: 120, ts: Date.now() };
+  KO.wrap.style.display = 'none';
+  KO.ownerAttr = undefined;
+  ownershipVideo.paused = false;
+  api.syncMute();
+  assert.strictEqual(ownershipVideo.paused, true, 'hidden wrap with a picture still owns the native');
+  assert.strictEqual(doc.documentElement.attrs['data-ko-owner'], 'kick', 'hidden wrap with a picture still publishes');
+  KO.wrap.style.display = '';
+  // twitch mode publishes nothing (unchanged)
+  KO.player = 'twitch';
+  KO.kickState = null;
+  KO.ownerAttr = undefined;
+  ownershipVideo.paused = false;
+  api.syncMute();
+  assert.strictEqual(doc.documentElement.attrs['data-ko-owner'] || '', '', 'twitch mode publishes no owner');
+  fakeVideos.length = 0;
+  console.log('P2e ownership: the PICTURE owns the native (Idle/absent -> keeps playing, attr empty; Playing -> paused + attr) - OK');
 
   console.log('\nALL CONTENT.JS FIX CHECKS PASSED');
   process.exit(0);
