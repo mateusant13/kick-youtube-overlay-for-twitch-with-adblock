@@ -159,10 +159,15 @@
         const els = [...document.querySelectorAll('video')];
         const main = els.find((v) => v.videoWidth > 0 || !v.paused) || els[0];
         const el = main ? (main.muted ? '1' : '0') + '|' + Number(main.volume).toFixed(2) : '';
-        const sig = vis + '|' + wt + '|' + it + '|' + el;
+        // The census beside the state: "the element is unmuted and the picture
+        // plays, yet there is no sound" is only answerable with how many media
+        // elements are audible and how many frames the ad path still has up.
+        const audible = els.filter((v) => !v.muted && v.volume > 0.02).length;
+        const playing = els.filter((v) => !v.paused).length;
+        const sig = vis + '|' + wt + '|' + it + '|' + el + '|' + audible + '|' + playing;
         if (sig === whySig) return;
         whySig = sig;
-        persist({ ev: 'audio-state', d: { vis, wt, it, el } });
+        persist({ ev: 'audio-state', d: { vis, wt, it, el, audible, playing } });
       } catch {
         /* document tearing down */
       }

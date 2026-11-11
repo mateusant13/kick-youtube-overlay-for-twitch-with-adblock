@@ -243,7 +243,7 @@ const NOT_CHANNEL = new Set([
 
 // Build marker for the diag stream — lets us tell which code a tab runs
 // (content scripts of pre-reload tabs survive extension reloads).
-const KO_VER = '0.8.61';
+const KO_VER = '0.8.63';
 // ONE canonical yt state object: every reset site (boot, teardown, the
 // frame-death watchdog) must agree, or a drained/live flag survives a rebuild.
 function freshYtState() {
@@ -1425,7 +1425,26 @@ function syncMute() {
       KO.twPaused.add(v); // ownership: only an element we paused is ours to resume
     }
   }
-  if (window.KOAudio) window.KOAudio.setVisible(visibleSurface());
+  if (!window.KOAudio) return;
+  window.KOAudio.setVisible(visibleSurface());
+  // CONVERGENCE. `setVisible()` no-ops when nothing changed, and the arbiter
+  // only writes on a change or a claim, so an element another writer muted
+  // stayed muted while the intent said "sound": the UI mirrors the INTENT, which
+  // is the owner's "o player diz que nao ta mutado, mas ta mutado" (2026-11-11).
+  // Re-assert the derived state, never a hand-written mute, and log the moment
+  // it was needed so the next pod says whether anything still diverges.
+  try {
+    const v = twitchVideo();
+    if (v && v.isConnected && !window.KOAudio.isOwnWrite(v, v.muted, v.volume)) {
+      const want = window.KOAudio.wanted(visibleSurface());
+      if (!!v.muted !== !!want.muted) {
+        window.KOAudio.apply();
+        diag('audio-reassert', { want: !!want.muted, el: !!v.muted, vis: visibleSurface() });
+      }
+    }
+  } catch {
+    /* a detached element mid-swap */
+  }
 }
 
 function resumeTwitchIfOurs() {

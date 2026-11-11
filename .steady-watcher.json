@@ -7,16 +7,36 @@
   "gaming": false,
   "game": null,
   "defer_gpu": false,
-  "heavy_job_cap_pct": 5.5,
+  "heavy_job_cap_pct": 4.4,
   "projects": [
     {
+      "id": "gravador",
+      "count": 1,
+      "cpu": 0.0,
+      "rss": 0,
+      "commit_mb": 757.93359375,
+      "rate": 4.4,
+      "io_mbps": 1.6,
+      "mood": "emergency"
+    },
+    {
+      "id": "other",
+      "count": 1,
+      "cpu": 0.0,
+      "rss": 0,
+      "commit_mb": 8.171875,
+      "rate": 4.4,
+      "io_mbps": 0.1,
+      "mood": "emergency"
+    },
+    {
       "id": "superharness",
-      "count": 10,
-      "cpu": 0.07038288288284597,
-      "rss": 266412032,
-      "commit_mb": 223.33984375,
-      "rate": 5.5,
-      "io_mbps": 0.4,
+      "count": 5,
+      "cpu": 0.0,
+      "rss": 227778560,
+      "commit_mb": 170.97265625,
+      "rate": 4.4,
+      "io_mbps": 0.0,
       "mood": "emergency"
     },
     {
@@ -25,7 +45,7 @@
       "cpu": 0.0,
       "rss": 0,
       "commit_mb": 96.45703125,
-      "rate": 5.5,
+      "rate": 4.4,
       "io_mbps": 0.0,
       "mood": "emergency"
     },
@@ -33,29 +53,16 @@
       "id": "vodrip",
       "count": 3,
       "cpu": 0.0,
-      "rss": 201920512,
-      "commit_mb": 276.265625,
-      "rate": 5.5,
-      "io_mbps": 0.1,
+      "rss": 100106240,
+      "commit_mb": 231.97265625,
+      "rate": 4.4,
+      "io_mbps": 1.6,
       "mood": "emergency",
       "duty_allow_pct": 35
-    },
-    {
-      "id": "codeintel-worktrees",
-      "count": 1,
-      "cpu": 0.0,
-      "rss": 1032994816,
-      "commit_mb": 1411.7890625,
-      "rate": 5.5,
-      "io_mbps": 11.4,
-      "mood": "emergency"
     }
   ],
   "notes": [
-    "11 project processes idle \u2014 they join when they get heavy",
-    "creation guard admitted bash.exe (pid 39964) - new work under a creation storm, duty capped at 25%",
-    "creation guard admitted bash.exe (pid 40224) - new work under a creation storm, duty capped at 25%",
-    "creation guard admitted bash.exe (pid 43144) - new work under a creation storm, duty capped at 25%",
+    "5 project processes idle \u2014 they join when they get heavy",
     "commit released \u2014 resuming 0 ladder-owned project(s); 4 burst/precap-owned kept"
   ],
   "advice": "Machine is under pressure. Work continues at a hard clamp. Do not retry-loop.",
@@ -65,8 +72,8 @@
   "how_to_admission": "GET http://127.0.0.1:47891/admission?project=<your-id>&kind=heavy|light \u2014 allow|degrade|refuse with reasons (mood, gaming, active stall windows). Never treat unknown as allow.",
   "how_to_status": "GET http://127.0.0.1:47891/status?project=<your-id> \u2014 pass your project id to get that job's own rate and wall_multiplier instead of the worst-case slice",
   "throttle": {
-    "wall_multiplier": 18.18,
-    "heavy_job_cap_pct": 5.5,
+    "wall_multiplier": 22.73,
+    "heavy_job_cap_pct": 4.4,
     "basis": "global-max-slice"
   },
   "tier": "none",
@@ -88,31 +95,31 @@
   },
   "how_to_toolcall": "POST http://127.0.0.1:47891/toolcall {\"pid\": <pid>, \"timeout_ms\": <ms>} before a bounded op \u2014 the watcher lifts throttling for it until the deadline or POST {\"id\"} to /toolcall/done.",
   "bus": "http://127.0.0.1:47891",
-  "tick": 21543,
-  "tick_ms_last": 407.0,
-  "tick_period_ms": 937.0,
-  "tick_rate_ema": 0.953,
+  "tick": 21847,
+  "tick_ms_last": 281.0,
+  "tick_period_ms": 1156.0,
+  "tick_rate_ema": 1.013,
   "write_latency": {
     "status": {
-      "p50_ms": 3.183,
-      "p95_ms": 70.624,
-      "max_ms": 1558.152,
-      "over_150ms": 563,
-      "count": 22130
+      "p50_ms": 3.109,
+      "p95_ms": 85.881,
+      "max_ms": 1110.951,
+      "over_150ms": 585,
+      "count": 22445
     },
     "history": {
-      "p50_ms": 1.229,
-      "p95_ms": 36.68,
-      "max_ms": 1850.151,
-      "over_150ms": 472,
-      "count": 21543
+      "p50_ms": 1.21,
+      "p95_ms": 37.374,
+      "max_ms": 1109.113,
+      "over_150ms": 483,
+      "count": 21847
     },
     "pulse": {
-      "p50_ms": 71.083,
-      "p95_ms": 178.235,
+      "p50_ms": 71.359,
+      "p95_ms": 186.331,
       "max_ms": 6189.139,
-      "over_150ms": 169,
-      "count": 2692
+      "over_150ms": 190,
+      "count": 2730
     },
     "errors": {
       "dropped": 0,
@@ -120,9 +127,9 @@
       "queue_depth": 0
     }
   },
-  "updated": "2026-11-11T05:25:08Z",
-  "tick_updated": "2026-11-11T05:25:08Z",
-  "pulse_n": 588,
+  "updated": "2026-11-11T05:31:16Z",
+  "tick_updated": "2026-11-11T05:31:16Z",
+  "pulse_n": 599,
   "admin": true,
   "paused": false,
   "presence": "present",
@@ -132,22 +139,34 @@
   "perf": {
     "verdicts": [
       {
+        "rule": "cpu.saturated",
+        "action": "report",
+        "severity": "crit",
+        "actor_pid": 0,
+        "actor_name": "system",
+        "evidence": {
+          "measured": "87.8",
+          "threshold": "85",
+          "unit": "% of machine"
+        }
+      },
+      {
         "rule": "stall.window",
         "action": "report",
         "severity": "crit",
         "actor_pid": 0,
         "actor_name": "system",
         "evidence": {
-          "measured": "76",
+          "measured": "90",
           "threshold": "1",
           "unit": "stall windows",
-          "total_ms": "53700.466",
+          "total_ms": "63434.95",
           "peak_gap_ms": "17566",
           "peak_floor_ms": "250",
           "peak_crit_ms": "1000",
           "peak_dpc_pct": "6.154",
           "peak_irq_pct": "6.923",
-          "peak_disk_ms": "0.036",
+          "peak_disk_ms": "0.06",
           "probe_interval_ms": "200",
           "probe_retention_s": "600",
           "attributed": "none",
@@ -162,21 +181,21 @@
         "actor_pid": 0,
         "actor_name": "system",
         "evidence": {
-          "measured": "8.502",
+          "measured": "6.73",
           "threshold": "2",
           "unit": "avg requests in service",
           "volume": "I",
-          "queue_now": "4",
+          "queue_now": "12",
           "queue_limit": "4",
-          "queue_avg": "8.502",
-          "busy_pct": "850.161",
+          "queue_avg": "6.73",
+          "busy_pct": "672.968",
           "busy_meaning": "% of the window the volume was busy (= 100 x queue_avg, the SAME quantity the queue bar measures; it has no bar of its own)",
-          "read_mbps": "1.464",
-          "write_mbps": "2.703",
-          "latency_ms": "95.321",
-          "ops": "99",
-          "window_ms": "1110",
-          "contenders": "python.exe (29008) 50.496MB/s [G], python.exe (35660) 20.51MB/s [H], chrome.exe (38840) 5.551MB/s [C], chrome.exe (5592) 5.428MB/s [C]",
+          "read_mbps": "0.577",
+          "write_mbps": "5.917",
+          "latency_ms": "11.172",
+          "ops": "612",
+          "window_ms": "1016",
+          "contenders": "chrome.exe (5592) 8.176MB/s [C], chrome.exe (38840) 7.05MB/s [C], python.exe (38148) 6.615MB/s [H], python.exe (37204) 6.222MB/s [H]",
           "disk_source": "IOCTL_DISK_PERFORMANCE per volume (CurrentDiskQueueLength/AvgDiskQueueLength/PercentDiskTime)"
         }
       },
@@ -184,26 +203,26 @@
         "rule": "creation.storm",
         "action": "report",
         "severity": "warn",
-        "actor_pid": 32924,
+        "actor_pid": 46064,
         "actor_name": "bash.exe",
         "evidence": {
-          "measured": "13.278",
+          "measured": "17.135",
           "threshold": "5",
           "unit": "creations/s",
-          "count": "124",
+          "count": "166",
           "window_s": "10",
-          "sustained_s": "22.026",
+          "sustained_s": "35.712",
           "min_sustained_s": "1.5",
-          "decayed_rate_per_s": "12.57",
-          "parent": "bash.exe (pid 32924)",
-          "parent_children": "10",
-          "parent_share": "8%",
-          "parent_rate_per_s": "1",
-          "window_rate_per_s": "12.4",
+          "decayed_rate_per_s": "14.045",
+          "parent": "bash.exe (pid 46064)",
+          "parent_children": "11",
+          "parent_share": "7%",
+          "parent_rate_per_s": "1.1",
+          "window_rate_per_s": "16.6",
           "parent_mixed": "yes",
-          "parents_top3": "mixed [bash.exe(32924) 10/124, bun.exe(33680) 9/124, bun.exe(3832) 9/124]",
-          "child_pids": "28868, 36096, 39608, 31148, 4696, 42816, 44760, 47816",
-          "cost_ms": "1.96"
+          "parents_top3": "mixed [bash.exe(46064) 11/166, python.exe(21836) 9/166, bash.exe(32924) 9/166]",
+          "child_pids": "27948, 47012, 47096, 3816, 30780, 34756, 36880, 42352",
+          "cost_ms": "2.238"
         }
       },
       {
@@ -218,54 +237,54 @@
           "unit": "independent signals over line",
           "signals": "scheduler, disk, creation",
           "class": "creation+disk+scheduler",
-          "cause": "creation+disk+scheduler on I: via chrome.exe x3 (pids 38840, 5592, 30704) [C]; creator mixed [bash.exe(32924) 10/124, bun.exe(33680) 9/124, bun.exe(3832) 9/124]",
+          "cause": "creation+disk+scheduler on I: via chrome.exe x2 (pids 5592, 38840) [C]; creator mixed [bash.exe(46064) 11/166, python.exe(21836) 9/166, bash.exe(32924) 9/166]",
           "disk": "I",
-          "disk_queue": "8.502",
+          "disk_queue": "12",
           "disk_queue_limit": "8",
-          "disk_busy_pct": "850.161",
-          "disk_latency_ms": "95.321",
-          "tree": "chrome.exe x3 (pids 38840, 5592, 30704) [C]",
-          "creation_parent": "mixed [bash.exe(32924) 10/124, bun.exe(33680) 9/124, bun.exe(3832) 9/124]",
+          "disk_busy_pct": "672.968",
+          "disk_latency_ms": "11.172",
+          "tree": "chrome.exe x2 (pids 5592, 38840) [C]",
+          "creation_parent": "mixed [bash.exe(46064) 11/166, python.exe(21836) 9/166, bash.exe(32924) 9/166]",
           "creation_parent_mixed": "yes",
-          "creation_parent_share": "8%",
-          "creation_window_rate_per_s": "12.4",
+          "creation_parent_share": "7%",
+          "creation_window_rate_per_s": "16.6",
           "scheduler_measured": "17566",
           "scheduler_threshold": "250",
           "scheduler_unit": "ms late",
-          "scheduler_detail": "probe_peak=17566 instant=19",
-          "disk_measured": "8.502",
+          "scheduler_detail": "probe_peak=17566 instant=50",
+          "disk_measured": "12",
           "disk_threshold": "8",
           "disk_unit": "requests in service",
-          "disk_detail": "volume=I busy_pct=850.161 queue_now=4 latency_ms=95.321",
-          "creation_measured": "13.278",
+          "disk_detail": "volume=I busy_pct=672.968 queue_now=12 latency_ms=11.172",
+          "creation_measured": "17.135",
           "creation_threshold": "5",
           "creation_unit": "creations/s",
-          "creation_detail": "count=124 parent=mixed [bash.exe(32924) 10/124, bun.exe(33680) 9/124, bun.exe(3832) 9/124] sustained=22.026s"
+          "creation_detail": "count=166 parent=mixed [bash.exe(46064) 11/166, python.exe(21836) 9/166, bash.exe(32924) 9/166] sustained=35.712s"
         }
       }
     ],
     "sample": {
-      "ts": 1794374708.789347,
-      "cpu_pct": 73.2,
-      "commit_pct": 65.85467711117471,
-      "ram_free_gb": 13.066791534423828,
-      "dpc_pct": 0.847,
-      "irq_pct": 2.002,
-      "dpc_max_core_pct": 9.231,
-      "irq_max_core_pct": 4.615,
-      "disk_latency_ms": 0.12,
-      "stall_gap_ms": 18.999999997322437,
+      "ts": 1794375076.6603193,
+      "cpu_pct": 87.8,
+      "commit_pct": 60.77497224000261,
+      "ram_free_gb": 14.488277435302734,
+      "dpc_pct": 0.965,
+      "irq_pct": 2.456,
+      "dpc_max_core_pct": 5.263,
+      "irq_max_core_pct": 7.018,
+      "disk_latency_ms": 0.0020964360587002098,
+      "stall_gap_ms": 49.999999999999986,
       "agent_pid": 8292,
       "agent_name": "omp.exe",
-      "agent_output_age_s": 123.2229380607605,
+      "agent_output_age_s": 69.20502376556396,
       "agent_outputs_seen": 0,
       "stall": {
-        "windows": 76,
-        "total_ms": 53700.5,
+        "windows": 90,
+        "total_ms": 63435.0,
         "peak_gap_ms": 17566.0,
         "peak_dpc_pct": 6.154,
         "peak_irq_pct": 6.923,
-        "peak_disk_ms": 0.04,
+        "peak_disk_ms": 0.06,
         "actor_pid": 0,
         "actor_name": "",
         "actor_reason": "gap too large to attribute (17566 ms > 5000 ms): the recorder itself was not being scheduled, so no process is named",
@@ -276,17 +295,17 @@
       "disk": {
         "status": "MEASURED",
         "source": "IOCTL_DISK_PERFORMANCE per volume (CurrentDiskQueueLength/AvgDiskQueueLength/PercentDiskTime)",
-        "interval_ms": 1110.0,
+        "interval_ms": 1016.0,
         "volumes": [
           {
             "letter": "C",
             "queue_now": 0,
-            "queue_avg": 0.007,
-            "busy_pct": 0.68,
-            "read_bps": 125463.1,
-            "write_bps": 1442825.2,
-            "latency_ms": 0.107,
-            "ops": 71
+            "queue_avg": 0.019,
+            "busy_pct": 1.93,
+            "read_bps": 369889.8,
+            "write_bps": 7256692.9,
+            "latency_ms": 0.06,
+            "ops": 329
           },
           {
             "letter": "D",
@@ -321,166 +340,167 @@
           {
             "letter": "G",
             "queue_now": 0,
-            "queue_avg": 0.04,
-            "busy_pct": 3.98,
-            "read_bps": 37786522.5,
-            "write_bps": 450191.0,
-            "latency_ms": 0.725,
-            "ops": 61
+            "queue_avg": 0.012,
+            "busy_pct": 1.24,
+            "read_bps": 146141.7,
+            "write_bps": 681322.8,
+            "latency_ms": 0.21,
+            "ops": 60
           },
           {
             "letter": "H",
             "queue_now": 0,
-            "queue_avg": 0.011,
-            "busy_pct": 1.11,
-            "read_bps": 258306.3,
-            "write_bps": 2003718.9,
-            "latency_ms": 0.286,
-            "ops": 43
+            "queue_avg": 0.001,
+            "busy_pct": 0.07,
+            "read_bps": 0.0,
+            "write_bps": 249952.8,
+            "latency_ms": 0.063,
+            "ops": 11
           },
           {
             "letter": "I",
-            "queue_now": 4,
-            "queue_avg": 8.502,
-            "busy_pct": 850.16,
-            "read_bps": 1535077.5,
-            "write_bps": 2833989.2,
-            "latency_ms": 95.321,
-            "ops": 99
+            "queue_now": 12,
+            "queue_avg": 6.73,
+            "busy_pct": 672.97,
+            "read_bps": 604724.4,
+            "write_bps": 6204472.4,
+            "latency_ms": 11.172,
+            "ops": 612
           }
         ],
         "contenders": [
           {
-            "pid": 29008,
-            "name": "python.exe",
-            "read_mbps": 50.496,
-            "write_mbps": 0.0,
-            "home": "G"
-          },
-          {
-            "pid": 35660,
-            "name": "python.exe",
-            "read_mbps": 20.509,
-            "write_mbps": 0.001,
-            "home": "H"
+            "pid": 5592,
+            "name": "chrome.exe",
+            "read_mbps": 8.032,
+            "write_mbps": 0.144,
+            "home": "C"
           },
           {
             "pid": 38840,
             "name": "chrome.exe",
-            "read_mbps": 0.102,
-            "write_mbps": 5.449,
+            "read_mbps": 0.109,
+            "write_mbps": 6.94,
             "home": "C"
           },
           {
-            "pid": 5592,
-            "name": "chrome.exe",
-            "read_mbps": 5.308,
-            "write_mbps": 0.12,
-            "home": "C"
-          },
-          {
-            "pid": 25012,
+            "pid": 38148,
             "name": "python.exe",
-            "read_mbps": 1.712,
+            "read_mbps": 6.611,
+            "write_mbps": 0.003,
+            "home": "H"
+          },
+          {
+            "pid": 37204,
+            "name": "python.exe",
+            "read_mbps": 6.222,
             "write_mbps": 0.0,
+            "home": "H"
+          },
+          {
+            "pid": 39420,
+            "name": "msedge.exe",
+            "read_mbps": 2.143,
+            "write_mbps": 2.123,
             "home": "C"
           },
           {
-            "pid": 18324,
-            "name": "nvcontainer.exe",
-            "read_mbps": 0.0,
-            "write_mbps": 1.681,
+            "pid": 30780,
+            "name": "msedge.exe",
+            "read_mbps": 1.302,
+            "write_mbps": 0.779,
             "home": "C"
           },
           {
             "pid": 33680,
             "name": "bun.exe",
-            "read_mbps": 1.38,
-            "write_mbps": 0.018,
+            "read_mbps": 1.787,
+            "write_mbps": 0.022,
             "home": "H"
           },
           {
-            "pid": 30704,
-            "name": "chrome.exe",
-            "read_mbps": 0.014,
-            "write_mbps": 0.874,
+            "pid": 18324,
+            "name": "nvcontainer.exe",
+            "read_mbps": 0.0,
+            "write_mbps": 1.646,
             "home": "C"
           }
         ]
       },
       "creation": {
         "window_s": 10.0,
-        "count": 124,
-        "rate_per_s": 13.278,
-        "decayed_rate_per_s": 12.57,
-        "sustained_s": 22.03,
-        "parent_pid": 32924,
+        "count": 166,
+        "rate_per_s": 17.135,
+        "decayed_rate_per_s": 14.045,
+        "sustained_s": 35.71,
+        "parent_pid": 46064,
         "parent_name": "bash.exe",
-        "parent_count": 10,
-        "parent_share": 0.0806,
-        "parent_rate_per_s": 1.0,
-        "window_rate_per_s": 12.4,
+        "parent_count": 11,
+        "parent_share": 0.0663,
+        "parent_rate_per_s": 1.1,
+        "window_rate_per_s": 16.6,
         "mixed": true,
         "parents": [
           [
-            32924,
+            46064,
             "bash.exe",
-            10
+            11
           ],
           [
-            33680,
-            "bun.exe",
+            21836,
+            "python.exe",
             9
           ],
           [
-            3832,
-            "bun.exe",
+            32924,
+            "bash.exe",
             9
           ]
         ],
         "child_pids": [
-          28868,
-          36096,
-          39608,
-          31148,
-          4696,
-          42816,
-          44760,
-          47816,
-          5016,
-          34272,
-          45556,
-          48120,
-          28068,
-          31184,
-          36996,
-          42236,
-          35660,
-          45232,
-          16904,
-          25012,
-          6464,
-          10580,
-          17056,
-          36684,
-          38220,
-          39964,
-          40224,
-          43144,
-          44772,
-          45380,
-          48076
+          27948,
+          47012,
+          47096,
+          3816,
+          30780,
+          34756,
+          36880,
+          42352,
+          44332,
+          41532,
+          47600,
+          42136,
+          42712,
+          46372,
+          35124,
+          41320,
+          38148,
+          7268,
+          12136,
+          13928,
+          14088,
+          37204,
+          42056,
+          42788,
+          43960,
+          46284,
+          47672,
+          13228,
+          15080,
+          17416,
+          36588,
+          37576
         ],
-        "tracked": 577,
-        "cost_ms": 1.96,
+        "tracked": 585,
+        "cost_ms": 2.238,
         "measured": "MEASURED"
       },
       "gpu": {
         "available": true,
-        "used_mb": 3569.0,
+        "used_mb": 3544.0,
         "total_mb": 16303.0,
-        "used_pct": 21.9,
-        "util_pct": 9.0,
+        "used_pct": 21.7,
+        "util_pct": 11.0,
         "reason": "",
         "holders": [
           {
@@ -527,57 +547,35 @@
       },
       "procs": [
         {
-          "pid": 29008,
+          "pid": 36848,
           "name": "python.exe",
-          "project_id": "",
+          "project_id": "vodrip",
           "lane": "heavy",
-          "cpu_pct": 7.7490982867421705,
-          "commit_gb": 1.1010932922363281,
-          "io_mbps": 50.49594229033444,
+          "cpu_pct": 6.691821465446767,
+          "commit_gb": 0.2533111572265625,
+          "io_mbps": 0.2967107524275469,
           "protected": true,
           "game": false
         },
         {
-          "pid": 14828,
-          "name": "chatterino.exe",
+          "pid": 9264,
+          "name": "WmiPrvSE.exe",
           "project_id": "",
           "lane": "light",
-          "cpu_pct": 3.5223174030646236,
-          "commit_gb": 0.48563385009765625,
+          "cpu_pct": 5.393401015225239,
+          "commit_gb": 0.026859283447265625,
           "io_mbps": 0.0,
           "protected": false,
           "game": false
         },
         {
-          "pid": 42760,
-          "name": "python.exe",
-          "project_id": "",
-          "lane": "heavy",
-          "cpu_pct": 3.4518710550033314,
-          "commit_gb": 0.9105911254882812,
-          "io_mbps": 0.0,
-          "protected": true,
-          "game": false
-        },
-        {
-          "pid": 38840,
-          "name": "chrome.exe",
+          "pid": 4,
+          "name": "System",
           "project_id": "",
           "lane": "light",
-          "cpu_pct": 3.3814247069420382,
-          "commit_gb": 0.8178787231445312,
-          "io_mbps": 5.550731937554463,
-          "protected": true,
-          "game": false
-        },
-        {
-          "pid": 25012,
-          "name": "python.exe",
-          "project_id": "",
-          "lane": "heavy",
-          "cpu_pct": 2.6769612263291136,
-          "commit_gb": 0.019145965576171875,
-          "io_mbps": 1.7120741421940486,
+          "cpu_pct": 4.362309644667473,
+          "commit_gb": 4.9591064453125e-05,
+          "io_mbps": 0.059486040609101905,
           "protected": true,
           "game": false
         },
@@ -586,54 +584,32 @@
           "name": "chrome.exe",
           "project_id": "",
           "lane": "light",
-          "cpu_pct": 2.6065148782678214,
-          "commit_gb": 0.6970367431640625,
-          "io_mbps": 5.427602178023114,
+          "cpu_pct": 3.8071065989825223,
+          "commit_gb": 0.8913726806640625,
+          "io_mbps": 8.17614715110954,
           "protected": true,
           "game": false
         },
         {
-          "pid": 4,
-          "name": "System",
+          "pid": 30780,
+          "name": "msedge.exe",
           "project_id": "",
           "lane": "light",
-          "cpu_pct": 2.5360685302065287,
-          "commit_gb": 4.9591064453125e-05,
-          "io_mbps": 0.03170085662758161,
-          "protected": true,
+          "cpu_pct": 3.6484771573582506,
+          "commit_gb": 0.08719635009765625,
+          "io_mbps": 2.0813917750622215,
+          "protected": false,
           "game": false
         },
         {
-          "pid": 35660,
-          "name": "python.exe",
-          "project_id": "codeintel-worktrees",
-          "lane": "heavy",
-          "cpu_pct": 2.3951758340839437,
-          "commit_gb": 0.08031082153320312,
-          "io_mbps": 20.510244412496878,
-          "protected": true,
-          "game": false
-        },
-        {
-          "pid": 39480,
-          "name": "rustc.exe",
+          "pid": 14828,
+          "name": "chatterino.exe",
           "project_id": "",
-          "lane": "heavy",
-          "cpu_pct": 2.3247294860226515,
-          "commit_gb": 1.375457763671875,
-          "io_mbps": 0.5646431306333137,
-          "protected": true,
-          "game": false
-        },
-        {
-          "pid": 40432,
-          "name": "rustc.exe",
-          "project_id": "",
-          "lane": "heavy",
-          "cpu_pct": 2.3247294860226515,
-          "commit_gb": 1.3096427917480469,
-          "io_mbps": 0.5651100784726361,
-          "protected": true,
+          "lane": "light",
+          "cpu_pct": 2.6967005076126194,
+          "commit_gb": 0.4858589172363281,
+          "io_mbps": 2.904591826616304e-05,
+          "protected": false,
           "game": false
         },
         {
@@ -641,21 +617,65 @@
           "name": "dwm.exe",
           "project_id": "",
           "lane": "light",
-          "cpu_pct": 2.042944093777481,
-          "commit_gb": 0.35028839111328125,
-          "io_mbps": 0.00278620810203354,
+          "cpu_pct": 2.458756345176212,
+          "commit_gb": 0.3508949279785156,
+          "io_mbps": 0.0,
           "protected": true,
           "game": false
         },
         {
-          "pid": 33680,
-          "name": "bun.exe",
+          "pid": 35124,
+          "name": "node.exe",
           "project_id": "",
           "lane": "heavy",
-          "cpu_pct": 1.4996572212052648,
-          "commit_gb": 2.5367507934570312,
-          "io_mbps": 1.3979469935099282,
+          "cpu_pct": 1.9828680203033968,
+          "commit_gb": 0.11222076416015625,
+          "io_mbps": 1.4316539473936654,
           "protected": true,
+          "game": false
+        },
+        {
+          "pid": 39420,
+          "name": "msedge.exe",
+          "project_id": "",
+          "lane": "light",
+          "cpu_pct": 1.5318627451022722,
+          "commit_gb": 0.11009597778320312,
+          "io_mbps": 4.265873736154637,
+          "protected": false,
+          "game": false
+        },
+        {
+          "pid": 23668,
+          "name": "herdr.exe",
+          "project_id": "",
+          "lane": "light",
+          "cpu_pct": 1.5069796954305814,
+          "commit_gb": 0.07667922973632812,
+          "io_mbps": 0.27115139259283627,
+          "protected": false,
+          "game": false
+        },
+        {
+          "pid": 6172,
+          "name": "MsMpEng.exe",
+          "project_id": "",
+          "lane": "light",
+          "cpu_pct": 1.3706140350915068,
+          "commit_gb": 0.5189857482910156,
+          "io_mbps": 0.0,
+          "protected": true,
+          "game": false
+        },
+        {
+          "pid": 36140,
+          "name": "msedge.exe",
+          "project_id": "",
+          "lane": "light",
+          "cpu_pct": 1.289989680086124,
+          "commit_gb": 0.040431976318359375,
+          "io_mbps": 0.7111961275687289,
+          "protected": false,
           "game": false
         }
       ],
@@ -663,18 +683,7 @@
         "active_s": 0.0,
         "escalated": false,
         "parks": {},
-        "offenses": {
-          "29008@1794374697.36": {
-            "project": "",
-            "name": "python.exe",
-            "metric": "io",
-            "measured": 52.94883318302973,
-            "threshold": 20.0,
-            "sustained_s": 3.0,
-            "killed": 0,
-            "dm": ""
-          }
-        },
+        "offenses": {},
         "last": {
           "live": true,
           "signals": [
@@ -682,16 +691,13 @@
             "creation"
           ],
           "detail": [
-            "disk=8.502requests in service\u22658",
-            "creation=13.278creations/s\u22655"
+            "disk=12requests in service\u22658",
+            "creation=17.135creations/s\u22655"
           ],
           "parked": [],
           "released": [],
           "escalated": false,
-          "extreme": {
-            "killed": 0,
-            "refused": "protected:python"
-          },
+          "extreme": {},
           "reason": "no_tree_over_line",
           "metric": "io",
           "culprits": []
@@ -704,34 +710,34 @@
       "interactive_p99_ms": {
         "sensor": "interactive_p99_ms",
         "class": "Normal",
-        "pid": 15340,
-        "name": "chrome.exe",
+        "pid": 15280,
+        "name": "WindowsTerminal.exe",
         "window_s": 600.0,
         "measured_in": "probe thread at thread-priority 0",
         "status": "MEASURED",
-        "p99_ms": 253.0,
+        "p99_ms": 284.0,
         "p50_ms": 3.0,
         "p95_ms": 97.0,
         "max_ms": 17410.0,
-        "probes": 2581,
-        "stalls_gt_deadline": 108,
+        "probes": 2522,
+        "stalls_gt_deadline": 113,
         "deadline_ms": 100.0
       },
       "class_population": {
         "counts": {
-          "Idle": 57,
-          "BelowNormal": 123,
-          "Normal": 365,
-          "AboveNormal": 14,
-          "High": 6,
+          "Idle": 47,
+          "BelowNormal": 118,
+          "Normal": 379,
+          "AboveNormal": 13,
+          "High": 7,
           "Realtime": 0
         },
-        "total": 584,
-        "unreadable": 19,
+        "total": 589,
+        "unreadable": 25,
         "unreadable_reasons": {
-          "open-denied": 19
+          "open-denied": 25
         },
-        "sampled_at": 1794374707.851,
+        "sampled_at": 1794375074.889,
         "cache_s": 5.0,
         "status": "MEASURED"
       },
@@ -741,32 +747,32 @@
         "deadline_ms": 100.0,
         "classes": {
           "Idle": {
-            "stalls_gt_deadline": 199,
-            "probes": 1304,
+            "stalls_gt_deadline": 249,
+            "probes": 1037,
             "max_ms": 32972.0,
             "status": "MEASURED"
           },
           "BelowNormal": {
-            "stalls_gt_deadline": 97,
-            "probes": 2579,
+            "stalls_gt_deadline": 131,
+            "probes": 2498,
             "max_ms": 17441.0,
             "status": "MEASURED"
           },
           "Normal": {
-            "stalls_gt_deadline": 108,
-            "probes": 2581,
+            "stalls_gt_deadline": 113,
+            "probes": 2521,
             "max_ms": 17410.0,
             "status": "MEASURED"
           },
           "AboveNormal": {
-            "stalls_gt_deadline": 83,
-            "probes": 2613,
+            "stalls_gt_deadline": 91,
+            "probes": 2554,
             "max_ms": 17441.0,
             "status": "MEASURED"
           },
           "High": {
-            "stalls_gt_deadline": 59,
-            "probes": 2616,
+            "stalls_gt_deadline": 77,
+            "probes": 2561,
             "max_ms": 17472.0,
             "status": "MEASURED"
           }
@@ -780,11 +786,11 @@
       },
       "unreadable_processes": {
         "sensor": "unreadable_processes",
-        "count": 19,
+        "count": 25,
         "reasons": {
-          "open-denied": 19
+          "open-denied": 25
         },
-        "total": 584,
+        "total": 589,
         "status": "MEASURED"
       },
       "priority_violations": {
@@ -825,7 +831,7 @@
     "running": true,
     "poll_ms": 250,
     "max_lifetime_s": 180.0,
-    "polls": 65047,
+    "polls": 65999,
     "watching": 2,
     "flashes": 4,
     "long_lived": 0,
@@ -958,12 +964,12 @@
       "enabled": true,
       "running": true,
       "ready": true,
-      "events": 373694,
-      "shown": 211,
-      "hidden": 724,
+      "events": 393425,
+      "shown": 218,
+      "hidden": 744,
       "queued": 0,
       "dropped": 0,
-      "visible_tracked": 602,
+      "visible_tracked": 637,
       "last_error": ""
     },
     "notify": {
@@ -972,98 +978,78 @@
       "dm_tool": "I:/!watcher/tools/herdr-dm.py",
       "cooldown_s": 600.0,
       "min_interval_s": 60.0,
-      "offered": 952,
+      "offered": 980,
       "sent": 1,
-      "durable_only": 9,
-      "refused": 942,
+      "durable_only": 10,
+      "refused": 969,
       "dropped": 0,
       "refusals": {
-        "not-in-the-foreground": 931,
+        "not-in-the-foreground": 958,
         "min-interval": 7,
         "pty-client-not-a-window": 4
       },
       "last": {
-        "culprit": "python.exe(9244)",
-        "pane": "w1A:p1",
-        "resolved_by": "project",
-        "record": "dm-0cf1be664f606ea7e0ae",
+        "culprit": "python.exe(29008)",
+        "pane": "",
+        "resolved_by": "-",
+        "record": "dm-289b0aaa89cb6b44ac21",
         "rc": 5,
         "injected": false,
-        "reason": "typed-not-submitted: w1A:p1 (unverified) and Enter was not pressed (no proof that the box is ours); the pointer may be in its composer and the record dm-0cf1be664f606ea7e0ae.md is the delivery"
+        "reason": "typed-not-submitted: w12:p7 (unverified) and Enter was not pressed (no proof that the box is ours); the pointer may be in its composer and the record dm-289b0aaa89cb6b44ac21.md is the delivery"
       },
-      "last_at": 1794374543.9895818
+      "last_at": 1794374710.977127
     }
   },
   "sample": {
-    "cpu_pct": 73.2,
+    "cpu_pct": 87.8,
     "ram_total": 51229278208,
-    "ram_available": 14085591040,
-    "ram_pct": 72.5,
-    "disk_read_bps": 60179149.60610614,
-    "disk_write_bps": 991748.0314928811,
-    "idle_seconds": 0.047,
+    "ram_available": 15583428608,
+    "ram_pct": 69.6,
+    "disk_read_bps": 653934.9046018489,
+    "disk_write_bps": 10053818.18182245,
+    "idle_seconds": 0.438,
     "user_idle": false,
-    "foreground": "chrome.exe",
+    "foreground": "WindowsTerminal.exe",
     "logical_count": 20,
     "hybrid": true,
     "presence": "present",
-    "cursor_frozen_seconds": 1.1869999999980791,
+    "cursor_frozen_seconds": 24.9529999999977,
     "media_playing": false,
     "audio_source": "",
-    "commit_pct": 65.85467711117471,
+    "commit_pct": 60.77497224000261,
     "memory_level": "ok"
   },
   "procs": [
     {
-      "pid": 42236,
-      "name": "bash.exe",
-      "project_id": "superharness",
-      "cpu": 0.07038288288284597,
-      "rss": 14262272,
-      "policy": "emergency-compile",
+      "pid": 41320,
+      "name": "pythonw.exe",
+      "project_id": "gravador",
+      "cpu": 1.189720812182038,
+      "rss": 406888448,
+      "policy": "no-handle",
       "in_job": false,
       "ecoqos": false,
-      "duty": false
+      "duty": false,
+      "err": "open failed"
     },
     {
-      "pid": 39964,
-      "name": "bash.exe",
-      "project_id": "superharness",
+      "pid": 38484,
+      "name": "pythonw.exe",
+      "project_id": "other",
       "cpu": 0.0,
-      "rss": 17588224,
-      "policy": "",
+      "rss": 18309120,
+      "policy": "no-handle",
       "in_job": false,
       "ecoqos": false,
-      "duty": false
-    },
-    {
-      "pid": 40224,
-      "name": "bash.exe",
-      "project_id": "superharness",
-      "cpu": 0.0,
-      "rss": 17420288,
-      "policy": "",
-      "in_job": false,
-      "ecoqos": false,
-      "duty": false
-    },
-    {
-      "pid": 43144,
-      "name": "bash.exe",
-      "project_id": "superharness",
-      "cpu": 0.0,
-      "rss": 17408000,
-      "policy": "",
-      "in_job": false,
-      "ecoqos": false,
-      "duty": false
+      "duty": false,
+      "err": "open failed"
     },
     {
       "pid": 4860,
       "name": "cargo.exe",
       "project_id": "superharness",
       "cpu": 0.0,
-      "rss": 12185600,
+      "rss": 11939840,
       "policy": "emergency-compile",
       "in_job": false,
       "ecoqos": false,
@@ -1074,7 +1060,7 @@
       "name": "cargo.exe",
       "project_id": "superharness",
       "cpu": 0.0,
-      "rss": 13393920,
+      "rss": 13377536,
       "policy": "emergency-compile",
       "in_job": false,
       "ecoqos": false,
@@ -1085,29 +1071,7 @@
       "name": "cargo-nextest.exe",
       "project_id": "superharness",
       "cpu": 0.0,
-      "rss": 31674368,
-      "policy": "emergency-compile",
-      "in_job": false,
-      "ecoqos": false,
-      "duty": false
-    },
-    {
-      "pid": 28068,
-      "name": "pythonw.exe",
-      "project_id": "superharness",
-      "cpu": 0.0,
-      "rss": 19673088,
-      "policy": "emergency-compile",
-      "in_job": false,
-      "ecoqos": false,
-      "duty": false
-    },
-    {
-      "pid": 31184,
-      "name": "bash.exe",
-      "project_id": "superharness",
-      "cpu": 0.0,
-      "rss": 14553088,
+      "rss": 31571968,
       "policy": "emergency-compile",
       "in_job": false,
       "ecoqos": false,
@@ -1118,7 +1082,18 @@
       "name": "cargo.exe",
       "project_id": "superharness",
       "cpu": 0.0,
-      "rss": 160669696,
+      "rss": 160641024,
+      "policy": "emergency-compile",
+      "in_job": false,
+      "ecoqos": false,
+      "duty": false
+    },
+    {
+      "pid": 42456,
+      "name": "timeout.exe",
+      "project_id": "superharness",
+      "cpu": 0.0,
+      "rss": 10248192,
       "policy": "emergency-compile",
       "in_job": false,
       "ecoqos": false,
@@ -1153,7 +1128,7 @@
       "name": "pythonw.exe",
       "project_id": "brandops",
       "cpu": 0.0,
-      "rss": 3117056,
+      "rss": 3076096,
       "policy": "no-handle",
       "in_job": false,
       "ecoqos": false,
@@ -1189,7 +1164,7 @@
       "name": "pythonw.exe",
       "project_id": "brandops",
       "cpu": 0.0,
-      "rss": 10383360,
+      "rss": 10477568,
       "policy": "no-handle",
       "in_job": false,
       "ecoqos": false,
@@ -1201,7 +1176,7 @@
       "name": "pythonw.exe",
       "project_id": "brandops",
       "cpu": 0.0,
-      "rss": 7643136,
+      "rss": 7606272,
       "policy": "no-handle",
       "in_job": false,
       "ecoqos": false,
@@ -1209,11 +1184,33 @@
       "err": "open failed"
     },
     {
-      "pid": 36544,
+      "pid": 39852,
       "name": "ffmpeg.exe",
       "project_id": "vodrip",
       "cpu": 0.0,
-      "rss": 102264832,
+      "rss": 43163648,
+      "policy": "emergency",
+      "in_job": false,
+      "ecoqos": true,
+      "duty": true
+    },
+    {
+      "pid": 43708,
+      "name": "ffmpeg.exe",
+      "project_id": "vodrip",
+      "cpu": 0.0,
+      "rss": 16384,
+      "policy": "emergency",
+      "in_job": false,
+      "ecoqos": true,
+      "duty": true
+    },
+    {
+      "pid": 46140,
+      "name": "ffmpeg.exe",
+      "project_id": "vodrip",
+      "cpu": 0.0,
+      "rss": 56926208,
       "policy": "emergency",
       "in_job": false,
       "ecoqos": true,
@@ -1245,30 +1242,30 @@
     "action_path": {
       "ok": true,
       "detail": "",
-      "last_change": "2026-11-11T05:24:29.675Z",
-      "fails": 6,
-      "last_ok_ts": "2026-11-11T05:24:29.675Z"
+      "last_change": "2026-11-11T05:30:29.958Z",
+      "fails": 7,
+      "last_ok_ts": "2026-11-11T05:30:29.958Z"
     },
     "perf_probe": {
       "ok": true,
       "detail": "",
-      "last_change": "2026-11-11T05:25:08.415Z",
-      "fails": 10,
-      "last_ok_ts": "2026-11-11T05:25:08.415Z"
+      "last_change": "2026-11-11T05:31:16.386Z",
+      "fails": 11,
+      "last_ok_ts": "2026-11-11T05:31:16.386Z"
     },
     "evidence_queue": {
       "ok": true,
       "detail": "",
-      "last_change": "2026-11-11T05:25:08.415Z",
+      "last_change": "2026-11-11T05:31:16.386Z",
       "fails": 0,
-      "last_ok_ts": "2026-11-11T05:25:08.415Z"
+      "last_ok_ts": "2026-11-11T05:31:16.386Z"
     },
     "audio_probe": {
       "ok": true,
       "detail": "",
-      "last_change": "2026-11-11T05:25:08.816Z",
+      "last_change": "2026-11-11T05:31:15.674Z",
       "fails": 1,
-      "last_ok_ts": "2026-11-11T05:25:08.816Z"
+      "last_ok_ts": "2026-11-11T05:31:15.674Z"
     },
     "mood_gate": {
       "ok": true,
@@ -1280,16 +1277,16 @@
     "creation_sensor": {
       "ok": true,
       "detail": "",
-      "last_change": "2026-11-11T05:24:41.746Z",
+      "last_change": "2026-11-11T05:30:57.812Z",
       "fails": 0,
-      "last_ok_ts": "2026-11-11T05:24:41.746Z"
+      "last_ok_ts": "2026-11-11T05:30:57.812Z"
     },
     "stutter_relief": {
       "ok": true,
       "detail": "",
-      "last_change": "2026-11-11T05:24:35.815Z",
+      "last_change": "2026-11-11T05:30:49.012Z",
       "fails": 0,
-      "last_ok_ts": "2026-11-11T05:24:35.815Z"
+      "last_ok_ts": "2026-11-11T05:30:49.012Z"
     },
     "jobs": {
       "ok": true,
@@ -1301,32 +1298,32 @@
     "terminal_watch": {
       "ok": true,
       "detail": "",
-      "last_change": "2026-11-11T05:25:06.357Z",
+      "last_change": "2026-11-11T05:30:39.648Z",
       "fails": 0,
-      "last_ok_ts": "2026-11-11T05:25:06.357Z"
+      "last_ok_ts": "2026-11-11T05:30:39.648Z"
     },
     "diskhealth": {
       "ok": false,
       "detail": "NTFS events 55/98 in System log (5)",
-      "last_change": "2026-11-11T05:24:18.752Z",
-      "fails": 430,
+      "last_change": "2026-11-11T05:30:28.841Z",
+      "fails": 436,
       "last_ok_ts": ""
     },
     "herdr_notify": {
       "ok": true,
       "detail": "",
-      "last_change": "2026-11-11T05:24:55.660Z",
+      "last_change": "2026-11-11T05:30:37.191Z",
       "fails": 0,
-      "last_ok_ts": "2026-11-11T05:24:55.660Z"
+      "last_ok_ts": "2026-11-11T05:30:37.191Z"
     }
   },
   "vram": {
     "available": true,
     "total_mb": 16303,
-    "used_mb": 3569,
-    "free_mb": 12733,
-    "used_pct": 21.9,
-    "util_pct": 9,
+    "used_mb": 3544,
+    "free_mb": 12758,
+    "used_pct": 21.7,
+    "util_pct": 11,
     "procs": [
       {
         "pid": 2216,
