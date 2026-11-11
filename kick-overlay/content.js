@@ -243,7 +243,7 @@ const NOT_CHANNEL = new Set([
 
 // Build marker for the diag stream — lets us tell which code a tab runs
 // (content scripts of pre-reload tabs survive extension reloads).
-const KO_VER = '0.8.57';
+const KO_VER = '0.8.61';
 // ONE canonical yt state object: every reset site (boot, teardown, the
 // frame-death watchdog) must agree, or a drained/live flag survives a rebuild.
 function freshYtState() {
@@ -329,7 +329,7 @@ const KO = {
 // Storage -> intent. The arbiter is the store; KO.kickMuted/ytMuted are its UI
 // ---- storage ----------------------------------------------------------------
 // Storage is NOT the audio store. ko-audio.js persists the intent itself, per
-// tab (sessionStorage `ko.audio.v1`), because a shared row made one tab's mute
+// tab (sessionStorage `ko.audio.v2`), because a shared row made one tab's mute
 // silence every other tab: `chrome.storage.onChanged` fed `vols` into every
 // content script, whose `applyVols()` then called setIntent (owner report
 // 2026-11-08: "mutar uma aba e todas mutarem. e vice versa"). The record no
@@ -385,7 +385,7 @@ function saveState(persistPlayer = false) {
       mappings: KO.mappings,
       // The YouTube fallback changes KO.player for this session only.
       // NO audio here: ko-audio.js persists the intent per tab (sessionStorage
-      // `ko.audio.v1`). A `vols` row in this shared record is exactly what made
+      // `ko.audio.v2`). A `vols` row in this shared record is exactly what made
       // one tab's mute reach every other tab through storage.onChanged.
       player: KO.playerPreference,
     };

@@ -59,6 +59,7 @@
   const listeners = new Set();           // intent change subscribers
   let requested = null;                  // the surface the page's own layers show
   let claimed = null;                    // a surface that COVERS the page (the ad
+  let releasedAt = 0;                // when the claim was released (the machine's mute window)
                                          // path's clean player); wins while set
   const visibleNow = () => claimed || requested;
   let listening = false;
@@ -68,7 +69,12 @@
   // so every tab applied every other tab's mute through storage.onChanged; here
   // it is persisted per tab (sessionStorage survives a reload, never crosses a
   // tab) and the shared record carries no audio at all.
-  const TAB_KEY = 'ko.audio.v1';
+  // v2: 0.8.57 and earlier could record a MACHINE mute as the user's intent
+  // (owner report 2026-11-11: he clicks to recover the delay, Twitch mutes its
+  // own element, the click made that event fresh). Every stored row from that
+  // era is untrustworthy, so the key is bumped and the tab starts at the
+  // defaults — sound on — instead of inheriting a mute nobody chose.
+  const TAB_KEY = 'ko.audio.v2';
   const tabStore = () => {
     try {
       return window.sessionStorage || null;
@@ -254,6 +260,7 @@
   function claim(surface) {
     const next = surface || null;
     if (next === claimed) return KOAudio;
+    if (!next) releasedAt = Date.now();
     claimed = next;
     apply();
     notify();
@@ -301,6 +308,7 @@
   // a queued event, yet shorter than the ad path's 1500 ms unmute-check delay
   // and about one player-bridge heartbeat (1000 ms), so a machine write that
   // lands later is not attributable to the gesture.
+  const CLAIM_RELEASE_MS = 2500; // a mute this soon after the hand-back is Twitch's
   const INPUT_FRESH_MS = 1200;
   const INPUT_EVENTS = ['pointerdown', 'mousedown', 'keydown', 'wheel', 'touchstart', 'click'];
   let lastInputAt = 0;
@@ -383,6 +391,28 @@
         // it must not silence the surface either, because the intent says the
         // user wants sound. Re-assert the derived state instead: the surface
         // goes back to what the user left it at.
+        apply();
+        return;
+      }
+      // A MUTE arriving on a surface the extension's own layer is currently
+      // covering is the machine's, even when a click was 1 s ago. Owner report
+      // 2026-11-11: "deixou a live com delay ... e o player trocou pra ficar
+      // mutado" — he clicks the player to recover the delay, Twitch mutes its
+      // own element as the pod takes over, the click made the event FRESH, and
+      // the mute became his intent for the rest of the session. An UNMUTE is
+      // still his (0.8.54 already carries it to the new surface), so only the
+      // silencing direction is refused here.
+      // A MUTE arriving on the page surface right after the extension's own
+      // layer let go of it is the machine's, even when a click was 1 s ago.
+      // Owner report 2026-11-11: "deixou a live com delay ... e o player trocou
+      // pra ficar mutado" -- he clicks the player to recover the delay, the pod
+      // ends, Twitch re-mutes its own element, the click made the event FRESH,
+      // and the mute became his intent for the rest of the session. An UNMUTE
+      // is still his, so only the silencing direction is refused here.
+      const machineWindow = claimed
+        ? surfaceOf(owner) !== surfaceOf(claimed)
+        : (releasedAt > 0 && Date.now() - releasedAt <= CLAIM_RELEASE_MS);
+      if (machineWindow && !!el.muted) {
         apply();
         return;
       }

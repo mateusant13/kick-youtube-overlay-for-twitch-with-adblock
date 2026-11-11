@@ -1,0 +1,1377 @@
+{
+  "app": "Steady Watcher",
+  "ok": true,
+  "ready": true,
+  "mood": "emergency",
+  "run_mode": "auto",
+  "gaming": false,
+  "game": null,
+  "defer_gpu": false,
+  "heavy_job_cap_pct": 5.5,
+  "projects": [
+    {
+      "id": "superharness",
+      "count": 10,
+      "cpu": 0.07038288288284597,
+      "rss": 266412032,
+      "commit_mb": 223.33984375,
+      "rate": 5.5,
+      "io_mbps": 0.4,
+      "mood": "emergency"
+    },
+    {
+      "id": "brandops",
+      "count": 7,
+      "cpu": 0.0,
+      "rss": 0,
+      "commit_mb": 96.45703125,
+      "rate": 5.5,
+      "io_mbps": 0.0,
+      "mood": "emergency"
+    },
+    {
+      "id": "vodrip",
+      "count": 3,
+      "cpu": 0.0,
+      "rss": 201920512,
+      "commit_mb": 276.265625,
+      "rate": 5.5,
+      "io_mbps": 0.1,
+      "mood": "emergency",
+      "duty_allow_pct": 35
+    },
+    {
+      "id": "codeintel-worktrees",
+      "count": 1,
+      "cpu": 0.0,
+      "rss": 1032994816,
+      "commit_mb": 1411.7890625,
+      "rate": 5.5,
+      "io_mbps": 11.4,
+      "mood": "emergency"
+    }
+  ],
+  "notes": [
+    "11 project processes idle \u2014 they join when they get heavy",
+    "creation guard admitted bash.exe (pid 39964) - new work under a creation storm, duty capped at 25%",
+    "creation guard admitted bash.exe (pid 40224) - new work under a creation storm, duty capped at 25%",
+    "creation guard admitted bash.exe (pid 43144) - new work under a creation storm, duty capped at 25%",
+    "commit released \u2014 resuming 0 ladder-owned project(s); 4 burst/precap-owned kept"
+  ],
+  "advice": "Machine is under pressure. Work continues at a hard clamp. Do not retry-loop.",
+  "pulse_seconds": 250.0,
+  "how_to_wait": "GET http://127.0.0.1:47891/wait?max_ms=250000",
+  "how_to_why": "GET http://127.0.0.1:47891/why?pid=<n>[,<n2>] \u2014 per-pid class trace (flags, target, live policy, measurement_class). Call it before trusting any number measured on that pid.",
+  "how_to_admission": "GET http://127.0.0.1:47891/admission?project=<your-id>&kind=heavy|light \u2014 allow|degrade|refuse with reasons (mood, gaming, active stall windows). Never treat unknown as allow.",
+  "how_to_status": "GET http://127.0.0.1:47891/status?project=<your-id> \u2014 pass your project id to get that job's own rate and wall_multiplier instead of the worst-case slice",
+  "throttle": {
+    "wall_multiplier": 18.18,
+    "heavy_job_cap_pct": 5.5,
+    "basis": "global-max-slice"
+  },
+  "tier": "none",
+  "mood_gate": {
+    "armed": true,
+    "window_s": 15.0,
+    "applied_mood": "emergency",
+    "pending": [],
+    "holding_for_s": 0.0,
+    "selftest": {
+      "armed": true,
+      "window_s": 15.0,
+      "at": "2026-11-11T05:16:28Z",
+      "refused": true,
+      "earned": true,
+      "floor_passes": true,
+      "ok": true
+    }
+  },
+  "how_to_toolcall": "POST http://127.0.0.1:47891/toolcall {\"pid\": <pid>, \"timeout_ms\": <ms>} before a bounded op \u2014 the watcher lifts throttling for it until the deadline or POST {\"id\"} to /toolcall/done.",
+  "bus": "http://127.0.0.1:47891",
+  "tick": 21543,
+  "tick_ms_last": 407.0,
+  "tick_period_ms": 937.0,
+  "tick_rate_ema": 0.953,
+  "write_latency": {
+    "status": {
+      "p50_ms": 3.183,
+      "p95_ms": 70.624,
+      "max_ms": 1558.152,
+      "over_150ms": 563,
+      "count": 22130
+    },
+    "history": {
+      "p50_ms": 1.229,
+      "p95_ms": 36.68,
+      "max_ms": 1850.151,
+      "over_150ms": 472,
+      "count": 21543
+    },
+    "pulse": {
+      "p50_ms": 71.083,
+      "p95_ms": 178.235,
+      "max_ms": 6189.139,
+      "over_150ms": 169,
+      "count": 2692
+    },
+    "errors": {
+      "dropped": 0,
+      "enqueue_drops": 0,
+      "queue_depth": 0
+    }
+  },
+  "updated": "2026-11-11T05:25:08Z",
+  "tick_updated": "2026-11-11T05:25:08Z",
+  "pulse_n": 588,
+  "admin": true,
+  "paused": false,
+  "presence": "present",
+  "presence_reason": "recent input",
+  "memory_level": "ok",
+  "league_reserve_active": false,
+  "perf": {
+    "verdicts": [
+      {
+        "rule": "stall.window",
+        "action": "report",
+        "severity": "crit",
+        "actor_pid": 0,
+        "actor_name": "system",
+        "evidence": {
+          "measured": "76",
+          "threshold": "1",
+          "unit": "stall windows",
+          "total_ms": "53700.466",
+          "peak_gap_ms": "17566",
+          "peak_floor_ms": "250",
+          "peak_crit_ms": "1000",
+          "peak_dpc_pct": "6.154",
+          "peak_irq_pct": "6.923",
+          "peak_disk_ms": "0.036",
+          "probe_interval_ms": "200",
+          "probe_retention_s": "600",
+          "attributed": "none",
+          "attribution_reason": "gap too large to attribute (17566 ms > 5000 ms): the recorder itself was not being scheduled, so no process is named",
+          "attributable_gap_ms": "5000"
+        }
+      },
+      {
+        "rule": "disk.saturated",
+        "action": "report",
+        "severity": "crit",
+        "actor_pid": 0,
+        "actor_name": "system",
+        "evidence": {
+          "measured": "8.502",
+          "threshold": "2",
+          "unit": "avg requests in service",
+          "volume": "I",
+          "queue_now": "4",
+          "queue_limit": "4",
+          "queue_avg": "8.502",
+          "busy_pct": "850.161",
+          "busy_meaning": "% of the window the volume was busy (= 100 x queue_avg, the SAME quantity the queue bar measures; it has no bar of its own)",
+          "read_mbps": "1.464",
+          "write_mbps": "2.703",
+          "latency_ms": "95.321",
+          "ops": "99",
+          "window_ms": "1110",
+          "contenders": "python.exe (29008) 50.496MB/s [G], python.exe (35660) 20.51MB/s [H], chrome.exe (38840) 5.551MB/s [C], chrome.exe (5592) 5.428MB/s [C]",
+          "disk_source": "IOCTL_DISK_PERFORMANCE per volume (CurrentDiskQueueLength/AvgDiskQueueLength/PercentDiskTime)"
+        }
+      },
+      {
+        "rule": "creation.storm",
+        "action": "report",
+        "severity": "warn",
+        "actor_pid": 32924,
+        "actor_name": "bash.exe",
+        "evidence": {
+          "measured": "13.278",
+          "threshold": "5",
+          "unit": "creations/s",
+          "count": "124",
+          "window_s": "10",
+          "sustained_s": "22.026",
+          "min_sustained_s": "1.5",
+          "decayed_rate_per_s": "12.57",
+          "parent": "bash.exe (pid 32924)",
+          "parent_children": "10",
+          "parent_share": "8%",
+          "parent_rate_per_s": "1",
+          "window_rate_per_s": "12.4",
+          "parent_mixed": "yes",
+          "parents_top3": "mixed [bash.exe(32924) 10/124, bun.exe(33680) 9/124, bun.exe(3832) 9/124]",
+          "child_pids": "28868, 36096, 39608, 31148, 4696, 42816, 44760, 47816",
+          "cost_ms": "1.96"
+        }
+      },
+      {
+        "rule": "stutter.machine",
+        "action": "report",
+        "severity": "crit",
+        "actor_pid": 0,
+        "actor_name": "system",
+        "evidence": {
+          "measured": "3",
+          "threshold": "2",
+          "unit": "independent signals over line",
+          "signals": "scheduler, disk, creation",
+          "class": "creation+disk+scheduler",
+          "cause": "creation+disk+scheduler on I: via chrome.exe x3 (pids 38840, 5592, 30704) [C]; creator mixed [bash.exe(32924) 10/124, bun.exe(33680) 9/124, bun.exe(3832) 9/124]",
+          "disk": "I",
+          "disk_queue": "8.502",
+          "disk_queue_limit": "8",
+          "disk_busy_pct": "850.161",
+          "disk_latency_ms": "95.321",
+          "tree": "chrome.exe x3 (pids 38840, 5592, 30704) [C]",
+          "creation_parent": "mixed [bash.exe(32924) 10/124, bun.exe(33680) 9/124, bun.exe(3832) 9/124]",
+          "creation_parent_mixed": "yes",
+          "creation_parent_share": "8%",
+          "creation_window_rate_per_s": "12.4",
+          "scheduler_measured": "17566",
+          "scheduler_threshold": "250",
+          "scheduler_unit": "ms late",
+          "scheduler_detail": "probe_peak=17566 instant=19",
+          "disk_measured": "8.502",
+          "disk_threshold": "8",
+          "disk_unit": "requests in service",
+          "disk_detail": "volume=I busy_pct=850.161 queue_now=4 latency_ms=95.321",
+          "creation_measured": "13.278",
+          "creation_threshold": "5",
+          "creation_unit": "creations/s",
+          "creation_detail": "count=124 parent=mixed [bash.exe(32924) 10/124, bun.exe(33680) 9/124, bun.exe(3832) 9/124] sustained=22.026s"
+        }
+      }
+    ],
+    "sample": {
+      "ts": 1794374708.789347,
+      "cpu_pct": 73.2,
+      "commit_pct": 65.85467711117471,
+      "ram_free_gb": 13.066791534423828,
+      "dpc_pct": 0.847,
+      "irq_pct": 2.002,
+      "dpc_max_core_pct": 9.231,
+      "irq_max_core_pct": 4.615,
+      "disk_latency_ms": 0.12,
+      "stall_gap_ms": 18.999999997322437,
+      "agent_pid": 8292,
+      "agent_name": "omp.exe",
+      "agent_output_age_s": 123.2229380607605,
+      "agent_outputs_seen": 0,
+      "stall": {
+        "windows": 76,
+        "total_ms": 53700.5,
+        "peak_gap_ms": 17566.0,
+        "peak_dpc_pct": 6.154,
+        "peak_irq_pct": 6.923,
+        "peak_disk_ms": 0.04,
+        "actor_pid": 0,
+        "actor_name": "",
+        "actor_reason": "gap too large to attribute (17566 ms > 5000 ms): the recorder itself was not being scheduled, so no process is named",
+        "probe_interval_ms": 200.0,
+        "probe_retention_s": 600.0,
+        "attributable_gap_ms": 5000.0
+      },
+      "disk": {
+        "status": "MEASURED",
+        "source": "IOCTL_DISK_PERFORMANCE per volume (CurrentDiskQueueLength/AvgDiskQueueLength/PercentDiskTime)",
+        "interval_ms": 1110.0,
+        "volumes": [
+          {
+            "letter": "C",
+            "queue_now": 0,
+            "queue_avg": 0.007,
+            "busy_pct": 0.68,
+            "read_bps": 125463.1,
+            "write_bps": 1442825.2,
+            "latency_ms": 0.107,
+            "ops": 71
+          },
+          {
+            "letter": "D",
+            "queue_now": 0,
+            "queue_avg": 0.0,
+            "busy_pct": 0.0,
+            "read_bps": 0.0,
+            "write_bps": 0.0,
+            "latency_ms": 0.0,
+            "ops": 0
+          },
+          {
+            "letter": "E",
+            "queue_now": 0,
+            "queue_avg": 0.0,
+            "busy_pct": 0.0,
+            "read_bps": 0.0,
+            "write_bps": 0.0,
+            "latency_ms": 0.0,
+            "ops": 0
+          },
+          {
+            "letter": "F",
+            "queue_now": 0,
+            "queue_avg": 0.0,
+            "busy_pct": 0.0,
+            "read_bps": 0.0,
+            "write_bps": 0.0,
+            "latency_ms": 0.0,
+            "ops": 0
+          },
+          {
+            "letter": "G",
+            "queue_now": 0,
+            "queue_avg": 0.04,
+            "busy_pct": 3.98,
+            "read_bps": 37786522.5,
+            "write_bps": 450191.0,
+            "latency_ms": 0.725,
+            "ops": 61
+          },
+          {
+            "letter": "H",
+            "queue_now": 0,
+            "queue_avg": 0.011,
+            "busy_pct": 1.11,
+            "read_bps": 258306.3,
+            "write_bps": 2003718.9,
+            "latency_ms": 0.286,
+            "ops": 43
+          },
+          {
+            "letter": "I",
+            "queue_now": 4,
+            "queue_avg": 8.502,
+            "busy_pct": 850.16,
+            "read_bps": 1535077.5,
+            "write_bps": 2833989.2,
+            "latency_ms": 95.321,
+            "ops": 99
+          }
+        ],
+        "contenders": [
+          {
+            "pid": 29008,
+            "name": "python.exe",
+            "read_mbps": 50.496,
+            "write_mbps": 0.0,
+            "home": "G"
+          },
+          {
+            "pid": 35660,
+            "name": "python.exe",
+            "read_mbps": 20.509,
+            "write_mbps": 0.001,
+            "home": "H"
+          },
+          {
+            "pid": 38840,
+            "name": "chrome.exe",
+            "read_mbps": 0.102,
+            "write_mbps": 5.449,
+            "home": "C"
+          },
+          {
+            "pid": 5592,
+            "name": "chrome.exe",
+            "read_mbps": 5.308,
+            "write_mbps": 0.12,
+            "home": "C"
+          },
+          {
+            "pid": 25012,
+            "name": "python.exe",
+            "read_mbps": 1.712,
+            "write_mbps": 0.0,
+            "home": "C"
+          },
+          {
+            "pid": 18324,
+            "name": "nvcontainer.exe",
+            "read_mbps": 0.0,
+            "write_mbps": 1.681,
+            "home": "C"
+          },
+          {
+            "pid": 33680,
+            "name": "bun.exe",
+            "read_mbps": 1.38,
+            "write_mbps": 0.018,
+            "home": "H"
+          },
+          {
+            "pid": 30704,
+            "name": "chrome.exe",
+            "read_mbps": 0.014,
+            "write_mbps": 0.874,
+            "home": "C"
+          }
+        ]
+      },
+      "creation": {
+        "window_s": 10.0,
+        "count": 124,
+        "rate_per_s": 13.278,
+        "decayed_rate_per_s": 12.57,
+        "sustained_s": 22.03,
+        "parent_pid": 32924,
+        "parent_name": "bash.exe",
+        "parent_count": 10,
+        "parent_share": 0.0806,
+        "parent_rate_per_s": 1.0,
+        "window_rate_per_s": 12.4,
+        "mixed": true,
+        "parents": [
+          [
+            32924,
+            "bash.exe",
+            10
+          ],
+          [
+            33680,
+            "bun.exe",
+            9
+          ],
+          [
+            3832,
+            "bun.exe",
+            9
+          ]
+        ],
+        "child_pids": [
+          28868,
+          36096,
+          39608,
+          31148,
+          4696,
+          42816,
+          44760,
+          47816,
+          5016,
+          34272,
+          45556,
+          48120,
+          28068,
+          31184,
+          36996,
+          42236,
+          35660,
+          45232,
+          16904,
+          25012,
+          6464,
+          10580,
+          17056,
+          36684,
+          38220,
+          39964,
+          40224,
+          43144,
+          44772,
+          45380,
+          48076
+        ],
+        "tracked": 577,
+        "cost_ms": 1.96,
+        "measured": "MEASURED"
+      },
+      "gpu": {
+        "available": true,
+        "used_mb": 3569.0,
+        "total_mb": 16303.0,
+        "used_pct": 21.9,
+        "util_pct": 9.0,
+        "reason": "",
+        "holders": [
+          {
+            "pid": 2216,
+            "name": "dwm.exe",
+            "used_mb": -1.0
+          },
+          {
+            "pid": 13724,
+            "name": "ShellHost.exe",
+            "used_mb": -1.0
+          },
+          {
+            "pid": 14108,
+            "name": "CrossDeviceResume.exe",
+            "used_mb": -1.0
+          },
+          {
+            "pid": 13636,
+            "name": "explorer.exe",
+            "used_mb": -1.0
+          },
+          {
+            "pid": 15356,
+            "name": "SearchHost.exe",
+            "used_mb": -1.0
+          },
+          {
+            "pid": 13900,
+            "name": "StartMenuExperienceHost.exe",
+            "used_mb": -1.0
+          },
+          {
+            "pid": 2208,
+            "name": "NVIDIA Overlay.exe",
+            "used_mb": -1.0
+          },
+          {
+            "pid": 21896,
+            "name": "TextInputHost.exe",
+            "used_mb": -1.0
+          }
+        ]
+      },
+      "procs": [
+        {
+          "pid": 29008,
+          "name": "python.exe",
+          "project_id": "",
+          "lane": "heavy",
+          "cpu_pct": 7.7490982867421705,
+          "commit_gb": 1.1010932922363281,
+          "io_mbps": 50.49594229033444,
+          "protected": true,
+          "game": false
+        },
+        {
+          "pid": 14828,
+          "name": "chatterino.exe",
+          "project_id": "",
+          "lane": "light",
+          "cpu_pct": 3.5223174030646236,
+          "commit_gb": 0.48563385009765625,
+          "io_mbps": 0.0,
+          "protected": false,
+          "game": false
+        },
+        {
+          "pid": 42760,
+          "name": "python.exe",
+          "project_id": "",
+          "lane": "heavy",
+          "cpu_pct": 3.4518710550033314,
+          "commit_gb": 0.9105911254882812,
+          "io_mbps": 0.0,
+          "protected": true,
+          "game": false
+        },
+        {
+          "pid": 38840,
+          "name": "chrome.exe",
+          "project_id": "",
+          "lane": "light",
+          "cpu_pct": 3.3814247069420382,
+          "commit_gb": 0.8178787231445312,
+          "io_mbps": 5.550731937554463,
+          "protected": true,
+          "game": false
+        },
+        {
+          "pid": 25012,
+          "name": "python.exe",
+          "project_id": "",
+          "lane": "heavy",
+          "cpu_pct": 2.6769612263291136,
+          "commit_gb": 0.019145965576171875,
+          "io_mbps": 1.7120741421940486,
+          "protected": true,
+          "game": false
+        },
+        {
+          "pid": 5592,
+          "name": "chrome.exe",
+          "project_id": "",
+          "lane": "light",
+          "cpu_pct": 2.6065148782678214,
+          "commit_gb": 0.6970367431640625,
+          "io_mbps": 5.427602178023114,
+          "protected": true,
+          "game": false
+        },
+        {
+          "pid": 4,
+          "name": "System",
+          "project_id": "",
+          "lane": "light",
+          "cpu_pct": 2.5360685302065287,
+          "commit_gb": 4.9591064453125e-05,
+          "io_mbps": 0.03170085662758161,
+          "protected": true,
+          "game": false
+        },
+        {
+          "pid": 35660,
+          "name": "python.exe",
+          "project_id": "codeintel-worktrees",
+          "lane": "heavy",
+          "cpu_pct": 2.3951758340839437,
+          "commit_gb": 0.08031082153320312,
+          "io_mbps": 20.510244412496878,
+          "protected": true,
+          "game": false
+        },
+        {
+          "pid": 39480,
+          "name": "rustc.exe",
+          "project_id": "",
+          "lane": "heavy",
+          "cpu_pct": 2.3247294860226515,
+          "commit_gb": 1.375457763671875,
+          "io_mbps": 0.5646431306333137,
+          "protected": true,
+          "game": false
+        },
+        {
+          "pid": 40432,
+          "name": "rustc.exe",
+          "project_id": "",
+          "lane": "heavy",
+          "cpu_pct": 2.3247294860226515,
+          "commit_gb": 1.3096427917480469,
+          "io_mbps": 0.5651100784726361,
+          "protected": true,
+          "game": false
+        },
+        {
+          "pid": 2216,
+          "name": "dwm.exe",
+          "project_id": "",
+          "lane": "light",
+          "cpu_pct": 2.042944093777481,
+          "commit_gb": 0.35028839111328125,
+          "io_mbps": 0.00278620810203354,
+          "protected": true,
+          "game": false
+        },
+        {
+          "pid": 33680,
+          "name": "bun.exe",
+          "project_id": "",
+          "lane": "heavy",
+          "cpu_pct": 1.4996572212052648,
+          "commit_gb": 2.5367507934570312,
+          "io_mbps": 1.3979469935099282,
+          "protected": true,
+          "game": false
+        }
+      ],
+      "stutter_relief": {
+        "active_s": 0.0,
+        "escalated": false,
+        "parks": {},
+        "offenses": {
+          "29008@1794374697.36": {
+            "project": "",
+            "name": "python.exe",
+            "metric": "io",
+            "measured": 52.94883318302973,
+            "threshold": 20.0,
+            "sustained_s": 3.0,
+            "killed": 0,
+            "dm": ""
+          }
+        },
+        "last": {
+          "live": true,
+          "signals": [
+            "disk",
+            "creation"
+          ],
+          "detail": [
+            "disk=8.502requests in service\u22658",
+            "creation=13.278creations/s\u22655"
+          ],
+          "parked": [],
+          "released": [],
+          "escalated": false,
+          "extreme": {
+            "killed": 0,
+            "refused": "protected:python"
+          },
+          "reason": "no_tree_over_line",
+          "metric": "io",
+          "culprits": []
+        }
+      }
+    }
+  },
+  "latency": {
+    "sensors": {
+      "interactive_p99_ms": {
+        "sensor": "interactive_p99_ms",
+        "class": "Normal",
+        "pid": 15340,
+        "name": "chrome.exe",
+        "window_s": 600.0,
+        "measured_in": "probe thread at thread-priority 0",
+        "status": "MEASURED",
+        "p99_ms": 253.0,
+        "p50_ms": 3.0,
+        "p95_ms": 97.0,
+        "max_ms": 17410.0,
+        "probes": 2581,
+        "stalls_gt_deadline": 108,
+        "deadline_ms": 100.0
+      },
+      "class_population": {
+        "counts": {
+          "Idle": 57,
+          "BelowNormal": 123,
+          "Normal": 365,
+          "AboveNormal": 14,
+          "High": 6,
+          "Realtime": 0
+        },
+        "total": 584,
+        "unreadable": 19,
+        "unreadable_reasons": {
+          "open-denied": 19
+        },
+        "sampled_at": 1794374707.851,
+        "cache_s": 5.0,
+        "status": "MEASURED"
+      },
+      "stalls_per_window": {
+        "sensor": "stalls_per_window",
+        "window_s": 600.0,
+        "deadline_ms": 100.0,
+        "classes": {
+          "Idle": {
+            "stalls_gt_deadline": 199,
+            "probes": 1304,
+            "max_ms": 32972.0,
+            "status": "MEASURED"
+          },
+          "BelowNormal": {
+            "stalls_gt_deadline": 97,
+            "probes": 2579,
+            "max_ms": 17441.0,
+            "status": "MEASURED"
+          },
+          "Normal": {
+            "stalls_gt_deadline": 108,
+            "probes": 2581,
+            "max_ms": 17410.0,
+            "status": "MEASURED"
+          },
+          "AboveNormal": {
+            "stalls_gt_deadline": 83,
+            "probes": 2613,
+            "max_ms": 17441.0,
+            "status": "MEASURED"
+          },
+          "High": {
+            "stalls_gt_deadline": 59,
+            "probes": 2616,
+            "max_ms": 17472.0,
+            "status": "MEASURED"
+          }
+        },
+        "status": "MEASURED"
+      },
+      "lane_stall": {
+        "sensor": "lane_stall",
+        "status": "MEASURED",
+        "lanes": []
+      },
+      "unreadable_processes": {
+        "sensor": "unreadable_processes",
+        "count": 19,
+        "reasons": {
+          "open-denied": 19
+        },
+        "total": 584,
+        "status": "MEASURED"
+      },
+      "priority_violations": {
+        "sensor": "priority_violations",
+        "status": "MEASURED",
+        "count": 3,
+        "rows": [
+          {
+            "pid": 3540,
+            "image": "msedgewebview2.exe",
+            "class": "Idle",
+            "interactive": "visible-window",
+            "below_by": 2
+          },
+          {
+            "pid": 4848,
+            "image": "voicemeeter.exe",
+            "class": "BelowNormal",
+            "interactive": "visible-window",
+            "below_by": 1
+          },
+          {
+            "pid": 11864,
+            "image": "WhatsApp.Root.exe",
+            "class": "Idle",
+            "interactive": "visible-window",
+            "below_by": 2
+          }
+        ],
+        "checked": 10,
+        "unreadable": 0
+      }
+    },
+    "method": "watcher.latency (2026-11-04 sensor contract, I:/!manager/watcher-evolution-20261104.md)"
+  },
+  "terminals": {
+    "enabled": true,
+    "running": true,
+    "poll_ms": 250,
+    "max_lifetime_s": 180.0,
+    "polls": 65047,
+    "watching": 2,
+    "flashes": 4,
+    "long_lived": 0,
+    "last_flash_at": 1794370064.614957,
+    "windows_shown": 0,
+    "windows_suppressed": 0,
+    "gate": "counted only when the window was in the foreground or newly appeared",
+    "recent": [
+      {
+        "hwnd": "0xb91592",
+        "pid": 15280,
+        "image": "windowsterminal.exe",
+        "window_class": "Xaml_WindowedPopupClass",
+        "lifetime_s": 0.27,
+        "foreground": false,
+        "popup": true,
+        "requester": "",
+        "chain": [
+          "windowsterminal.exe(15280)",
+          "svchost.exe(1556)",
+          "services.exe(1832)",
+          "wininit.exe(1752)",
+          "?(1628)"
+        ],
+        "candidates": [],
+        "pty_owners": [],
+        "attribution": "no console allocated within 2.0s",
+        "cmdline": "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.24.12741.0_x64__8wekyb3d8bbwe\\WindowsTerminal.exe -Embedding",
+        "cwd": "",
+        "cwd_from": "unavailable",
+        "t": 1794366952.6983511
+      },
+      {
+        "hwnd": "0x1300bf4",
+        "pid": 15280,
+        "image": "windowsterminal.exe",
+        "window_class": "CASCADIA_HOSTING_WINDOW_CLASS",
+        "lifetime_s": 0.88,
+        "foreground": true,
+        "popup": false,
+        "requester": "python.exe(36048)",
+        "chain": [
+          "python.exe(36048)",
+          "pythonw.exe(21400)",
+          "explorer.exe(13636)",
+          "?(13508)"
+        ],
+        "candidates": [],
+        "pty_owners": [],
+        "attribution": "console opened beside it",
+        "cmdline": "C:\\Program Files\\Python311\\python.EXE -u H:\\sotto\\worker\\sotto_worker.py --threads 2",
+        "cwd": "",
+        "cwd_from": "unavailable",
+        "t": 1794368923.8184338
+      },
+      {
+        "hwnd": "0x11615fa",
+        "pid": 15280,
+        "image": "windowsterminal.exe",
+        "window_class": "Xaml_WindowedPopupClass",
+        "lifetime_s": 1.09,
+        "foreground": false,
+        "popup": true,
+        "requester": "gh.exe(41704)",
+        "chain": [
+          "gh.exe(41704)",
+          "bun.exe(3832)",
+          "omp.exe(38424)",
+          "pwsh.exe(23840)",
+          "herdr.exe(23668)"
+        ],
+        "candidates": [],
+        "pty_owners": [],
+        "attribution": "console opened beside it",
+        "cmdline": "gh pr view --json number,url",
+        "cwd": "H:\\sotto",
+        "cwd_from": "requester",
+        "t": 1794369477.3877206
+      },
+      {
+        "hwnd": "0x3d0398",
+        "pid": 15280,
+        "image": "windowsterminal.exe",
+        "window_class": "Xaml_WindowedPopupClass",
+        "lifetime_s": 0.8,
+        "foreground": false,
+        "popup": true,
+        "requester": "",
+        "chain": [
+          "windowsterminal.exe(15280)",
+          "svchost.exe(1556)",
+          "services.exe(1832)",
+          "wininit.exe(1752)",
+          "?(1628)"
+        ],
+        "candidates": [
+          [
+            "python.exe(17644)",
+            "python.exe(6480)",
+            "bun.exe(26012)"
+          ],
+          [
+            "bun.exe(26012)",
+            "omp.exe(8292)",
+            "pwsh.exe(24600)"
+          ],
+          [
+            "rg.exe(7248)",
+            "python.exe(25804)",
+            "python.exe(40912)"
+          ],
+          [
+            "rg.exe(38552)",
+            "python.exe(25804)",
+            "python.exe(40912)"
+          ]
+        ],
+        "pty_owners": [
+          "bash.exe(36796)"
+        ],
+        "attribution": "12 consoles allocated within 2.0s: spawners=python.exe(25804)x9, omp.exe(8292)x1, python.exe(6480)x1",
+        "cmdline": "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.24.12741.0_x64__8wekyb3d8bbwe\\WindowsTerminal.exe -Embedding",
+        "cwd": "",
+        "cwd_from": "unavailable",
+        "t": 1794370064.614957
+      }
+    ],
+    "recent_windows": [],
+    "hook": {
+      "enabled": true,
+      "running": true,
+      "ready": true,
+      "events": 373694,
+      "shown": 211,
+      "hidden": 724,
+      "queued": 0,
+      "dropped": 0,
+      "visible_tracked": 602,
+      "last_error": ""
+    },
+    "notify": {
+      "enabled": true,
+      "running": true,
+      "dm_tool": "I:/!watcher/tools/herdr-dm.py",
+      "cooldown_s": 600.0,
+      "min_interval_s": 60.0,
+      "offered": 952,
+      "sent": 1,
+      "durable_only": 9,
+      "refused": 942,
+      "dropped": 0,
+      "refusals": {
+        "not-in-the-foreground": 931,
+        "min-interval": 7,
+        "pty-client-not-a-window": 4
+      },
+      "last": {
+        "culprit": "python.exe(9244)",
+        "pane": "w1A:p1",
+        "resolved_by": "project",
+        "record": "dm-0cf1be664f606ea7e0ae",
+        "rc": 5,
+        "injected": false,
+        "reason": "typed-not-submitted: w1A:p1 (unverified) and Enter was not pressed (no proof that the box is ours); the pointer may be in its composer and the record dm-0cf1be664f606ea7e0ae.md is the delivery"
+      },
+      "last_at": 1794374543.9895818
+    }
+  },
+  "sample": {
+    "cpu_pct": 73.2,
+    "ram_total": 51229278208,
+    "ram_available": 14085591040,
+    "ram_pct": 72.5,
+    "disk_read_bps": 60179149.60610614,
+    "disk_write_bps": 991748.0314928811,
+    "idle_seconds": 0.047,
+    "user_idle": false,
+    "foreground": "chrome.exe",
+    "logical_count": 20,
+    "hybrid": true,
+    "presence": "present",
+    "cursor_frozen_seconds": 1.1869999999980791,
+    "media_playing": false,
+    "audio_source": "",
+    "commit_pct": 65.85467711117471,
+    "memory_level": "ok"
+  },
+  "procs": [
+    {
+      "pid": 42236,
+      "name": "bash.exe",
+      "project_id": "superharness",
+      "cpu": 0.07038288288284597,
+      "rss": 14262272,
+      "policy": "emergency-compile",
+      "in_job": false,
+      "ecoqos": false,
+      "duty": false
+    },
+    {
+      "pid": 39964,
+      "name": "bash.exe",
+      "project_id": "superharness",
+      "cpu": 0.0,
+      "rss": 17588224,
+      "policy": "",
+      "in_job": false,
+      "ecoqos": false,
+      "duty": false
+    },
+    {
+      "pid": 40224,
+      "name": "bash.exe",
+      "project_id": "superharness",
+      "cpu": 0.0,
+      "rss": 17420288,
+      "policy": "",
+      "in_job": false,
+      "ecoqos": false,
+      "duty": false
+    },
+    {
+      "pid": 43144,
+      "name": "bash.exe",
+      "project_id": "superharness",
+      "cpu": 0.0,
+      "rss": 17408000,
+      "policy": "",
+      "in_job": false,
+      "ecoqos": false,
+      "duty": false
+    },
+    {
+      "pid": 4860,
+      "name": "cargo.exe",
+      "project_id": "superharness",
+      "cpu": 0.0,
+      "rss": 12185600,
+      "policy": "emergency-compile",
+      "in_job": false,
+      "ecoqos": false,
+      "duty": false
+    },
+    {
+      "pid": 14060,
+      "name": "cargo.exe",
+      "project_id": "superharness",
+      "cpu": 0.0,
+      "rss": 13393920,
+      "policy": "emergency-compile",
+      "in_job": false,
+      "ecoqos": false,
+      "duty": false
+    },
+    {
+      "pid": 14236,
+      "name": "cargo-nextest.exe",
+      "project_id": "superharness",
+      "cpu": 0.0,
+      "rss": 31674368,
+      "policy": "emergency-compile",
+      "in_job": false,
+      "ecoqos": false,
+      "duty": false
+    },
+    {
+      "pid": 28068,
+      "name": "pythonw.exe",
+      "project_id": "superharness",
+      "cpu": 0.0,
+      "rss": 19673088,
+      "policy": "emergency-compile",
+      "in_job": false,
+      "ecoqos": false,
+      "duty": false
+    },
+    {
+      "pid": 31184,
+      "name": "bash.exe",
+      "project_id": "superharness",
+      "cpu": 0.0,
+      "rss": 14553088,
+      "policy": "emergency-compile",
+      "in_job": false,
+      "ecoqos": false,
+      "duty": false
+    },
+    {
+      "pid": 41044,
+      "name": "cargo.exe",
+      "project_id": "superharness",
+      "cpu": 0.0,
+      "rss": 160669696,
+      "policy": "emergency-compile",
+      "in_job": false,
+      "ecoqos": false,
+      "duty": false
+    },
+    {
+      "pid": 5772,
+      "name": "pythonw.exe",
+      "project_id": "brandops",
+      "cpu": 0.0,
+      "rss": 1052672,
+      "policy": "no-handle",
+      "in_job": false,
+      "ecoqos": false,
+      "duty": false,
+      "err": "open failed"
+    },
+    {
+      "pid": 13080,
+      "name": "pythonw.exe",
+      "project_id": "brandops",
+      "cpu": 0.0,
+      "rss": 1974272,
+      "policy": "no-handle",
+      "in_job": false,
+      "ecoqos": false,
+      "duty": false,
+      "err": "open failed"
+    },
+    {
+      "pid": 18300,
+      "name": "pythonw.exe",
+      "project_id": "brandops",
+      "cpu": 0.0,
+      "rss": 3117056,
+      "policy": "no-handle",
+      "in_job": false,
+      "ecoqos": false,
+      "duty": false,
+      "err": "open failed"
+    },
+    {
+      "pid": 20152,
+      "name": "pythonw.exe",
+      "project_id": "brandops",
+      "cpu": 0.0,
+      "rss": 823296,
+      "policy": "no-handle",
+      "in_job": false,
+      "ecoqos": false,
+      "duty": false,
+      "err": "open failed"
+    },
+    {
+      "pid": 21600,
+      "name": "python.exe",
+      "project_id": "brandops",
+      "cpu": 0.0,
+      "rss": 1011712,
+      "policy": "no-handle",
+      "in_job": false,
+      "ecoqos": false,
+      "duty": false,
+      "err": "open failed"
+    },
+    {
+      "pid": 26372,
+      "name": "pythonw.exe",
+      "project_id": "brandops",
+      "cpu": 0.0,
+      "rss": 10383360,
+      "policy": "no-handle",
+      "in_job": false,
+      "ecoqos": false,
+      "duty": false,
+      "err": "open failed"
+    },
+    {
+      "pid": 28412,
+      "name": "pythonw.exe",
+      "project_id": "brandops",
+      "cpu": 0.0,
+      "rss": 7643136,
+      "policy": "no-handle",
+      "in_job": false,
+      "ecoqos": false,
+      "duty": false,
+      "err": "open failed"
+    },
+    {
+      "pid": 36544,
+      "name": "ffmpeg.exe",
+      "project_id": "vodrip",
+      "cpu": 0.0,
+      "rss": 102264832,
+      "policy": "emergency",
+      "in_job": false,
+      "ecoqos": true,
+      "duty": true
+    }
+  ],
+  "health": {
+    "watcher_self_fault": {
+      "ok": true,
+      "detail": "",
+      "last_change": "2026-11-11T00:16:03.879Z",
+      "fails": 0,
+      "last_ok_ts": "2026-11-11T00:16:03.879Z"
+    },
+    "perf_seed": {
+      "ok": true,
+      "detail": "",
+      "last_change": "2026-11-11T00:16:04.066Z",
+      "fails": 0,
+      "last_ok_ts": "2026-11-11T00:16:04.066Z"
+    },
+    "window_event_hook": {
+      "ok": true,
+      "detail": "",
+      "last_change": "2026-11-11T00:16:11.357Z",
+      "fails": 0,
+      "last_ok_ts": "2026-11-11T00:16:11.357Z"
+    },
+    "action_path": {
+      "ok": true,
+      "detail": "",
+      "last_change": "2026-11-11T05:24:29.675Z",
+      "fails": 6,
+      "last_ok_ts": "2026-11-11T05:24:29.675Z"
+    },
+    "perf_probe": {
+      "ok": true,
+      "detail": "",
+      "last_change": "2026-11-11T05:25:08.415Z",
+      "fails": 10,
+      "last_ok_ts": "2026-11-11T05:25:08.415Z"
+    },
+    "evidence_queue": {
+      "ok": true,
+      "detail": "",
+      "last_change": "2026-11-11T05:25:08.415Z",
+      "fails": 0,
+      "last_ok_ts": "2026-11-11T05:25:08.415Z"
+    },
+    "audio_probe": {
+      "ok": true,
+      "detail": "",
+      "last_change": "2026-11-11T05:25:08.816Z",
+      "fails": 1,
+      "last_ok_ts": "2026-11-11T05:25:08.816Z"
+    },
+    "mood_gate": {
+      "ok": true,
+      "detail": "",
+      "last_change": "2026-11-11T05:16:28.121Z",
+      "fails": 0,
+      "last_ok_ts": "2026-11-11T05:16:28.121Z"
+    },
+    "creation_sensor": {
+      "ok": true,
+      "detail": "",
+      "last_change": "2026-11-11T05:24:41.746Z",
+      "fails": 0,
+      "last_ok_ts": "2026-11-11T05:24:41.746Z"
+    },
+    "stutter_relief": {
+      "ok": true,
+      "detail": "",
+      "last_change": "2026-11-11T05:24:35.815Z",
+      "fails": 0,
+      "last_ok_ts": "2026-11-11T05:24:35.815Z"
+    },
+    "jobs": {
+      "ok": true,
+      "detail": "",
+      "last_change": "2026-11-11T05:22:27.502Z",
+      "fails": 0,
+      "last_ok_ts": "2026-11-11T05:22:27.502Z"
+    },
+    "terminal_watch": {
+      "ok": true,
+      "detail": "",
+      "last_change": "2026-11-11T05:25:06.357Z",
+      "fails": 0,
+      "last_ok_ts": "2026-11-11T05:25:06.357Z"
+    },
+    "diskhealth": {
+      "ok": false,
+      "detail": "NTFS events 55/98 in System log (5)",
+      "last_change": "2026-11-11T05:24:18.752Z",
+      "fails": 430,
+      "last_ok_ts": ""
+    },
+    "herdr_notify": {
+      "ok": true,
+      "detail": "",
+      "last_change": "2026-11-11T05:24:55.660Z",
+      "fails": 0,
+      "last_ok_ts": "2026-11-11T05:24:55.660Z"
+    }
+  },
+  "vram": {
+    "available": true,
+    "total_mb": 16303,
+    "used_mb": 3569,
+    "free_mb": 12733,
+    "used_pct": 21.9,
+    "util_pct": 9,
+    "procs": [
+      {
+        "pid": 2216,
+        "name": "dwm.exe",
+        "used_mb": null
+      },
+      {
+        "pid": 13724,
+        "name": "ShellHost.exe",
+        "used_mb": null
+      },
+      {
+        "pid": 14108,
+        "name": "CrossDeviceResume.exe",
+        "used_mb": null
+      },
+      {
+        "pid": 13636,
+        "name": "explorer.exe",
+        "used_mb": null
+      },
+      {
+        "pid": 15356,
+        "name": "SearchHost.exe",
+        "used_mb": null
+      },
+      {
+        "pid": 13900,
+        "name": "StartMenuExperienceHost.exe",
+        "used_mb": null
+      },
+      {
+        "pid": 2208,
+        "name": "NVIDIA Overlay.exe",
+        "used_mb": null
+      },
+      {
+        "pid": 21896,
+        "name": "TextInputHost.exe",
+        "used_mb": null
+      }
+    ],
+    "disabled": null,
+    "reason": null
+  },
+  "daemon": true,
+  "pid": 29932
+}

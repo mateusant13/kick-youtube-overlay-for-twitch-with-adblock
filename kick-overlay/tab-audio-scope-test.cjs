@@ -24,7 +24,7 @@ const assert = require('assert');
 
 const AUDIO = fs.readFileSync(path.join(__dirname, 'ko-audio.js'), 'utf8').replace(/\r\n/g, '\n');
 const CONTENT = fs.readFileSync(path.join(__dirname, 'content.js'), 'utf8').replace(/\r\n/g, '\n');
-const TAB_KEY = 'ko.audio.v1';
+const TAB_KEY = 'ko.audio.v2';
 
 let checks = 0;
 let failed = 0;

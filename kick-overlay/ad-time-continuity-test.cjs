@@ -210,6 +210,59 @@ async function main() {
     });
   }
 
+  // ---- 1b. Twitch's sentinel edge: the wall clock is the only timeline -----
+  // Owner report 2026-11-11: "deixou a live com delay multiplas vezes por causa
+  // do anuncio e da troca de player". Twitch's native reports `seekable.end`
+  // as the 2^30 sentinel, so the hand-back fell back to `buffered.end - 0.5`
+  // and a native that sat frozen through the pod resumed at its old position:
+  // every pod added its own duration to the delay and nothing ever closed it.
+  {
+    const page = makeWorld();
+    setNative(page, { ct: 100, edge: 1073741824, bufferedEnd: 101 });
+    await pod(page);
+    // the native is frozen for the pod: real time passes, currentTime does not
+    await new Promise((r) => setTimeout(r, 2100));
+    page.bypass({ type: 'ad-end' });
+    await settle(30);
+    check('a frozen native with an unusable edge is seeked forward by the time it missed', () => {
+      const v = page.video;
+      const rec = page.logsOf('native-edge-recover');
+      assert(rec.length === 1, `expected one recovery seek, got ${rec.length}`);
+      const behind = rec[0].d.behind;
+      assert(behind > 1.5, `logged deficit ${behind} is below the seek threshold`);
+      assert(v.currentTime > 101, `currentTime ${v.currentTime} was not moved forward`);
+      assert(Math.abs(v.currentTime - (100 + behind)) < 0.6, `currentTime ${v.currentTime} != ${100 + behind}`);
+    });
+  }
+  {
+    // RED: the pre-fix hand-back, with the wall-clock recovery removed.
+    const mutated = mutate([[
+      "      if (se <= 0 && overlay.holdAt) {",
+      "      if (false && se <= 0 && overlay.holdAt) {",
+    ]]);
+    const page = makeWorld(mutated);
+    setNative(page, { ct: 100, edge: 1073741824, bufferedEnd: 101 });
+    await pod(page);
+    await new Promise((r) => setTimeout(r, 2100));
+    page.bypass({ type: 'ad-end' });
+    await settle(30);
+    check('RED: without the wall-clock recovery the delayed native stays delayed', () => {
+      assert(page.video.currentTime < 102,
+        `the mutated hand-back recovered to ${page.video.currentTime}, so the arm above measures nothing`);
+    });
+  }
+  {
+    const page = makeWorld();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 }); // a REAL edge
+    await pod(page);
+    await new Promise((r) => setTimeout(r, 2100));
+    page.bypass({ type: 'ad-end' });
+    await settle(30);
+    check('a usable edge suppresses the wall-clock recovery (no double seek)', () => {
+      assert(page.logsOf('native-edge-recover').length === 0, 'the recovery seek ran on a usable edge');
+    });
+  }
+
   // ---- 2. ad-end hands the native back at the SAME offset -----------------
   {
     const page = makeWorld();

@@ -137,6 +137,38 @@
         }
       },
     });
+    // WHY the page surface ends up silenced, published for the owner's own
+    // ko.adlog and for a DOM read: which surface the authority believes is
+    // VISIBLE, and what it wants the main Twitch element to be. Owner report
+    // 2026-11-11: "quando o anuncio acaba e o player volta pro da twitch, fica
+    // mutado. o player diz que nao ta mutado, mas ta mutado" — an element muted
+    // by the derived state while the UI mirrors the INTENT is exactly this pair
+    // disagreeing, and nothing in the log said which one.
+    let whySig = '';
+    const publishWhy = () => {
+      try {
+        const vis = String(audio.visible() || '');
+        const wt = audio.wanted('twitch').muted ? '1' : '0';
+        const it = audio.intent('twitch').muted ? '1' : '0';
+        root.setAttribute('data-ko-audio-vis', vis);
+        root.setAttribute('data-ko-audio-wt', wt);
+        root.setAttribute('data-ko-audio-it', it);
+        // A transition, not a tick: the owner's pod reports need the moment the
+        // page surface changes hands, with the element's own state beside the
+        // derived one. "UI says unmuted, the element is muted" is one line here.
+        const els = [...document.querySelectorAll('video')];
+        const main = els.find((v) => v.videoWidth > 0 || !v.paused) || els[0];
+        const el = main ? (main.muted ? '1' : '0') + '|' + Number(main.volume).toFixed(2) : '';
+        const sig = vis + '|' + wt + '|' + it + '|' + el;
+        if (sig === whySig) return;
+        whySig = sig;
+        persist({ ev: 'audio-state', d: { vis, wt, it, el } });
+      } catch {
+        /* document tearing down */
+      }
+    };
+    audio.onChange(publishWhy);
+    publishWhy();
     document.addEventListener(
       'ko-audio-claim',
       (ev) => {

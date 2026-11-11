@@ -361,6 +361,14 @@ function makeWorld(opts, extra) {
     clickDocument() {
       for (const f of (document.listeners.pointerdown || []).slice()) f({ type: 'pointerdown' });
     },
+    // The MACHINE muting the page video while a click is still fresh (owner
+    // report 2026-11-11: he clicks to recover the delay, Twitch mutes its own
+    // element as the pod takes over). No pointerdown is fired here: the click
+    // the test sent a moment ago is what makes the event look attributable.
+    machineMutesNative() {
+      video.muted = true;
+      document.fire({ type: 'volumechange', target: video });
+    },
     muteSent() {
       return sent.filter((m) => m && m.t === 'mute').map((m) => m.m);
     },
@@ -468,6 +476,54 @@ async function main() {
       assert(page.video.muted === true, `native restored muted=${page.video.muted}`);
     });
   }
+
+  // ---- 2b: the machine muting right after the hand-back. ------------------
+  // Owner report 2026-11-11: "deixou a live com delay ... e o player trocou pra
+  // ficar mutado". He clicks the player to recover the delay, the pod ends and
+  // Twitch re-mutes its own element within the freshness window, so the mute
+  // was recorded as HIS choice and handed to the next player.
+  {
+    const page = makeWorld();
+    await runPod(page, { mutedBeforeAd: false });
+    page.bypass({ type: 'ad-end' });
+    assert(page.video.muted === false, 'precondition: the hand-back gave the sound back');
+    page.clickDocument();
+    page.machineMutesNative();
+    check('a machine mute right after the hand-back is not the user choice', () => {
+      assert(page.audio.intent('twitch').muted === false,
+        `intent became muted=${page.audio.intent('twitch').muted} from a machine mute`);
+      assert(page.video.muted === false, 'the page surface was left silenced');
+    });
+  }
+
+  // ---- 2c: positive control — the SAME event well after the window IS his. -
+  {
+    const page = makeWorld();
+    await runPod(page, { mutedBeforeAd: false });
+    page.bypass({ type: 'ad-end' });
+    await new Promise((r) => setTimeout(r, 2800));
+    page.clickDocument();
+    page.machineMutesNative();
+    check('a mute 3 s after the hand-back is recorded as intent', () => {
+      assert(page.audio.intent('twitch').muted === true,
+        'a real mute outside the machine window was discarded (detector measures nothing)');
+    });
+  }
+
+  // ---- 2d: RED control — the pre-fix authority records the hand-back mute. -
+  {
+    const mutated = fs.readFileSync('G:/Temp/ko-audio-nopreclaim.js', 'utf8');
+    const page = makeWorld({ audioSource: mutated });
+    await runPod(page, { mutedBeforeAd: false });
+    page.bypass({ type: 'ad-end' });
+    page.clickDocument();
+    page.machineMutesNative();
+    check('RED: without the release window the hand-back mute becomes intent', () => {
+      assert(page.audio.intent('twitch').muted === true,
+        'the mutated authority refused the machine mute, so the arm above measures nothing');
+    });
+  }
+
 
   // ---- 3: a sound-on user gets sound, from the right surface. ------------
   {

@@ -238,6 +238,8 @@
     audioRefused: false,
     // Live-time alignment + user-intent tracking (owner report 2026-11-07).
     nativeLat: 0, // native latency (edge - currentTime) captured at take-over
+    holdAt: 0, // wall clock at take-over: the timeline the live edge advanced on
+    holdCt: 0, // native currentTime at take-over
     pauseBeforeAd: false, // the native was PAUSED when the pod took over
     coldPreroll: false, // ...and it had never played (page had just loaded)
     held: false,
@@ -847,6 +849,32 @@
       // became "buffered" is indistinguishable from a healthy timeline, and
       // that ambiguity is what hid the 1e9 seek for a whole pod.
       if (se <= 0) adLog('native-edge-unusable', { from: +from.toFixed(1), rs: v.readyState });
+      // Twitch's native edge is the 2^30 sentinel, so `se > 0` is false on the
+      // exact surface this extension spends most of its life on, and the
+      // hand-back then only seeks inside buffered data — a native that sat
+      // frozen through a pod keeps its old position and the live stays behind
+      // by the pod's whole duration, pod after pod (owner report 2026-11-11:
+      // "deixou a live com delay multiplas vezes"). The wall clock is the one
+      // timeline that always exists: the edge advanced by the elapsed time, the
+      // element advanced by its currentTime delta, and the difference is what
+      // was missed. Seek that difference forward; nothing is fabricated.
+      if (se <= 0 && overlay.holdAt) {
+        const at = overlay.holdAt;
+        const ct0 = Number(overlay.holdCt || 0);
+        overlay.holdAt = 0;
+        const elapsed = (Date.now() - at) / 1000;
+        const advanced = from - ct0;
+        const behind = elapsed - advanced;
+        if (behind > RESUME_GAP_SEC && behind < 3600) {
+          v.currentTime = from + behind;
+          adLog('native-edge-recover', {
+            from: +from.toFixed(1),
+            to: +(from + behind).toFixed(1),
+            behind: +behind.toFixed(1),
+            elapsed: +elapsed.toFixed(1),
+          });
+        }
+      }
       if (target > from + RESUME_GAP_SEC) {
         v.currentTime = target;
         adLog('native-catchup', {
@@ -1085,6 +1113,10 @@
           se: hv && hv.seekable.length ? +hv.seekable.end(hv.seekable.length - 1).toFixed(1) : null,
           cleanPos: overlay.lastSt ? +Number(overlay.lastSt.pos || 0).toFixed(1) : null,
           cleanLat: overlay.lastSt ? +Number(overlay.lastSt.lat || 0).toFixed(1) : null,
+          // WHICH instrument answered the latency: hls.js's own measure, the
+          // forward buffer, or a seekable end. A 9 s steady state that never
+          // closes is a different bug depending on this field.
+          cleanLatSrc: (overlay.lastSt && overlay.lastSt.latSrc) || null,
         });
       } catch { /* ignore */ }
       // CSS back (mute ownership never left the authority); the claim was
@@ -1211,6 +1243,7 @@
           lat: +lat0.toFixed(1),
           pos: +pos0.toFixed(1),
           target: cleanLatTarget(),
+          latSrc: (overlay.lastSt && overlay.lastSt.latSrc) || null,
         });
         try { clearTimeout(overlay.hideTimer); } catch { /* ignore */ }
         overlay.hideTimer = setTimeout(() => {
@@ -1891,6 +1924,16 @@
         // start a player the user had parked (a paused tab in the background).
         overlay.nativeLat = nativeLatency(v);
         overlay.pauseBeforeAd = !!v.paused;
+        // The pod's cost, measured rather than assumed. Every pod freezes the
+        // native (0.8.51 hold) and the clean picture is ~9 s behind the edge
+        // while it is up (measured 2026-11-11 on buzzyi_: `overlay-catchup
+        // {lat:9}` fired 70 times), so the hand-back used to resume a native
+        // that had missed exactly the pod's duration and never catch it up —
+        // the owner's "deixou a live com delay multiplas vezes por causa do
+        // anuncio e da troca de player". Both ends are captured here: the
+        // position at take-over and the wall clock that owns the edge.
+        overlay.holdAt = Date.now();
+        overlay.holdCt = Number(v.currentTime || 0);
         // A cold preroll is the ONLY case where a paused native is ours to
         // start: it has never played at all, so it sits at the very beginning.
         // A user-parked player is at some real position — never < 1s — and must
