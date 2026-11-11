@@ -1280,7 +1280,11 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   KO.kickMuted = false;
   storage.ko = undefined;
   await api.loadState();
-  assert.strictEqual(KO.kickMuted, true, 'first run defaults kickMuted:true (owner: no audio leaks)');
+  // CONTRACT CHANGE (0.8.54, owner 2026-11-09: "se antes tava desmutado > vai pra
+  // desmutado no player"): the fresh-profile mute seed is GONE, so a first run
+  // starts AUDIBLE and `inheritState` copies the real decision across a swap.
+  // This assertion used to pin the old default and was red at HEAD.
+  assert.strictEqual(KO.kickMuted, false, 'first run starts audible (0.8.54: no mute nobody chose)');
   KO.kickMuted = true;
   // Audio intent is TAB-LOCAL (ko-audio.js, sessionStorage). The shared record
   // must carry no audio: a row here is what made one tab's mute reach every
@@ -1293,7 +1297,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   const savedRec = await new Promise((res) => api.saveState(false).then(() => res(storage.ko)));
   assert.ok(savedRec && !('vols' in savedRec), 'the shared record carries NO vols field');
   storage.ko = undefined;
-  console.log('U mute: first-run kickMuted:true; shared record carries no audio — OK');
+  console.log('U mute: first run starts audible; shared record carries no audio - OK');
 
   // ---- V: levels -> vertical quality menu -> setLevel ----------------------
   // Reuse the mountApi's real id-tree: renderQualityMenu reads #ko-quality-menu.

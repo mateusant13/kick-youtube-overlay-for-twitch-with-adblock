@@ -2,6 +2,36 @@
 ## Owner rule — ship work without paperwork drag (2026-10-31T02:59:01-03:00)
 Keep useful behavior and its minimum proof/docs moving in the same fast delivery. Skip optional process artifacts when they cost more than the change. Before agent fan-out or disk-heavy builds/tests, use `fast-land-shared-artifacts`: measure total disk growth, share the sanctioned target/cache across lanes, and serialize instead of duplicating heavy artifacts when sharing is unsafe. This owner direction supersedes older process checklists that add optional work without protecting a concrete risk; keep only minimum proof for correctness, security, data integrity, or destructive work.
 
+## This machine is weak: declare the ceiling BEFORE the job (owner order 2026-11-11)
+
+The owner's machine must not be starved by this project's tooling. Assume the box is 10x weaker than
+it looks and write code for that machine, not for a build server. Order of preference, and it is not
+negotiable: **do less work, do it once, batch it, reuse a cached result, make it incremental, drop the
+duplicate** — a CPU/thread/MB cap comes only after the work itself got cheaper. Throttling a job whose
+design redoes work is the worst available answer.
+
+- **One heavy job at a time, with a number attached before launch.** Every measurement/scan/build slot
+  declares its ceiling in the command that starts it: processes/workers, threads (`--jobs`,
+  `OMP_NUM_THREADS`, `torch.set_num_threads`), RSS, MB/s, and the instrument that will prove it. A
+  limit that was not measured before the run is not a limit.
+- **The guest browser is the only heavy thing this project starts**, and its ceiling is already
+  declared: ONE guest, 1 page tab, ≤20 chrome processes, ≤1.6 GB RSS, `--disk-cache-size=256 MB`,
+  `--renderer-process-limit=4`. Measured violation on 2026-11-09: two guests = 31 processes / 2.89 GB;
+  after killing the duplicate = 15 / 1.33 GB. `ko-harness.mjs` refuses a second guest on purpose — reuse
+  the running one (`KO_PORT=N`) instead of starting another, and `stop` at the end of every run.
+- **Never leave a guest, a scan, or a watcher spawned as a side effect of a measurement.** The probe is
+  part of the job: `stop` when the numbers are taken. A probe left running is the freeze the owner
+  reports two hours later.
+- **Reuse before re-running: key by CONTENT.** A measurement whose inputs did not change is a cache
+  hit, not a new data point. `node _tools/ko-verify.mjs` takes ~60 s and `content-fix-test.cjs` ~2 s —
+  run the narrow instrument once (the file you touched), the whole gate once per version bump, never in
+  a loop with one flag changed per iteration. Missing keys are reported as `MISS`, hits as `CACHE HIT`.
+- **No unbounded loop, fan-out or in-memory accumulation.** The harnesses here are sequential by design;
+  a per-file sweep needs a duty cycle at the source (sleep a declared multiple of the time the last
+  batch spent working), not a tighter loop with a CPU cap.
+- **Measure, then say it.** A performance claim names process id (or job), measured CPU/RSS before and
+  after, and the instrument. `CANNOT-MEASURE` is an acceptable answer; an unqualified "otimizado" is not.
+
 ## Owner rule — nothing is done until a LIVE Twitch stream proved it (2026-11-08)
 
 **Do not declare done, fixed, working or finished until the change is tested and observed on a real
