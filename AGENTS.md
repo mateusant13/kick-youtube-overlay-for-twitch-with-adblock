@@ -785,3 +785,55 @@ The pod's cost is closed at the hand-back (16.7 s and 5.7 s of deficit seeked fo
 and the hand-back lands with the element unmuted, `it=0`, `vis=twitch`, `audible=1` — sound back with
 no click. `cleanLatSrc` now says `hls` (2.2-2.4 s), so the clean picture sits at the sync target
 instead of the old `lat 9`.
+
+## Wave record — 2026-11-11, one player at a time, black instead of green, no proxy
+
+Owner reports in one session, verbatim: *"aparentemente o player da twitch ta funcionando ao mesmo
+tempo que o da kick. para com isso. e pra funcionar so quando e pra funcionar, porra"* · *"o player
+vem, fica em tempo real, ai o player da twitch volta, e segundos depois o outro player volta de novo,
+segundos atras, e ate o player ta bugado ... e fica a 360p"* · *"ta duplicando audio e depois
+triplicando. quando ta no player da kick"* · *"por que ele troca de player dizendo sem anuncio - 360p
+quando eu to no player da kick que NUNCA tem anuncio?"* · *"quando eu reiniciei a pagina, tinha uma
+tela totalmente verde ... aparentemente o verde era do inicio de um anuncio ... tira esse verde. deixa
+preto"* · *"quando eu clico pra dar seek no player da kick nao e pra ele pausar e despausar. e pra
+continuar rodando"* · *"passar o mouse e fazer hover pra mostrar o player tambem e inconsistente. o ux
+ta uma merda"* · *"tira completamente a opcao de proxy da extensao, e os botoes sobre"*.
+
+1. **The ad path no longer runs while an overlay player owns playback.** `content.js` publishes
+   `data-ko-owner` (`kick`/`youtube`/empty) on `documentElement` from the enforcement tick, derived
+   from `KO.player` alone — NOT from the bar's display, because the bar hides itself when it cannot
+   find a native player to mirror. `twitch-adblock.js` refuses `ad-hold`/`ad-start`
+   (`ad-skip {reason:'overlay-owns'}`, no cover, no claim, no native pause) and tears an existing
+   cover down in the same tick the attribute appears. That whole loop — clean 360p player, native
+   back, layer back seconds behind — was the ad path acting on a surface that carries no SSAI.
+2. **One voice per surface.** `ko-audio.js` wrote the SAME derived state to every `<video>` of a
+   surface; a Twitch page carries more than one (the main player and an ad/preview element, measured
+   `h:360`), so the page surface alone could be audible twice, and three times with the layer. Only
+   the surface's `main()` element may be audible now; every other element is held muted.
+3. **The native is never resumed while a layer owns the picture.** The rect loop used to call
+   `resumeTwitchIfOurs()` whenever the bar was hidden. It now resumes only when the layer has no
+   picture of its own (`overlayHasPicture()` reads the frame's last `st`), so a failed layer still
+   hands the screen back and a healthy one never loses it.
+4. **The hold paints the player's rect black.** Twitch's ad placeholder is green, and the hold froze
+   whatever frame the ad had already painted. `#ko-adfix-cover` is now opaque black over the native's
+   own rect (never the whole viewport, never the rest of the page), bounded by the same hold window.
+   This deliberately overrides the older "a hold never paints" rule: the owner asked for black over
+   green by name on 2026-11-11.
+5. **A seek inside the live window is done in place.** `st.win` (the element's seekable window) is
+   published by the bridge; `kickSeekTo` sends `{t:'seek'}` when the target is inside it
+   (`diag('live_seek')`) instead of reloading the DVR url, which is the reload that stops the
+   picture. A deeper rewind still switches source (the replay url is the only timeline that holds
+   it).
+6. **Hover is deterministic.** The overlay frame swallows the page's pointer events, so the page's own
+   hover listener was blind over the picture; the frame now posts `{t:'ptr'}` (coalesced to 120 ms) and
+   the page arms its bar from it. `#ko-wrap.ko-hot-lock` keeps the bar up while the pointer is on it,
+   so the 2.6 s timer can no longer hide controls under the mouse.
+7. **The proxy feature is gone.** `chrome.proxy` PAC + basic-auth listener, the popup checkbox/host/
+   user/pass/save rows, the `proxy`/`webRequest`/`webRequestAuthProvider` permissions and the
+   `twitch-proxy/` server are deleted. `ko.twitchProxy`/`ko.twitchProxyApplied` are no longer read;
+   the browser proxy is left exactly as the user's own settings have it.
+
+Verification (units): `node _tools/ko-verify.mjs` → `RESULT PASS`; `mute-decision` 26 checks (one-voice
+arm + duplication detector), `ad-time-continuity` 43 checks (two ownership arms + `PRE_FIX_OWNER`
+negative arm), `content-fix-test` `ALL CONTENT.JS FIX CHECKS PASSED` (`KO_VER` re-aligned to the
+manifest, 0.8.72).

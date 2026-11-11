@@ -105,19 +105,6 @@
       <input type="checkbox" id="adblock" title="Reescreve o token e remove linhas de ad dos playlists nativos, sem trocar o player" />
     </div>
     <div class="row">
-      <label for="proxyOn" title="Proxy HTTP em região sem ads; o vídeo continua direto">Proxy HD (sem ads)</label>
-      <input type="checkbox" id="proxyOn" />
-    </div>
-    <div class="map">
-      <input type="text" id="proxyHost" placeholder="proxy host:port" autocomplete="off" spellcheck="false" />
-    </div>
-    <div class="map" style="margin-top:6px">
-      <input type="text" id="proxyUser" placeholder="usuário" autocomplete="off" spellcheck="false" />
-      <input type="password" id="proxyPass" placeholder="senha" autocomplete="new-password" />
-      <button id="proxySave">Salvar</button>
-    </div>
-    <div class="hint" id="proxyHint">Proxy HTTP em região sem ads. Só as playlists passam por ele; o vídeo continua direto e o player nativo não muda.</div>
-    <div class="row">
       <label for="player">Player</label>
       <select id="player">
         <option value="kick">Kick</option>
@@ -136,7 +123,7 @@
     <div class="status" id="status"></div>
     <a id="official" class="official" target="_blank" rel="noopener" style="display:none"></a>
     <button id="del" class="danger" style="display:none">Deletar player Twitch</button>
-    <div class="hint">Player alternado SÓ pelo popup. O player da Twitch continua rodando (mudo) embaixo do overlay — ads passam em silêncio e voltar pra Twitch cai ao vivo. "Deletar player Twitch" remove o player nativo pra conferir que o vídeo visível é o overlay; recarregue a página pra restaurar.</div>
+    <div class="hint">Player alternado SÓ pelo popup. O player da Twitch fica pausado embaixo do overlay — ads passam em silêncio e voltar pra Twitch cai ao vivo. "Deletar player Twitch" remove o player nativo pra conferir que o vídeo visível é o overlay; recarregue a página pra restaurar.</div>
   </div>
   <script src="popup.js"></script>
 </body>

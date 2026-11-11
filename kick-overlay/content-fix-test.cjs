@@ -250,7 +250,7 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
   assert.ok(src.includes("<button id=\"ko-golive\""), 'mount ships the clickable #ko-golive LIVE pill');
   assert.ok(styleEl.textContent.includes('#ko-golive{'), 'LIVE pill has visible styling');
   assert.ok(styleEl.textContent.includes('#ko-bar{position:absolute;left:0;right:0;bottom:0;pointer-events:auto;opacity:1;'), 'control bar defaults visible');
-  assert.ok(styleEl.textContent.includes('#ko-wrap:not(.ko-hot) #ko-bar{opacity:0;pointer-events:none;}'), 'bar auto-hides after inactivity (2.6s hot timer)');
+  assert.ok(styleEl.textContent.includes('#ko-wrap:not(.ko-hot):not(.ko-hot-lock) #ko-bar{opacity:0;pointer-events:none;}'), 'bar auto-hides after inactivity (2.6s hot timer) and stays up while the pointer is on it (ko-hot-lock)');
   assert.ok(!styleEl.textContent.includes('#ko-wrap:not(.ko-hot) #ko-bar{opacity:1;}'), 'stale always-visible bar rule purged');
   assert.ok(styleEl.textContent.includes('#ko-quality-menu{display:none;'), 'quality menu CSS present');
   assert.ok(styleEl.textContent.includes('flex-direction:column;'), 'quality menu is vertical (column)');
@@ -982,7 +982,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   console.log('P3: LIVE pill shows behind live / on DVR, hides at the edge, click jumps to live on both legs — OK');
 
   const styleEl2 = appends.find((e) => e.id === 'ko-style');
-  assert.ok(styleEl2.textContent.includes('#ko-wrap:not(.ko-hot) #ko-bar{opacity:0;pointer-events:none;}'), 'bar auto-hides once the wrap goes cold');
+  assert.ok(styleEl2.textContent.includes('#ko-wrap:not(.ko-hot):not(.ko-hot-lock) #ko-bar{opacity:0;pointer-events:none;}'), 'bar auto-hides once the wrap goes cold (and stays up while the pointer is on it)');
   assert.ok(!styleEl2.textContent.includes('#ko-wrap:not(.ko-hot) #ko-bar{opacity:1;}'), 'stale always-visible bar rule purged');
   // The CSS keys on a class, so the contract only holds if the class cycles:
   // mount starts the wrap hot, and pointer activity re-arms it after it cools.

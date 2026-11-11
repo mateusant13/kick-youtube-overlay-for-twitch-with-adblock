@@ -273,7 +273,7 @@ const NOT_CHANNEL = new Set([
 
 // Build marker for the diag stream — lets us tell which code a tab runs
 // (content scripts of pre-reload tabs survive extension reloads).
-const KO_VER = '0.8.67';
+const KO_VER = '0.8.75';
 // ONE canonical yt state object: every reset site (boot, teardown, the
 // frame-death watchdog) must agree, or a drained/live flag survives a rebuild.
 function freshYtState() {
@@ -310,6 +310,7 @@ const KO = {
   ytProbeAt: 0,     // epoch ms the probe loop last confirmed the yt source alive/minting
   ytNoEvidence: 0,  // consecutive probe cycles that learned nothing (no live, no failure, no fresh embed)
   kickEverPlayed: false, // current url reached Playing at least once (re-buffers ≠ dead url)
+  kickMintSig: '', // last kick probe outcome recorded (the mint is silent otherwise)
   kickDvrUrl: null, // replay source (sources.dvr) from the playback bootstrap
   kickOnDvr: false, // frame is playing the DVR url (replay mode)
   // Published replay edge learned from a previous replay: a live VOD grows ~1
@@ -628,9 +629,24 @@ async function kickPlaybackUrl(slug) {
   for (const url of probes) {
     try {
       const r = await fetch(url, { credentials: 'omit' });
-      if (!r.ok) continue;
+      // The mint is the one place the kick layer can die silently, and it did
+      // (2026-11-11: the frame sat at state Ready with a media element of
+      // readyState 0). Record what the API actually answered, once per outcome.
+      const api = url.replace('https://kick.com/api/', '');
+      if (!r.ok) {
+        if (KO.kickMintSig !== `${api}|${r.status}`) {
+          KO.kickMintSig = `${api}|${r.status}`;
+          diag('kick_probe', { api, status: r.status });
+        }
+        continue;
+      }
       const d = await r.json();
       const ls = d && d.livestream;
+      const shape = ls ? (ls.playback_url ? 'ls.url' : (d.playback_url ? 'top.url' : 'no.url')) : 'no.ls';
+      if (KO.kickMintSig !== `${api}|${shape}`) {
+        KO.kickMintSig = `${api}|${shape}`;
+        diag('kick_probe', { api, status: r.status, shape, live: !!ls });
+      }
       if (ls) {
         if (ls.playback_url) return { live: true, url: ls.playback_url, streamId: ls.id || null };
         if (d && d.playback_url) return { live: true, url: d.playback_url, streamId: ls.id || null };
@@ -1140,6 +1156,11 @@ window.addEventListener('message', (ev) => {
         if (window.KOAudio) window.KOAudio.apply();
       }
     }
+  } else if (m.t === 'ptr') {
+    // Pointer activity INSIDE the overlay player (the frame swallows the page's
+    // own pointer events). Arming here is what makes the bar appear when the
+    // mouse moves over the picture, every time, not just before the first hide.
+    if (KO._hotArm) KO._hotArm();
   } else if (m.t === 'st') {
     // Carry a wall-clock freshness stamp ON the state object so the kick
     // LIVE pill (P3b) has a production-honest clock — 0.8.5 kept a stale
@@ -1303,6 +1324,18 @@ function kickSeekTo(target) {
     kickBackToLive();
     return;
   }
+  // Inside the LIVE element's own rewind window the seek is done in place: no
+  // source reload, no stopped picture. Reloading the DVR url is only for a
+  // target the live window cannot reach, and that path is the only one that can
+  // cost a visible stop ("quando eu clico pra dar seek no player da kick nao e
+  // pra ele pausar e despausar. e pra continuar rodando", owner 2026-11-11).
+  const win = Number(st.win) || 0;
+  if (!KO.kickOnDvr && win > 4 && edge - t <= win - 2) {
+    kickSend({ t: 'seek', s: t });
+    diag('live_seek', { target: Math.round(t), behind: Math.round(edge - t), win: Math.round(win) });
+    updateKickBar();
+    return;
+  }
   kickStartDvr(t);
 }
 
@@ -1435,6 +1468,40 @@ function audioBoot() {
   return true;
 }
 
+// WHO OWNS PLAYBACK, published for the MAIN-world ad path. The ad path exists to
+// cover the NATIVE player; when the kick/yt layer owns the picture, the native
+// player is paused by us and has no ad to hide, so a pod there is pure damage:
+// the owner's "por que ele troca de player dizendo sem anuncio - 360p quando eu
+// to no player da kick que NUNCA tem anuncio?" (2026-11-11), on a surface that
+// never carries SSAI at all.
+function syncOwner() {
+  // Deliberately NOT tied to the bar's display: the bar hides itself when it
+  // cannot find a native player to mirror, and the owner's report is a loop of
+  // the native coming back and the layer returning seconds behind
+  // ("o player vem, fica em tempo real, ai o player da twitch volta, e segundos
+  // depois o outro player volta de novo, segundos atras ... e fica a 360p",
+  // 2026-11-11). While an overlay player is SELECTED it is the picture, whether
+  // or not its bar happens to be painted.
+  const overlay = KO.player !== 'twitch' && !!KO.wrap;
+  const want = overlay ? KO.player : '';
+  if (KO.ownerAttr === want) return;
+  KO.ownerAttr = want;
+  try { document.documentElement.setAttribute('data-ko-owner', want); } catch { /* teardown */ }
+}
+
+// Does the selected overlay layer actually have a picture of its own right now?
+// The last frame report is the only evidence: a layer whose state says paused /
+// ended has nothing to show, and leaving the native paused would be a dead
+// screen; a layer that is playing owns the screen even while its bar is hidden.
+function overlayHasPicture() {
+  const st = KO.player === 'twitch' ? null : KO.kickState;
+  if (!st) return false;
+  if (KO.player === 'youtube' && !KO.kickState) return false;
+  const state = String(st.state || '');
+  if (state) return /playing|buffering|loading/i.test(state) && !/ended|idle|failed/i.test(state);
+  return st.paused === false;
+}
+
 // Which surface is being LISTENED to — one answer, from the same predicate that
 // decides which layer is on screen.
 function visibleSurface() {
@@ -1447,8 +1514,11 @@ function visibleSurface() {
 // The 400 ms enforcement tick: PLAYBACK ownership only. Audio follows from
 // declaring which surface is visible; there is no mute write here any more.
 function syncMute() {
-  const overlaySelected = KO.player !== 'twitch' && !!KO.wrap
-    && (KO.wrap.style.display !== 'none' || KO.twDeleted);
+  // Ownership of PLAYBACK, not of the bar: while an overlay player is selected
+  // the native must never be the picture and never make a sound, whether or not
+  // the bar is currently painted ("o player da twitch ta funcionando ao mesmo
+  // tempo que o da kick. para com isso", owner 2026-11-11).
+  const overlaySelected = KO.player !== 'twitch' && !!KO.wrap;
   if (overlaySelected) {
     for (const v of document.querySelectorAll('video')) {
       if (v.paused) continue;
@@ -1457,6 +1527,7 @@ function syncMute() {
       KO.twPaused.add(v); // ownership: only an element we paused is ours to resume
     }
   }
+  syncOwner();
   if (!window.KOAudio) return;
   window.KOAudio.setVisible(visibleSurface());
   // CONVERGENCE. `setVisible()` no-ops when nothing changed, and the arbiter
@@ -1465,14 +1536,22 @@ function syncMute() {
   // is the owner's "o player diz que nao ta mutado, mas ta mutado" (2026-11-11).
   // Re-assert the derived state, never a hand-written mute, and log the moment
   // it was needed so the next pod says whether anything still diverges.
+  // EVERY page video, not only the main one: Twitch keeps extra elements
+  // (ad/preview/PBP) and they are created after the last apply, so one can sit
+  // `muted:false` while the overlay owns the screen (measured in the owner's
+  // Chrome, 0.8.73: `{muted:false, paused:true, h:0}` with owner=kick). The
+  // derived state is the whole surface's, so one apply() settles all of them.
   try {
-    const v = twitchVideo();
-    if (v && v.isConnected && !window.KOAudio.isOwnWrite(v, v.muted, v.volume)) {
-      const want = window.KOAudio.wanted(visibleSurface());
-      if (!!v.muted !== !!want.muted) {
-        window.KOAudio.apply();
-        diag('audio-reassert', { want: !!want.muted, el: !!v.muted, vis: visibleSurface() });
-      }
+    const want = window.KOAudio.wanted(visibleSurface());
+    let drifted = false;
+    for (const v of document.querySelectorAll('video')) {
+      if (!v || !v.isConnected) continue;
+      if (window.KOAudio.isOwnWrite(v, v.muted, v.volume)) continue;
+      if (!!v.muted !== !!want.muted) { drifted = true; break; }
+    }
+    if (drifted) {
+      window.KOAudio.apply();
+      diag('audio-reassert', { want: !!want.muted, vis: visibleSurface() });
     }
   } catch {
     /* a detached element mid-swap */
@@ -1666,7 +1745,9 @@ function setupHotBar(wrap) {
     KO.hotWrap.classList.add('ko-hot');
     clearTimeout(KO.hotTimer);
     KO.hotTimer = setTimeout(() => {
-      if (KO.hotWrap) KO.hotWrap.classList.remove('ko-hot');
+      if (!KO.hotWrap) return;
+      if (KO.hotWrap.classList.contains('ko-hot-lock')) return; // the mouse is still ON the bar
+      KO.hotWrap.classList.remove('ko-hot');
     }, 2600);
   };
   KO._hotArm = armHot;
@@ -1681,6 +1762,20 @@ function setupHotBar(wrap) {
   wrap.addEventListener('pointermove', armHot);
   wrap.addEventListener('pointerdown', armHot);
   wrap.addEventListener('mouseenter', armHot);
+  // While the pointer sits ON the bar it stays up; a timer must never hide the
+  // controls under a mouse that is still there (the other half of "o ux ta uma
+  // merda" on 2026-11-11).
+  wrap.addEventListener('pointerenter', () => {
+    clearTimeout(KO.hotTimer);
+    KO.hotTimer = null;
+    if (!KO.hotWrap) return;
+    KO.hotWrap.classList.add('ko-hot');
+    KO.hotWrap.classList.add('ko-hot-lock');
+  });
+  wrap.addEventListener('pointerleave', () => {
+    if (KO.hotWrap) KO.hotWrap.classList.remove('ko-hot-lock');
+    armHot();
+  });
   document.addEventListener('pointermove', KO._hotArmDoc, true);
   document.addEventListener('pointerdown', KO._hotArmDoc, true);
   armHot();
@@ -2955,9 +3050,16 @@ function rectTick() {
         fire(probe); // recreate now instead of waiting for the 20s poll
       }
     } else if (overlaySelected) {
+      // The overlay player is selected but its bar is not painted. Hand the
+      // picture back ONLY when the layer has no picture of its own (a failed or
+      // offline layer must not leave the user staring at a frozen surface), never
+      // because the native element blinked out: resuming every time the bar
+      // hides is the exact loop the owner reported - "o player vem, fica em
+      // tempo real, ai o player da twitch volta, e segundos depois o outro
+      // player volta de novo, segundos atras ... e fica a 360p" (2026-11-11).
       enforceOverlayRendering(false);
       syncMute();
-      if (!KO.twDeleted && KO.wrap.style.display === 'none') resumeTwitchIfOurs();
+      if (!KO.twDeleted && !overlayHasPicture()) resumeTwitchIfOurs();
     } else {
       enforceOverlayRendering(false);
       resumeTwitchIfOurs();
@@ -2990,7 +3092,7 @@ function injectStyles() {
     'display:flex;flex-direction:row;align-items:center;justify-content:space-between;padding:22px 10px 6px;color:#fff;' +
     'background:linear-gradient(0deg,rgba(0,0,0,.8),rgba(0,0,0,0));' +
     'font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}' +
-    '#ko-wrap:not(.ko-hot) #ko-bar{opacity:0;pointer-events:none;}' +
+    '#ko-wrap:not(.ko-hot):not(.ko-hot-lock) #ko-bar{opacity:0;pointer-events:none;}' +
     '#ko-wrap.ko-yt #ko-bar{display:flex;}' +
     '#ko-reconnecting{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;' +
     'background:rgba(0,0,0,.82);color:#fff;font:700 15px system-ui,sans-serif;letter-spacing:.04em;pointer-events:none;}' +

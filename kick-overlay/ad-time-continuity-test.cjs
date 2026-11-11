@@ -34,6 +34,14 @@ const { makeWorld, makePage, settle, healthySt } = require('./mute-decision-test
 const SOURCE = fs.readFileSync(path.join(__dirname, 'twitch-adblock.js'), 'utf8').replace(/\r\n/g, '\n');
 
 // ---- pre-fix mutations (the shipped 0.8.43 behaviour) ----------------------
+// 0. The ad path had no idea who owned playback: it covered the native (and
+//    over the kick layer) on every pod, which is the "player da twitch volta,
+//    e segundos depois o outro player volta de novo, segundos atras ... 360p"
+//    loop the owner reported on 2026-11-11.
+const PRE_FIX_OWNER = [[
+  "    if (overlayOwnsPlayback()) {\n      if (overlay.adActive || overlay.standby || overlay.frame) stopAdOverlay('overlay-owns');\n      return;\n    }",
+  '',
+]];
 // 1. catch-up only inside an ACTIVE ad and only above 20s.
 const PRE_FIX_CATCHUP = [[
   "if ((overlay.adActive || overlay.standby) && typeof m.st.lat === 'number') catchUpClean(m.st);",
@@ -694,6 +702,18 @@ async function main() {
 
   // ---- negative arms: the pre-fix code must fail every detector -----------
   const negatives = [
+    ['overlay playback ownership', PRE_FIX_OWNER, async () => {
+      const page = makePage(mutate(PRE_FIX_OWNER));
+      page.docEl.setAttribute('data-ko-owner', 'kick');
+      setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+      page.bypass({ type: 'ad-hold' });
+      page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+      await settle(30);
+      return {
+        caught: !!page.frame || page.logsOf('ad-skip').length === 0,
+        detail: `frame=${!!page.frame} skips=${page.logsOf('ad-skip').length}`,
+      };
+    }],
     ['catch-up scope/threshold', PRE_FIX_CATCHUP, async () => {
       const page = makePage(mutate(PRE_FIX_CATCHUP));
       setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
@@ -826,6 +846,40 @@ async function main() {
     const { caught, detail } = await run();
     check(`negative arm (${label}): the pre-fix behaviour is caught`, () => {
       assert(caught, `the detector accepted the pre-fix behaviour (${detail}) — it measures nothing`);
+    });
+  }
+
+  // ---- the overlay player owns the picture: the ad path must stay out ------
+  // Owner 2026-11-11: "por que ele troca de player dizendo sem anuncio - 360p
+  // quando eu to no player da kick que NUNCA tem anuncio?" and, right after,
+  // "o player vem, fica em tempo real, ai o player da twitch volta, e segundos
+  // depois o outro player volta de novo, segundos atras ... e fica a 360p".
+  {
+    const page = makePage(SOURCE);
+    page.docEl.setAttribute('data-ko-owner', 'kick');
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    page.bypass({ type: 'ad-hold' });
+    page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+    await settle(30);
+    check('a pod while the overlay player owns playback starts nothing', () => {
+      assert(!page.frame, 'the ad path built a clean player on top of the kick layer');
+      assert(page.logsOf('ad-skip').length === 1, `ad-skip was logged ${page.logsOf('ad-skip').length} time(s)`);
+      assert(page.logsOf('overlay-reveal').length === 0, 'the ad path revealed its own picture');
+      assert(page.video.muted === false, 'the ad path muted the native while the overlay was playing');
+    });
+  }
+
+  // Mid-pod switch: the owner attribute appears while the cover is up -> gone.
+  {
+    const page = makePage(SOURCE);
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    await pod(page);
+    const before = !!(page.frame && !page.frame.removed);
+    page.docEl.setAttribute('data-ko-owner', 'kick');
+    await settle(30);
+    check('switching to the overlay player mid-pod releases the cover in the same tick', () => {
+      assert(before, 'precondition: the pod never built its player');
+      assert(!page.frame || page.frame.removed, 'the clean player outlived the owner switch');
     });
   }
 

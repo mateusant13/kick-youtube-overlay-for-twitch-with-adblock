@@ -184,17 +184,36 @@
         continue;
       }
       // Element surface: per-element diff, per-element attribution.
+      //
+      // ONE VOICE PER SURFACE. A Twitch page carries more than one <video>
+      // (the main player, an ad clip element, a hidden preview/PBP), and the old
+      // loop wrote the SAME unmute to every one of them - the owner hears the
+      // stream twice and then three times ("ta duplicando audio e depois
+      // triplicando", 2026-11-11; his own ko.adlog has
+      // `audio-state {audible:2, playing:2}`). Only the surface's MAIN element
+      // may be audible; every other element of that surface is held muted, and
+      // keeps the surface's volume so a promoted element is not silent.
       let els;
       try {
         els = w.elements ? w.elements() : [];
       } catch {
         els = [];
       }
+      let main = null;
+      if (typeof w.main === 'function') {
+        try {
+          main = w.main();
+        } catch {
+          main = null;
+        }
+      }
       for (const el of els) {
         if (!el || !el.isConnected) continue;
+        const isMain = !main || el === main;
+        const muted = isMain ? target.muted : true;
         try {
-          if (!!el.muted !== target.muted) {
-            el.muted = target.muted;
+          if (!!el.muted !== muted) {
+            el.muted = muted;
             markWrite(el);
           }
           if (isNum(el.volume) && Math.abs(Number(el.volume) - target.volume) > VOL_EPS) {

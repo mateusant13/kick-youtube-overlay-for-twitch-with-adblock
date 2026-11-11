@@ -603,8 +603,24 @@
   // The authority republishes the attributes on every change; a fresh frame
   // must also be told, so the observer drives both.
   try {
-    const mo = new MutationObserver(() => applyOverlayAudio());
-    mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-ko-audio-m', 'data-ko-audio-v'] });
+    const mo = new MutationObserver((records) => {
+      let ownerChanged = false;
+      for (const r of records || []) {
+        if (r && r.attributeName === 'data-ko-owner') ownerChanged = true;
+      }
+      if (ownerChanged && overlayOwnsPlayback()) {
+        // The user switched to the overlay player (or the page booted in that
+        // mode and the attribute arrived after the first standby): EVERYTHING
+        // this path owns leaves in the same tick - the cover, the claim, and the
+        // standby player, which measured `paused:false, h:360` while the kick
+        // layer owned the page (2026-11-11, the "fica a 360p" half of the owner's
+        // report). A standby is a whole second player: it is not free.
+        if (overlay.adActive || overlay.standby || overlay.frame) stopAdOverlay('overlay-owns');
+        return;
+      }
+      applyOverlayAudio();
+    });
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-ko-audio-m', 'data-ko-audio-v', 'data-ko-owner'] });
     overlay.audioObserver = mo;
   } catch {
     /* document may be unavailable very early */
@@ -617,11 +633,46 @@
   // early return below (video smaller than 40px, or a player that went away)
   // left it painted forever. Enforced on the 500 ms tick, so no exit path can
   // leave it on screen.
+  // The hold is where an ad's first frames reach the screen, and Twitch paints
+  // an undecoded/placeholder ad frame GREEN (owner 2026-11-11: "quando eu
+  // reiniciei a pagina, tinha uma tela totalmente verde ... aparentemente o verde
+  // era do inicio de um anuncio ... tira esse verde. deixa preto"). So the hold
+  // paints the player's own rect BLACK - never the whole viewport, never over the
+  // rest of the page - and the notice rides inside it.
+  function sizeCover(c) {
+    const v = overlay.video && overlay.video.isConnected ? overlay.video : mainVideo();
+    let r = null;
+    try { r = v && v.getBoundingClientRect(); } catch { r = null; }
+    if (!r || r.width < 40 || r.height < 40) {
+      // No native rect to cover: stay a small centred notice. A full-viewport
+      // opaque rectangle is the black screen the owner photographed on
+      // 2026-11-07/08, so the no-rect case never takes the screen.
+      c.style.left = '50%';
+      c.style.top = '50%';
+      c.style.width = 'auto';
+      c.style.height = 'auto';
+      c.style.transform = 'translate(-50%,-50%)';
+      c.style.padding = '8px 14px';
+      c.style.borderRadius = '8px';
+      c.style.background = 'rgba(0,0,0,.72)';
+      return;
+    }
+    c.style.transform = 'none';
+    c.style.padding = '0';
+    c.style.borderRadius = '0';
+    c.style.background = '#000';
+    c.style.left = `${Math.round(r.left)}px`;
+    c.style.top = `${Math.round(r.top)}px`;
+    c.style.width = `${Math.round(r.width)}px`;
+    c.style.height = `${Math.round(r.height)}px`;
+  }
+
   function syncCover() {
     const c = overlay.cover;
     if (!c || c.isConnected === false) return; // a detached node cannot paint
     const show = !!(overlay.coldCover && !overlay.revealed && overlay.adActive);
     const shown = c.style.display !== 'none';
+    if (show) sizeCover(c);
     if (show === shown) return;
     c.style.display = show ? 'flex' : 'none';
   }
@@ -1380,9 +1431,27 @@
     }
   }
 
+  // The overlay player (kick/yt) OWNS playback while it is selected: the native
+  // Twitch player is paused by the content script, so there is no ad on screen
+  // to cover and nothing to swap. A pod in that mode is damage, not protection
+  // (owner 2026-11-11: "por que ele troca de player dizendo sem anuncio - 360p
+  // quando eu to no player da kick que NUNCA tem anuncio?"). The attribute is
+  // published by content.js on its enforcement tick.
+  function overlayOwnsPlayback() {
+    try {
+      return String(document.documentElement.getAttribute('data-ko-owner') || '') !== '';
+    } catch {
+      return false;
+    }
+  }
+
   function startAdOverlay(url, channel, switchSource = false, standby = false) {
     if (!AD_OVERLAY_ENABLED) return;
     if (!url) return;
+    if (overlayOwnsPlayback()) {
+      if (overlay.adActive || overlay.standby || overlay.frame) stopAdOverlay('overlay-owns');
+      return;
+    }
     const prevAudioSent = overlay.audioSent;
     // A stall timer belongs to the previous frame/source. Starting a new
     // overlay/switch invalidates it; the new frame gets its own.
@@ -1620,9 +1689,8 @@
     cover.textContent = 'sem anúncio · carregando a live…';
     cover.style.cssText =
       'position:fixed;z-index:2147483648;pointer-events:none;display:none;' +
-      'left:50%;top:50%;transform:translate(-50%,-50%);padding:8px 14px;border-radius:8px;' +
-      'background:rgba(0,0,0,.72);color:#c8c8c8;font:14px/1.4 system-ui,sans-serif;' +
-      'align-items:center;justify-content:center;text-align:center;';
+      'left:0;top:0;width:100vw;height:100vh;background:#000;color:#c8c8c8;' +
+      'font:14px/1.4 system-ui,sans-serif;align-items:center;justify-content:center;text-align:center;';
     try { document.body.appendChild(cover); } catch { /* ignore */ }
     overlay.cover = cover;
     // A throttled tab comes back with stale state. Pull one sample on the
@@ -1968,6 +2036,13 @@
       }
       if (msg.type === 'ad-hold') {
         if (!AD_OVERLAY_ENABLED) return;
+        if (overlayOwnsPlayback()) {
+          // No cover, no claim, no native pause: the overlay player is what the
+          // user is watching and it never carries this ad.
+          adLog('ad-skip', { reason: 'overlay-owns', owner: String(document.documentElement.getAttribute('data-ko-owner') || '') });
+          if (overlay.adActive) stopAdOverlay('overlay-owns');
+          return;
+        }
         // SPA channel switch: never reveal the previous channel's hidden
         // player. Drop it and fall through to the normal cold-start path.
         if (overlay.standby) {

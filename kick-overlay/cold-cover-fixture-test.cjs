@@ -301,24 +301,30 @@ async function main() {
   //   (1) the paint is DERIVED from state by syncCover(), never set by a flag;
   //   (2) one node per id, so a rebuild cannot orphan a painted panel.
   const syncCoverSource = (() => {
-    const at = SOURCE.indexOf('function syncCover()');
-    if (at < 0) throw new Error('syncCover() is missing from the shipped source');
-    let depth = 0;
-    for (let i = SOURCE.indexOf('{', at); i < SOURCE.length; i++) {
-      if (SOURCE[i] === '{') depth++;
-      else if (SOURCE[i] === '}') {
-        depth--;
-        if (depth === 0) return SOURCE.slice(at, i + 1);
+    const grab = (name) => {
+      const at = SOURCE.indexOf(`function ${name}(`);
+      if (at < 0) throw new Error(`${name}() is missing from the shipped source`);
+      let depth = 0;
+      for (let i = SOURCE.indexOf('{', at); i < SOURCE.length; i++) {
+        if (SOURCE[i] === '{') depth++;
+        else if (SOURCE[i] === '}') {
+          depth--;
+          if (depth === 0) return SOURCE.slice(at, i + 1);
+        }
       }
-    }
-    throw new Error('unbalanced syncCover()');
+      throw new Error(`unbalanced ${name}()`);
+    };
+    // The shipped pair: the sizing helper and the state-driven painter.
+    return [grab('sizeCover'), grab('syncCover')].join('\n');
   })();
   check('the panel paint follows state (shipped syncCover, driven directly)', () => {
     const run = (state) => {
       const cover = { isConnected: true, style: { display: 'flex' } };
-      const overlay = Object.assign({ cover }, state);
+      const overlay = Object.assign({ cover, video: null }, state);
       // eslint-disable-next-line no-new-func
-      new Function('overlay', `${syncCoverSource}; syncCover();`)(overlay);
+      const mainVideo = () => null;
+      // eslint-disable-next-line no-new-func
+      new Function('overlay', 'mainVideo', `${syncCoverSource}; syncCover();`)(overlay, mainVideo);
       return cover.style.display;
     };
     assert(run({ coldCover: true, revealed: false, adActive: true }) === 'flex', 'a live hold must paint');
@@ -327,7 +333,7 @@ async function main() {
     assert(run({ coldCover: true, revealed: false, adActive: false }) === 'none', 'a pod that ended must un-paint');
     const hidden = { isConnected: true, style: { display: 'none' } };
     // eslint-disable-next-line no-new-func
-    new Function('overlay', `${syncCoverSource}; syncCover();`)({ cover: hidden, coldCover: true, revealed: false, adActive: true });
+    new Function('overlay', 'mainVideo', `${syncCoverSource}; syncCover();`)({ cover: hidden, video: null, coldCover: true, revealed: false, adActive: true }, () => null);
     assert(hidden.style.display === 'flex', 'and it re-paints a fresh hold');
   });
   check('the paint is enforced on the position tick, and the panel is deduped', () => {
@@ -372,11 +378,15 @@ async function main() {
     assert(green.pausedAtHold === true, 'the native was not paused on the hold tick — the ad keeps playing under the notice');
     assert(green.frameOpacityAtHold !== '1', `frame was raised to opacity ${green.frameOpacityAtHold} before the source played — that is the second half of the black screen`);
   });
-  check('GREEN: the notice is a panel, not a full-screen rectangle', () => {
+  check('GREEN: the hold paints black over the player, never a full-viewport rectangle', () => {
     assert(green.coverAtHold === 'flex', `cover panel display=${green.coverAtHold}`);
     assert(/carregando/.test(String(green.coverText)), `cover says: ${green.coverText}`);
-    assert(!/inset:\s*0/.test(green.coverCss), `the panel is painted full-screen: ${green.coverCss}`);
-    assert(/translate\(-50%,\s*-50%\)/.test(green.coverCss), `the panel is not a centred box: ${green.coverCss}`);
+    // Owner order 2026-11-11: the ad's first frames reach the screen GREEN, so
+    // the hold paints them black - but only the player's own rect. `inset:0`
+    // (the whole viewport) is still the defect this arm exists for.
+    assert(!/inset:\s*0/.test(green.coverCss), `the cover is painted full-viewport (inset:0): ${green.coverCss}`);
+    assert(/background:\s*#000/.test(green.coverCss) || /background-color:\s*#000/.test(green.coverCss),
+      `the cover is not opaque black, so an ad's green frame shows through: ${green.coverCss}`);
   });
   check('GREEN: overlay-reveal lands inside the cold-cover window and swaps the surfaces', () => {
     assert(green.revealEvents.length >= 1, `no overlay-reveal; adlog=${JSON.stringify(green.events.map((e) => e.ev))}`);

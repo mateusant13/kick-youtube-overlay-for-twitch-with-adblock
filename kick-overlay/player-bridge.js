@@ -416,6 +416,14 @@ if (HLS_MODE) {
       lat,
       latSrc,
       dur,
+      win: (() => {
+        try {
+          if (!V.seekable || !V.seekable.length) return 0;
+          const ws = V.seekable.start(0);
+          const we = V.seekable.end(V.seekable.length - 1);
+          return isFinite(ws) && isFinite(we) && we > ws && we < 1e15 ? we - ws : 0;
+        } catch { return 0; }
+      })(),
       q,
       qcount: qualities.length,
       qualities,
@@ -560,6 +568,22 @@ if (HLS_MODE) {
     try { V.addEventListener(ev, sendStSoon); } catch { /* not ready */ }
   }
   setInterval(sendSt, 1000);
+  // The frame covers the whole player, so a pointer over the picture never
+  // reaches the page: the page's own hover listener is blind exactly where the
+  // user moves the mouse ("passar o mouse e fazer hover pra mostrar o player
+  // tambem e inconsistente", owner 2026-11-11). Report pointer activity upward,
+  // coalesced, and let the page arm its bar from it.
+  let ptrAt = 0;
+  const ptrTick = () => {
+    const now = Date.now();
+    if (now - ptrAt < 120) return;
+    ptrAt = now;
+    post({ t: 'ptr' });
+  };
+  try {
+    for (const ev of ['pointermove', 'pointerdown']) document.addEventListener(ev, ptrTick, { capture: true, passive: true });
+    document.addEventListener('pointerleave', () => { ptrAt = 0; }, { passive: true });
+  } catch { /* a document without pointer events */ }
   // Report the first real frame immediately. The 1/s `st` heartbeat can lag
   // up to a second; the content script uses this to swap surfaces exactly when
   // the clean player can paint, not on a fixed timeout.
@@ -655,6 +679,18 @@ function sendSt() {
   }
   if (!isFinite(lat)) lat = 0;
   if (!isFinite(dur) || dur < 0 || dur >= 1e15) dur = 0;
+  // The live element's own rewind window (seconds). A back-seek INSIDE it can be
+  // done in place, without reloading the source — reloading is what makes the
+  // picture stop while a seek is "applied" ("nao e pra ele pausar e despausar",
+  // owner 2026-11-11).
+  let win = 0;
+  try {
+    if (V.seekable && V.seekable.length) {
+      const ws = V.seekable.start(0);
+      const we = V.seekable.end(V.seekable.length - 1);
+      if (isFinite(ws) && isFinite(we) && we > ws && we < 1e15) win = we - ws;
+    }
+  } catch { /* not ready */ }
   // Retry a pending rewind seek every poll until it lands, capped — IVS
   // drops a seekTo issued before the loaded media is seekable (first
   // Playing can fire with an empty seekable range), but a target that
@@ -688,6 +724,7 @@ function sendSt() {
       pos,
       lat,
       dur,
+      win,
       q,
       qcount: qualities.length,
       qualities,

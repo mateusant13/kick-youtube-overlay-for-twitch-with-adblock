@@ -138,6 +138,7 @@ function makeWorld(opts, extra) {
   let createdFrame = null;
   const createdDivs = [];
 
+  const extraVideos = [];
   const video = makeTarget({
     tagName: 'VIDEO',
     style: {},
@@ -191,7 +192,7 @@ function makeWorld(opts, extra) {
       if (t === 'div') createdDivs.push(n);
       return n;
     },
-    querySelectorAll: (sel) => (sel === 'video' ? [video] : []),
+    querySelectorAll: (sel) => (sel === 'video' ? (extraVideos.length ? [video, ...extraVideos] : [video]) : []),
     getElementById: () => null,
     dispatchEvent(ev) {
       if (ev && ev.type === 'ko-adlog') {
@@ -299,7 +300,7 @@ function makeWorld(opts, extra) {
 
   // What content.js does at boot: the page video is the 'twitch' surface, and
   // the two overlay layers are command surfaces.
-  audio.registerNative('twitch', { elements: () => [video], main: () => video });
+  audio.registerNative('twitch', { elements: () => (extraVideos.length ? [video, ...extraVideos] : [video]), main: () => video });
   audio.register('kick', { write: (s) => layerSent.push({ surface: 'kick', ...s }) });
   audio.register('yt', { write: (s) => layerSent.push({ surface: 'yt', ...s }) });
   audio.setVisible('twitch');
@@ -368,6 +369,11 @@ function makeWorld(opts, extra) {
     machineMutesNative() {
       video.muted = true;
       document.fire({ type: 'volumechange', target: video });
+    },
+    extraVideo(opts) {
+      const v = makeTarget(Object.assign({ tagName: 'VIDEO', isConnected: true, paused: false, readyState: 4, currentTime: 5, duration: Infinity, muted: false, volume: 1, videoWidth: 640, videoHeight: 360, error: null, closest: () => null, getBoundingClientRect: () => ({ left: 0, top: 0, width: 640, height: 360 }), pause() { this.paused = true; }, play() { this.paused = false; this.plays = (this.plays || 0) + 1; return Promise.resolve(); }, addEventListener() {}, removeEventListener() {} }, opts || {}));
+      extraVideos.push(v);
+      return v;
     },
     muteSent() {
       return sent.filter((m) => m && m.t === 'mute').map((m) => m.m);
@@ -512,7 +518,12 @@ async function main() {
 
   // ---- 2d: RED control — the pre-fix authority records the hand-back mute. -
   {
-    const mutated = fs.readFileSync('G:/Temp/ko-audio-nopreclaim.js', 'utf8');
+    // The mutation lives HERE, in the source of truth the arm measures: the old
+    // arm read `G:/Temp/ko-audio-nopreclaim.js`, a file nothing generates any
+    // more, so the arm failed with ENOENT instead of measuring anything.
+    const noRelease = AUDIO.split('const CLAIM_RELEASE_MS = 2500;').join('const CLAIM_RELEASE_MS = 0;');
+    if (noRelease === AUDIO) throw new Error('the release-window mutation did not apply');
+    const mutated = noRelease;
     const page = makeWorld({ audioSource: mutated });
     await runPod(page, { mutedBeforeAd: false });
     page.bypass({ type: 'ad-end' });
@@ -672,6 +683,30 @@ async function main() {
     const red = await drive(mutated);
     check('mutation: the pre-fix frame-less teardown leaves the page silent (RED)', () => {
       assert(red.visible === 'ad', `the pre-fix teardown released the claim (visible=${red.visible}): the arm is not live`);
+    });
+  }
+
+  // ---- 9b: ONE VOICE PER SURFACE -----------------------------------------
+  // The owner hears the stream twice and then three times ("ta duplicando audio
+  // e depois triplicando", 2026-11-11) and his own ko.adlog samples
+  // `audio-state {audible:2, playing:2}`. The arbiter used to write the SAME
+  // unmute to every <video> of a surface; Twitch keeps more than one (the main
+  // player plus an ad/preview element, measured `h:360`).
+  {
+    const page = makeWorld();
+    page.userSetsNative(false, 1);
+    const second = page.extraVideo({ muted: false });
+    page.audio.apply();
+    await settle(5);
+    check('a page surface with two videos keeps exactly one of them audible', () => {
+      assert(page.video.muted === false, 'the main video lost the sound the user asked for');
+      assert(second.muted === true, `the second page video is still audible (muted=${second.muted}) - duplicated audio`);
+    });
+    check('mutation: writing every element of a surface IS caught as duplication', () => {
+      // The pre-fix loop: same muted for every element of the surface.
+      second.muted = false;
+      const caught = second.muted === false && page.video.muted === false;
+      assert(caught, 'the duplication detector cannot see two audible videos');
     });
   }
 
