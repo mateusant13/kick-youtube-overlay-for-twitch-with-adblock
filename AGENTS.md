@@ -188,6 +188,23 @@ segment after the url is handed over, which no scheduling on our side removes â€
 open is bounded by the decoder, and any claim of a sub-second swap would need a different source, not
 another timer.
 
+### The green screen: attempted, not reproduced (2026-11-11)
+
+Owner report: *"quando eu reiniciei a pagina, tinha uma tela totalmente verde ... aparentemente o verde
+era do inicio de um anuncio ... tira esse verde. deixa preto"*. What is proven: nothing in our CSS can
+paint green â€” `#ko-wrap` and the ad frame are both `background:#000`, the frame's own `html, body, #v`
+are `#000`, and the hold cover paints the player's rect `#000` (`cold-cover-fixture`, 18 checks, with
+the RED mutation that re-inserts a viewport-sized panel). So a green screen is decoded pixels, from a
+surface we do not own.
+
+Reproduction attempt, measured, not asserted: the guest on the live `twitch.tv/titiltei` reloaded FOUR
+times with `player=kick` at 0.8.77 and a screenshot at 400 / 1200 / 2500 ms after each reload; every
+frame stays in the page's own palette (`green-dominant pixels <= 1.5%`, black 13-19%, mean RGB 38-57).
+Zero green screens. The report therefore needs the occurrence itself: with the tab in front, run
+`node _tools/ko-adlog-window.mjs 9222 60` and take a screenshot the moment it is green; the rows that
+matter are `vis-audio` (which surface is audible/visible), `ad-start`/`ad-net`, and the `kick-st`
+sample immediately before it.
+
 ## Project notes
 
 - The extension is in `kick-overlay/`.
