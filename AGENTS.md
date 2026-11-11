@@ -137,6 +137,22 @@ own origins get their origin echoed. The frame's IVS wasm worker is a CORS-check
 inspected from outside. Any earlier "the layer never mounts" reading came from a guest whose profile
 still served an older build: `--fresh` (or `stop`+`start`) is required, a page reload is not.
 
+**Shipped: 0.8.76** (`KO_VER` and `manifest.json` agree), installed copy redeployed
+(`deploy.mjs reload` -> `loaded=0.8.76 staged=0.8.76 changed-since-last-load=no`), gate
+`RESULT PASS checks=20 failed=0`, and `kickparity` re-run at the shipped build: `RESULT PASS rows=9
+failed=0` (`preflight Playing q=1080p60 dur=11988`, `pause-freezes moved=0.00s`,
+`rewind-60s got=11867.38`, `seek-within-dvr 11744.04`, `go-live liveClock=true`,
+`quality-480p 1080p60->480p`, `latency-at-edge lat=1.98s`).
+
+**One 75 s stall is open, not fixed.** The FIRST 0.8.76 parity run ended `rows=9 failed=3` with the
+layer parked at `{"pos":11744.04,"lat":2.16,"paused":false,"state":"Buffering","q":"1080p60","dur":0,
+"onDvr":false}` for the whole 75 s `go-live` window, so `quality-480p` (menu showed only `Auto`) and
+`latency-at-edge` (`lat=0`) could not be exercised either. The immediately following run, same guest,
+no restart, started from that exact `pos` and passed 9/9. So: a DVR seek followed by a go-live click
+can leave the frame in `Buffering` with `dur:0` and no level list, and something outside the row
+recovers it. Re-arm: capture `KO.kickDiag`/`ko.adlog` around the click in the same run instead of
+judging the row's verdict alone.
+
 **Parity with kick.com's own player stays `UNPROVEN`, and the instrument says why.** `parity-live`
 against his Chrome ran the full 420 s window: the kick.com reference tab reported
 `{n:2, pos:37.45, paused:false, area:986049, end:null, dur:null}` — the reference PLAYS, but exposes no
