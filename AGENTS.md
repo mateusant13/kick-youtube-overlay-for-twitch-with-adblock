@@ -552,3 +552,50 @@ owner feels.
   into a variable.
 - A measurement taken under starvation is the QUEUE, not the instrument: re-run it once in a quiet
   window before claiming a floor.
+
+## Wave record — 2026-11-11, the pod's own duration was the delay, and a machine mute became intent (0.8.59-0.8.61)
+
+Owner reports, verbatim: *"deixou a live com delay multiplas vezes por causa do anuncio e a troca de
+player. alem disso, o player trocou pra ficar mutado"* and, with the symptom sharpened, *"quando o
+anuncio acaba e o player volta pro da twitch, fica mutado. o player diz que nao ta mutado, mas ta
+mutado. e ele so desmuta se eu clicar duas vezes no botao de mute"*.
+
+Measured in his own `ko.adlog` (his tab, 500-entry ring) rather than guessed:
+
+- **The hand-back had no edge to aim at.** `native-handoff {"buf":1004,"cleanLat":3.4,
+  "cleanPos":176,"ct":999.7,"se":1073741824}` — Twitch's native reports `seekable.end` as the 2^30
+  sentinel, so `nativeEdge()` returns 0, `resumeNative()` fell back to `buffered.end - 0.5`, and a
+  native that sat frozen through a pod resumed at its OLD position: every pod added its own duration
+  to the delay and nothing ever closed it. `overlay-catchup` fired 70 times in one session, parked at
+  `lat 9` because `CLEAN_LAT_MAX` is 8 and `cleanHandoffLat()` clamps to it.
+- **`overlay-catchup` did not say WHICH instrument answered** (`h.latency`, forward buffer, or a
+  seekable end). `cleanLatSrc` is now in both `native-handoff` and `overlay-catchup`.
+- **A machine mute inside the 1200 ms freshness window became his intent.** He clicks the player to
+  recover the delay; the pod takes over or ends; Twitch mutes its own element; the click made the
+  event look human, so `ko-audio.js` recorded it as intent, persisted it in `ko.audio.v1`, and the
+  next player inherited a mute nobody chose — while the UI mirrors INTENT, which is why "o player
+  diz que nao ta mutado".
+
+0.8.59-0.8.61, one change per mechanism:
+
+- `native-edge-recover`: when the edge is unusable, the wall clock is the timeline that always
+  exists. The takeover records `holdAt`/`holdCt`; at hand-back the deficit is `elapsed - advanced`,
+  and anything above `RESUME_GAP_SEC` (1.5 s) is seeked forward. A usable edge suppresses it (no
+  double seek), and the arm proves both directions.
+- `ko-audio.js`: a mute on the page surface is the MACHINE's when another surface holds the claim,
+  or when it arrives within `CLAIM_RELEASE_MS` (2500 ms) of the claim being released. An unmute is
+  still the user's. The stored key is bumped to `ko.audio.v2`, because every row written by 0.8.57
+  and earlier is untrustworthy — the tab now starts at the defaults (sound on).
+- `adblock-bridge.js`: publishes `data-ko-audio-vis` / `-wt` / `-it` and writes an `audio-state`
+  transition line into `ko.adlog` (derived state beside the element's own). "UI says unmuted, the
+  element is muted" is now one log line instead of a guess.
+
+Verification: `node _tools/ko-verify.mjs` → `RESULT PASS checks=20 failed=0`. `ad-time-continuity`
+33 checks (new: frozen native with a sentinel edge is seeked by the time it missed; a usable edge
+suppresses it; RED: the pre-fix hand-back leaves it delayed), `mute-decision` 24 (new: a machine mute
+right after the hand-back is not intent; a mute 3 s later IS; RED: the pre-fix guard records it),
+`tab-audio-scope` 19. Installed copy reloaded: `loaded=0.8.61`. Live steady state on his tab
+(`twitch.tv/shygo`): `vis=twitch, wt=0, it=0, el muted=false`.
+**Still owed:** a real pod on 0.8.61, read as `audio-state` transitions — the first one that shows
+`wt=0` while the element is muted, or a `native-edge-recover` that closes the pod's deficit, is the
+row that turns this from `fixed` to `verified`.
