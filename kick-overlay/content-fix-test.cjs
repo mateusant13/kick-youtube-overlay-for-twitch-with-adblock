@@ -885,7 +885,7 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
     addEventListener() {},
     removeEventListener() {},
   };
-  const mountApi = new Function('window', 'document', 'location', 'navigator', src + '\n;return {KO, mount, updateKickBar, teardown, injectStyles, rectTick, syncMute, setupHotBar, teardownHotBar, renderQualityMenu, kickSeekTo, kickBackToLive};')(
+  const mountApi = new Function('window', 'document', 'location', 'navigator', src + '\n;return {KO, mount, updateKickBar, teardown, injectStyles, rectTick, syncMute, setupHotBar, teardownHotBar, renderQualityMenu, overlayOwnsPicture, overlayHasPicture, kickSeekTo, kickBackToLive};')(
     global, mountDoc, global.location, global.navigator,
   );
   const mKO = mountApi.KO;
@@ -1847,6 +1847,13 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   fakeVideos.push(ownershipVideo);
   KO.player = 'kick';
   KO.wrap = el('div');
+  // A fresh page: no picture has ever been seen here, so the hysteresis clock
+  // is empty and the grace window does not apply yet.
+  KO.picSeenAt = 0;
+  KO.picLostAt = 0;
+  // Past the cold-open window: the bound below only covers the first seconds of
+  // a page, so this arm models a page whose layer never painted.
+  KO.bootAt = performance.now() - 10000;
   const prefOnly = KO.player !== 'twitch' && !!KO.wrap; // the term that shipped before
   // (a) selected, no picture (the Idle / rs=0 shape): native keeps playing, owner empty
   KO.kickState = { state: 'Idle', paused: true, muted: true, pos: 0, lat: 0, dur: 0, ts: Date.now() };
@@ -1874,6 +1881,8 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   // paused there, and reading kickState (the old code) said "no picture" while
   // youtube played - exactly the state that would hand the screen back.
   KO.player = 'youtube';
+  KO.picSeenAt = 0;
+  KO.picLostAt = 0;
   KO.kickState = { state: 'Playing', paused: false, muted: false, pos: 10, lat: 2, dur: 0, ts: Date.now() };
   KO.ytState = { ready: true, playing: false, muted: true, live: true, dur: 0, ct: 0, error: 0 };
   ownershipVideo.paused = false;
@@ -1905,6 +1914,69 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   api.syncMute();
   assert.strictEqual(doc.documentElement.attrs['data-ko-owner'] || '', '', 'twitch mode publishes no owner');
   fakeVideos.length = 0;
+  // P2g: the COLD OPEN belongs to the layer, bounded. Owner 2026-11-11: "ainda to
+  // vendo um anuncio tocar quando entro numa live por uns 5 segundos". A paused
+  // native plays no preroll; the bound guarantees a black screen cannot outlive
+  // the window if the layer never paints.
+  {
+    const cold = videoEl('tw-cold');
+    cold.paused = false;
+    fakeVideos.length = 0;
+    fakeVideos.push(cold);
+    KO.player = 'kick';
+    KO.wrap = el('div');
+    KO.kickState = { state: 'Idle', paused: true, muted: true, pos: 0, lat: 0, dur: 0, ts: Date.now() };
+    KO.picSeenAt = 0;
+    KO.picLostAt = 0;
+    KO.bootAt = performance.now();
+    KO.kickPrewarm = Promise.resolve(null); // the layer is on its way
+    KO.ownerAttr = undefined;
+    api.syncMute();
+    assert.strictEqual(cold.paused, true, 'cold open: the native is paused (no preroll while the layer mounts)');
+    assert.strictEqual(doc.documentElement.attrs['data-ko-owner'] || '', '', 'cold open publishes no owner (the ad path keeps its normal handling)');
+    cold.paused = false;
+    KO.bootAt = performance.now() - 5000; // still inside the window
+    api.syncMute();
+    assert.strictEqual(cold.paused, true, 'the hold outlasts the layer\'s own first signal (no ad flash before it paints)');
+    cold.paused = false;
+    KO.bootAt = performance.now() - 9000; // past COLD_HOLD_MS
+    api.syncMute();
+    assert.strictEqual(cold.paused, false, 'past the window a layer that never painted releases the native');
+    // And a channel with NO layer coming is never held at all: the native is the
+    // only picture there, so a black screen would be pure damage.
+    cold.paused = false;
+    KO.kickPrewarm = null;
+    KO.kickFrame = null;
+    KO.kickState = null;
+    KO.ytState = null;
+    KO.ytFrame = null;
+    KO.kickMountPending = false;
+    KO.picSeenAt = 0;
+    KO.picLostAt = 0;
+    KO.bootAt = performance.now();
+    api.syncMute();
+    assert.strictEqual(cold.paused, false, 'a channel with no layer on the way is never held');
+    console.log('P2g cold open: the preroll window is held, then released - OK');
+  }
+  // P2f: HYSTERESIS. A re-buffer reports Buffering/Ready between segments; a raw
+  // picture test dropped ownership there, the native resumed, the ad path took a
+  // pod, and the owner saw an ad and the player fighting each other
+  // ("ficam brigando, sendo que isso nao ocorria antes", 2026-11-11).
+  K2.player = 'kick';
+  K2.wrap = K2.wrap || el('div');
+  K2.picSeenAt = 0;
+  K2.picLostAt = 0;
+  K2.kickState = { state: 'Playing', pos: 10, lat: 1, dur: 0, ts: Date.now() };
+  assert.strictEqual(mountApi.overlayOwnsPicture(), true, 'playing: the layer owns the picture');
+  K2.kickState = { state: 'Ready', pos: 10, lat: 1, dur: 0, ts: Date.now() };
+  assert.strictEqual(mountApi.overlayOwnsPicture(), true, 'a lost picture inside the grace window keeps ownership (no ad/player fight)');
+  K2.picSeenAt = Date.now();
+  K2.picLostAt = Date.now() - 7000; // past OWNER_GRACE_MS
+  assert.strictEqual(mountApi.overlayOwnsPicture(), false, 'after the grace the native may reclaim the screen');
+  K2.kickState = { state: 'Playing', pos: 10, lat: 1, dur: 0, ts: Date.now() };
+  assert.strictEqual(mountApi.overlayOwnsPicture(), true, 'a returned picture restores ownership');
+  assert.strictEqual(K2.picLostAt, 0, 'a returned picture clears the loss clock');
+  console.log('P2f ownership hysteresis: a re-buffer does not hand the screen back - OK');
   console.log('P2e ownership: the PICTURE owns the native (Idle/absent -> keeps playing, attr empty; Playing -> paused + attr) - OK');
 
   console.log('\nALL CONTENT.JS FIX CHECKS PASSED');

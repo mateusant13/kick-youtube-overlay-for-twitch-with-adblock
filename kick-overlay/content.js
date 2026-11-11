@@ -273,7 +273,10 @@ const NOT_CHANNEL = new Set([
 
 // Build marker for the diag stream — lets us tell which code a tab runs
 // (content scripts of pre-reload tabs survive extension reloads).
-const KO_VER = '0.8.77';
+const KO_VER = '0.8.78';
+// How long a lost picture may last before the native player is allowed to
+// reclaim the screen (owner 2026-11-11: an ad and the player fighting).
+const OWNER_GRACE_MS = 6000;
 // ONE canonical yt state object: every reset site (boot, teardown, the
 // frame-death watchdog) must agree, or a drained/live flag survives a rebuild.
 function freshYtState() {
@@ -350,6 +353,8 @@ const KO = {
   spaTimer: null,
   hideTicks: 0,
   stallTicks: 0,
+  picLostAt: 0, // epoch ms when the overlay last stopped having a picture
+  picSeenAt: 0, // epoch ms of the last picture it DID have (gate for the grace)
   lastTickT: 0,
   frameSeq: 0, // iframe-creation counter — identity proof for the status hook
   lastPath: location.pathname + '@' + location.hostname,
@@ -1205,7 +1210,12 @@ window.addEventListener('message', (ev) => {
       // swap can only be as fast as this number (owner 2026-11-11: the ad
       // stayed 3-4 s before the player switched, 'e pra ser instantaneo'),
       // so it is measured, not estimated.
-      if (!KO.kickFirstPlayAt && typeof performance !== 'undefined') KO.kickFirstPlayAt = Math.round(performance.now());
+      if (!KO.kickFirstPlayAt && typeof performance !== 'undefined') {
+        KO.kickFirstPlayAt = Math.round(performance.now());
+        // Persisted (ko.adlog) so the OWNER's own machine answers "how long did
+        // the layer take" instead of a guest estimate.
+        kickLog('kick-first-play', { at: KO.kickFirstPlayAt, bootAt: KO.bootAt || null, pid: KO.player });
+      }
     }
     // Reconnect budget replenishes only after a stable Playing stretch —
     // a fresh url that plays 2s then errors must NOT reset the budget
@@ -1561,11 +1571,65 @@ function overlayHasPicture() {
   return st.paused === false;
 }
 
+// The COLD OPEN, bounded. While an overlay layer is selected but has not painted
+// yet, the native player's ONLY content is a Twitch preroll (owner 2026-11-11:
+// *"ainda to vendo um anuncio tocar quando entro numa live por uns 5 segundos.
+// depois disso que o player alternativo entra"*). That gap belongs to us, not to
+// Twitch: the native is paused from the moment the preference is known, and the
+// window is capped so a layer that never paints can never leave a black screen.
+// Trade stated with its numbers: at most 4 s of black (measured picture at 1.9 s
+// on a guest, ~2-5 s on the owner's machine) instead of 5 s of ad.
+// 8 s, not 4: the release has to outlast the layer's OWN first signal (mint +
+// manifest measured at 1.9 s on a guest and ~5 s on the owner's machine), or the
+// native plays the preroll for the second between the release and the picture.
+// A `Loading`/`Buffering` report already counts as a picture in
+// overlayHasPicture(), so the only thing this window covers is the dead air
+// before the layer says anything at all.
+const COLD_HOLD_MS = 8000;
+
+function coldHoldActive() {
+  if (KO.player === 'twitch' || !KO.wrap) return false;
+  if (KO.picSeenAt) return false; // it already painted once: the grace rule owns this
+  if (typeof performance === 'undefined') return false;
+  // The hold exists for a layer that is COMING. Most Twitch channels have no kick
+  // counterpart, and holding the native for those would put a black screen in
+  // front of a stream the user could simply watch. So the window only opens
+  // while the layer is provably on its way: the mint is in flight, the frame
+  // exists, or it has already reported a state this page load.
+  const coming = !!(KO.kickFrame || KO.ytFrame || KO.kickPrewarm || KO.kickState || KO.ytState || KO.kickMountPending);
+  if (!coming) return false;
+  const t0 = KO.bootAt || performance.now();
+  return performance.now() - t0 < COLD_HOLD_MS;
+}
+
 // Playback ownership, in one place: the selected overlay layer owns the native
 // player only while it can actually paint. Both the 400 ms pause loop and the
 // published `data-ko-owner` term read this, so they cannot disagree.
 function overlayOwnsPicture() {
-  return KO.player !== 'twitch' && !!KO.wrap && overlayHasPicture();
+  // HYSTERESIS. Owner 2026-11-11: *"depois de uns segundos, o anuncio volta,
+  // mas o player volta tambem. ficam brigando, sendo que isso nao ocorria
+  // antes."* A raw picture test flips on every re-buffer: the kick frame reports
+  // `Buffering`/`Ready` between segments, ownership drops, the native resumes,
+  // the ad path takes a pod, the frame reports `Playing`, we take the screen
+  // back - an ad/player fight. Ownership is a decision with a pause after a
+  // lost picture, not a per-sample reading: 6 s covers an IVS re-buffer and any
+  // seek, and the teardown paths still release it immediately by clearing the
+  // player preference.
+  if (KO.player === 'twitch' || !KO.wrap) {
+    KO.picLostAt = 0;
+    KO.picSeenAt = 0;
+    return false;
+  }
+  if (overlayHasPicture()) {
+    KO.picLostAt = 0;
+    KO.picSeenAt = Date.now();
+    return true;
+  }
+  // A layer that has NEVER had a picture owns nothing: the grace is a pause
+  // after a lost picture, never a claim made from a preference.
+  if (!KO.picSeenAt) return false;
+  if (!KO.picLostAt) KO.picLostAt = Date.now();
+  return Date.now() - KO.picLostAt < OWNER_GRACE_MS;
 }
 
 // Which surface is being LISTENED to — one answer, from the same predicate that
@@ -1590,7 +1654,8 @@ function syncMute() {
   // readyState 0, and the tick's fallback resumed it again: a pause/resume
   // churn on the user's player, with the ad path also standing down for an
   // owner that was not on screen. Only pause what the overlay can replace.
-  if (overlayOwnsPicture()) {
+  const ownedPicture = overlayOwnsPicture();
+  if (ownedPicture || coldHoldActive()) {
     for (const v of document.querySelectorAll('video')) {
       if (v.paused) continue;
       v.pause();

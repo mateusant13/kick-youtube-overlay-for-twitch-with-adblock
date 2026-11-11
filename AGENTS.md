@@ -205,6 +205,47 @@ Zero green screens. The report therefore needs the occurrence itself: with the t
 matter are `vis-audio` (which surface is audible/visible), `ad-start`/`ad-net`, and the `kick-st`
 sample immediately before it.
 
+## Wave record - 2026-11-11 (later 6), the ad/player fight: ownership is a decision, not a sample (0.8.78)
+
+Owner, verbatim: *"ainda to vendo um anuncio tocar quando entro numa live por uns 5 segundos. depois
+disso que o player alternativo entra. mas depois de uns segundos, o anuncio voltar, mas o player volta
+tambem. ficam brigando, sendo que isso nao ocorria antes. checa todas as regressoes e arruma"*.
+
+**The fight was one predicate read as a live sample.** 0.8.76 made playback ownership a PICTURE test
+(`overlayHasPicture()`), and `data-ko-owner` flipped on every re-buffer report of the kick frame
+(`Buffering`/`Ready` between segments). Each flip did three things in the same tick: content.js resumed
+the native, `twitch-adblock.js` read the empty attribute as "the ad path may act", and a pod started.
+The frame reported `Playing` again, the pod was torn down, the native paused, the next re-buffer
+repeated it. That loop is the "ad comes back, the player comes back, they fight" report, and it is a
+regression this release introduced, not an old behaviour.
+
+Two layers, because one was not enough:
+
+- **content.js: hysteresis.** A lost picture is not a lost screen: `KO.picSeenAt`/`KO.picLostAt` hold
+  ownership for `OWNER_GRACE_MS = 6000`, and a layer that has NEVER painted owns nothing (so a page
+  whose layer is dead hands the screen back immediately). Test: `P2f`, red under `OWNER_GRACE_MS = 0`.
+- **twitch-adblock.js: latch.** After the overlay has owned the page once (`overlay.ownerSeenAt`), a
+  pod may only start after the attribute has been EMPTY for `OWNER_CLEAR_MS = 4000`. A cold open (never
+  owned) is unchanged. Test: `ad-time-continuity` "flapping owner attribute", red under
+  `OWNER_CLEAR_MS = 0`.
+
+**The cold-open ad was the same absence from the other side.** In kick mode the native player's only
+content during our mount is a Twitch preroll. 0.8.78 holds it: while a layer is provably COMING (mint in
+flight, frame created, or a state already reported this load) the native is paused from boot for at
+most `COLD_HOLD_MS = 8000`. The gate matters more than the window: most Twitch channels have no kick
+counterpart, and holding the native for those would put a black screen in front of a stream the user
+could watch. Trade stated with its numbers: up to 8 s of black (picture measured at 1.9 s on a guest,
+~5 s on the owner's machine) instead of up to 5 s of ad. Test: `P2g`, red both under
+`COLD_HOLD_MS = 0` and with the `coming` gate removed.
+
+**Instrument for the next report.** `kick-first-play {at, bootAt}` is now written into `ko.adlog` on
+every page load, so "how long did the layer take on HIS machine" is answered by
+`node _tools/ko-adlog-window.mjs 9222 60` instead of by a guest estimate.
+
+Not measurable on 2026-11-11: a cold open on a channel live on kick - `titiltei`, `kaicenat` and
+`scriptingkata` were all OFFLINE on Twitch (`node _tools/ko-harness.mjs live --channel=...`), so no kick
+layer existed to measure and the hold correctly released the native instead.
+
 ## Project notes
 
 - The extension is in `kick-overlay/`.

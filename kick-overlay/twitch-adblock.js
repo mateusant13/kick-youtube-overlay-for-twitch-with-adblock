@@ -1437,12 +1437,35 @@
   // (owner 2026-11-11: "por que ele troca de player dizendo sem anuncio - 360p
   // quando eu to no player da kick que NUNCA tem anuncio?"). The attribute is
   // published by content.js on its enforcement tick.
-  function overlayOwnsPlayback() {
+  function ownerAttr() {
     try {
-      return String(document.documentElement.getAttribute('data-ko-owner') || '') !== '';
+      return String(document.documentElement.getAttribute('data-ko-owner') || '');
     } catch {
-      return false;
+      return '';
     }
+  }
+
+  // LATCH, on top of content.js's own hysteresis. Owner 2026-11-11: *"depois de
+  // uns segundos, o anuncio volta, mas o player volta tambem. ficam brigando,
+  // sendo que isso nao ocorria antes."* The ad path used to read the attribute
+  // as a live sample: one flapping frame was enough to start a pod on a page
+  // whose screen belonged to the overlay. Once the overlay has owned this page
+  // at least once, a pod may only start after the attribute has been EMPTY for
+  // OWNER_CLEAR_MS - so a re-buffer cannot hand the screen back to Twitch.
+  // Before the first ownership (a cold open) nothing changes: there is nothing
+  // to protect yet.
+  const OWNER_CLEAR_MS = 4000;
+
+  function overlayOwnsPlayback() {
+    const owner = ownerAttr();
+    if (owner) {
+      overlay.ownerSeenAt = overlay.ownerSeenAt || Date.now();
+      overlay.ownerClearAt = 0;
+      return true;
+    }
+    if (!overlay.ownerSeenAt) return false; // never owned this page: cold open
+    if (!overlay.ownerClearAt) overlay.ownerClearAt = Date.now();
+    return Date.now() - overlay.ownerClearAt < OWNER_CLEAR_MS;
   }
 
   function startAdOverlay(url, channel, switchSource = false, standby = false) {

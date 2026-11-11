@@ -143,6 +143,11 @@ function makeWorld(opts, extra) {
       getAttribute(k) {
         return this.attrs[k] === undefined ? null : this.attrs[k];
       },
+      removeAttribute(k) {
+        if (this.attrs[k] === undefined) return;
+        delete this.attrs[k];
+        notifyAttrs(this, k);
+      },
       closest: () => null,
       getBoundingClientRect: () => ({ left: 0, top: 0, width: 1280, height: 720 }),
     });

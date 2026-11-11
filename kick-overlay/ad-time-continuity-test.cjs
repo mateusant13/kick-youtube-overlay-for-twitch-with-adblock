@@ -869,6 +869,42 @@ async function main() {
     });
   }
 
+  // Owner 2026-11-11 (regression): *"depois de uns segundos, o anuncio volta,
+  // mas o player volta tambem. ficam brigando, sendo que isso nao ocorria
+  // antes."* The attribute flaps on a re-buffer, so a raw sample let the ad path
+  // start a pod the moment the overlay stopped reporting a picture for one tick.
+  // Once the overlay has owned the page, a pod needs OWNER_CLEAR_MS of silence.
+  {
+    const realNow = Date.now;
+    let skew = 0;
+    Date.now = () => realNow() + skew;
+    try {
+      const page = makePage(SOURCE);
+      setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+      page.docEl.setAttribute('data-ko-owner', 'kick');
+      page.bypass({ type: 'ad-hold' });
+      await settle(30);
+      const skipsWhileOwner = page.logsOf('ad-skip').length;
+      page.docEl.removeAttribute('data-ko-owner'); // the re-buffer sample
+      page.bypass({ type: 'ad-hold' });
+      page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+      await settle(40);
+      check('a pod cannot start on a flapping owner attribute (no ad/player fight)', () => {
+        assert(skipsWhileOwner === 1, `while owned: ad-skip was logged ${skipsWhileOwner} time(s)`);
+        assert(!page.frame, 'the ad path built a clean player one tick after the owner attribute blinked');
+        assert(page.logsOf('ad-skip').length === 2, `after the blink: ad-skip was logged ${page.logsOf('ad-skip').length} time(s)`);
+      });
+      skew += 4100; // past OWNER_CLEAR_MS: the overlay really did let go
+      page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+      await settle(30);
+      check('after the clear window the ad path protects the page again', () => {
+        assert(!!page.frame, 'the ad path never resumed after the owner went away for good');
+      });
+    } finally {
+      Date.now = realNow;
+    }
+  }
+
   // Mid-pod switch: the owner attribute appears while the cover is up -> gone.
   {
     const page = makePage(SOURCE);
