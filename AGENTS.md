@@ -126,10 +126,17 @@ his own log instead of arguable.
 
 Measured while writing this (guest Chrome 9446, `player=twitch`, twitch.tv/titiltei, tab hidden behind a
 blank tab for three minutes, sampled through `state`): native `paused=false muted=false rs=4` at every
-sample with `currentTime` advancing 1x. The extension does not pause or mute the NATIVE surface of a
-hidden tab. The kick layer could not be exercised in the guest (`kickReady:false`, no wrap: the kick
-mirror needs kick.com data that a headless guest does not get), so the `player=kick` half stays
-`UNPROVEN` and the `vis-audio` line is what will settle it.
+one of nine samples, `currentTime` advancing 1x (248.3 → 406.7 s). **The extension does not pause or mute
+the NATIVE surface of a hidden tab.** The kick layer could not be exercised in the guest
+(`kickReady:false`, no wrap: the kick mirror needs kick.com data that a headless guest does not get), so
+the `player=kick` half stays `UNPROVEN`.
+
+The instrument is proved END TO END, not just written: the guest (0.8.70/0.8.71) writes
+`vis-audio {"hidden":true, "player":"twitch", "native":{"muted":false,"paused":false}, "intent":
+{"muted":false,"volume":1}, "tag":"visibility"}` into `ko.adlog` on the hide and again on the show, read
+back with `node _tools/ko-adlog-window.mjs 9446 40`. Note for the next reader: `diag()` alone is a
+`console.debug` in the service worker and never reaches `ko.adlog`; the line rides the bridge's
+`ko-adlog` CustomEvent instead.
 
 ## Wave record — 2026-11-11 (later 2), one seek on the way back (0.8.69)
 

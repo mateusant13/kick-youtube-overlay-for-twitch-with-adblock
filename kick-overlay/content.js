@@ -221,7 +221,7 @@ function visAudio(tag) {
     const y = KO.ytState || {};
     const n = document.querySelector('video');
     const intent = window.KOAudio ? window.KOAudio.intent(KO.player === 'youtube' ? 'yt' : 'kick') : null;
-    diag('vis-audio', {
+    const d = {
       tag,
       hidden: !!document.hidden,
       player: KO.player,
@@ -229,7 +229,11 @@ function visAudio(tag) {
       yt: { state: y.state || null, ct: y.ct == null ? null : +Number(y.ct).toFixed(1), muted: y.muted == null ? null : !!y.muted },
       native: n ? { paused: !!n.paused, muted: !!n.muted } : null,
       intent: intent ? { muted: !!intent.muted, volume: +Number(intent.volume).toFixed(2) } : null,
-    });
+    };
+    // INTO ko.adlog, not only the service-worker console: `diag()` is a
+    // console.debug and the owner's log is `chrome.storage.local['ko.adlog']`.
+    // The bridge persists whatever arrives as this event (adblock-bridge.js).
+    document.dispatchEvent(new CustomEvent('ko-adlog', { detail: JSON.stringify({ ev: 'vis-audio', d }) }));
   } catch {
     /* a diag line must never break the overlay */
   }
