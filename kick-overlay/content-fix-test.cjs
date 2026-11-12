@@ -2039,6 +2039,38 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     assert.ok(/ko-adlog/.test(src.slice(src.indexOf('function diag('), src.indexOf('function diag(') + 900)), 'diag() does not persist to ko.adlog');
     console.log('P2j log: ownership, pause and switch decisions persist with their reason - OK');
   }
+  // P2k: a HIDDEN tab decides nothing. Owner 2026-11-12: "ta pausando ou parando
+  // quando to alt tab. quando eu volto ... ele tenta fazer algo no player, o
+  // player trava". Every timer a hidden tab reasons about is throttled, so an
+  // ownership decision taken there is a decision about a stale sample.
+  {
+    const hid = videoEl('tw-hidden');
+    hid.paused = false;
+    fakeVideos.length = 0;
+    fakeVideos.push(hid);
+    KO.player = 'kick';
+    KO.wrap = el('div');
+    KO.kickState = { state: 'Playing', paused: false, muted: false, pos: 10, lat: 1, dur: 0, ts: Date.now() };
+    KO.ytState = null;
+    KO.kickPrewarm = null;
+    KO.picSeenAt = Date.now();
+    KO.picLostAt = 0;
+    KO.ownerAttr = 'kick';
+    doc.hidden = true;
+    api.syncMute();
+    assert.strictEqual(hid.paused, false, 'a hidden tab paused the native player');
+    // Back to visible: the pre-hide decision is untouched and the tick works.
+    doc.hidden = false;
+    api.syncMute();
+    assert.strictEqual(hid.paused, true, 'a visible tab no longer pauses the native (the ownership path broke)');
+    assert.strictEqual(doc.documentElement.attrs['data-ko-owner'], 'kick', 'ownership is not published when visible again');
+    // The alt-tab boundary restarts the watchdog clocks: a gap spent hidden is
+    // not evidence that the bridge died.
+    const visSrc = src.slice(src.indexOf("'visibilitychange'"), src.indexOf("'visibilitychange'") + 1600);
+    assert.ok(/lastKickSt = 0/.test(visSrc) && /lastYtSt = 0/.test(visSrc), 'the visibility boundary does not reset the frame watchdogs');
+    assert.ok(/picSeenAt = Date.now\(\)/.test(visSrc), 'the visibility boundary does not preserve the pre-hide ownership');
+    console.log('P2k alt-tab: a hidden tab changes nothing, and the boundary resets the clocks - OK');
+  }
   // P2f: HYSTERESIS. A re-buffer reports Buffering/Ready between segments; a raw
   // picture test dropped ownership there, the native resumed, the ad path took a
   // pod, and the owner saw an ad and the player fighting each other

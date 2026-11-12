@@ -308,7 +308,7 @@ const NOT_CHANNEL = new Set([
 
 // Build marker for the diag stream — lets us tell which code a tab runs
 // (content scripts of pre-reload tabs survive extension reloads).
-const KO_VER = '0.8.79';
+const KO_VER = '0.8.80';
 // How long a lost picture may last before the native player is allowed to
 // reclaim the screen (owner 2026-11-11: an ad and the player fighting).
 const OWNER_GRACE_MS = 6000;
@@ -1725,6 +1725,10 @@ function syncMute() {
   // readyState 0, and the tick's fallback resumed it again: a pause/resume
   // churn on the user's player, with the ad path also standing down for an
   // owner that was not on screen. Only pause what the overlay can replace.
+  // A hidden tab changes nothing: not the ownership attribute, not the pause.
+  // Every timer it would reason about is throttled, so any decision it took
+  // there was a decision about a stale sample (owner 2026-11-12, alt-tab).
+  if (document.hidden) return;
   const ownedPicture = overlayOwnsPicture();
   const cold = !ownedPicture && coldHoldActive();
   if (ownedPicture || cold) {
@@ -3251,6 +3255,7 @@ function rectTick() {
       // frame's 1s state timer, so only run while the tab is visible.
       if (!document.hidden && KO.player === 'kick' && KO.kickFrame && KO.lastKickSt && Date.now() - KO.lastKickSt > 30000) {
         console.log('[ko] kick bridge silent — rebuilding frame');
+        diag('kick-frame-rebuild', { why: 'silent', silentMs: Date.now() - KO.lastKickSt, player: KO.player });
         KO.kickFrame.remove();
         KO.kickFrame = null;
         KO.kickWin = null;
@@ -3267,6 +3272,7 @@ function rectTick() {
       // 1s state timer, so only run while the tab is visible.
       if (!document.hidden && KO.player === 'youtube' && KO.ytState.ready && KO.lastYtSt && Date.now() - KO.lastYtSt > 30000) {
         console.log('[ko] yt bridge silent — rebuilding frame');
+        diag('yt-frame-rebuild', { why: 'silent', silentMs: Date.now() - KO.lastYtSt, player: KO.player });
         const yf = document.getElementById('ko-yt');
         if (yf) yf.remove();
         KO.ytState = freshYtState();
@@ -3288,10 +3294,10 @@ function rectTick() {
       // picture while syncMute paused on the hysteresis made one tick pause and
       // resume the native, which is what "deixou pausado e desmutado" looks like
       // from the seat (2026-11-12).
-      if (!KO.twDeleted && !overlayOwnsPicture() && !coldHoldActive()) resumeTwitchIfOurs();
+      if (!KO.twDeleted && !document.hidden && !overlayOwnsPicture() && !coldHoldActive()) resumeTwitchIfOurs();
     } else {
       enforceOverlayRendering(false);
-      resumeTwitchIfOurs();
+      if (!document.hidden) resumeTwitchIfOurs();
       syncMute();
     }
 }
@@ -3595,6 +3601,32 @@ function domReady() {
   diag('boot', { ver: KO_VER, url: location.href.slice(0, 70), slug: currentSlug(), enabled: KO.enabled, player: KO.player, kickSlug: KO.kickSlug, hidden: document.hidden });
   try {
     document.addEventListener('visibilitychange', () => visAudio('visibility'), true);
+    // THE ALT-TAB BOUNDARY. Owner 2026-11-12: *"ta pausando ou parando quando to
+    // alt tab. quando eu volto pra live do alt tab, ele tenta fazer algo no
+    // player, o player trava, e tenho q reiniciar a pagina ou clicar em pause
+    // despause"*. A hidden tab throttles the frame's 1 s state timer to about
+    // once a minute, so on return EVERY timestamp is older than the watchdog's
+    // 30 s: the first tick after the alt-tab tore the IVS player down and rebuilt
+    // it, which is the freeze he then had to cure by hand. A gap spent HIDDEN is
+    // not evidence of anything, so the clocks restart at the boundary and the
+    // ownership decided before hiding survives until fresh samples arrive.
+    document.addEventListener(
+      'visibilitychange',
+      () => {
+        if (document.hidden) return;
+        KO.lastKickSt = 0;
+        KO.lastYtSt = 0;
+        KO.stallTicks = 0;
+        KO.hideTicks = 0;
+        if (KO.ownerAttr) {
+          KO.picSeenAt = Date.now();
+          KO.picLostAt = 0;
+        }
+        diag('visible', { player: KO.player, own: KO.ownerAttr || null, cold: coldHoldActive() });
+        fire(rectTick);
+      },
+      true,
+    );
   } catch {
     /* a diag listener must never break boot */
   }

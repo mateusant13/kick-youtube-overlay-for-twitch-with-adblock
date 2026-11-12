@@ -281,6 +281,33 @@ itself is now proven by a line: `mute-decision` "swap carries the mute, and the 
 
 Gate `RESULT PASS checks=20 failed=0`; suites `mute-decision` 39, `content-fix` all green.
 
+## Wave record - 2026-11-12, alt-tab: a hidden tab decided nothing and the return rebuilt the player (0.8.80)
+
+Owner, verbatim: *"essa merda ta pausando ou parando quando to alt tab. quando eu volto pra live do alt
+tab, ele tenta fazer algo no player, o player trava, e tenho q reiniciar a pagina ou clicar em pause
+despause"*.
+
+**A hidden tab throttles the frame's 1 s state timer to about once a minute**, so on return every
+timestamp is older than the frame-death watchdog's 30 s. The FIRST tick after the alt-tab therefore
+tore the IVS player down and rebuilt it (`kick bridge silent — rebuilding frame`): that teardown is the
+"ele tenta fazer algo no player, o player trava". A gap spent HIDDEN is not evidence of anything:
+
+- the visibility boundary resets `lastKickSt`/`lastYtSt`/`stallTicks`/`hideTicks` and, when the layer
+  already owned the screen, restamps `picSeenAt` so the pre-hide decision survives until fresh samples
+  arrive; it then runs one `rectTick`;
+- `syncMute()` returns while `document.hidden`: no pause, no resume, no `data-ko-owner` publish from a
+  throttled sample (the rect loop's two resume sites are visibility-gated too);
+- both frame watchdogs now log `kick-frame-rebuild` / `yt-frame-rebuild {silentMs}` so the next report
+  says whether a rebuild happened instead of leaving it to `console.log`.
+
+Tests: `P2k` (hidden tab pauses nothing, boundary resets the clocks, ownership preserved), red both with
+the hidden guard removed and with the clock reset removed.
+
+Measured live on `twitch.tv/rodil` (kick side on air), 0.8.80: guest alt-tabbed to `about:blank` for
+45 s and back. Log: `owner {to:"kick"}` before, then nothing but `visible {cold:false, own:"kick"}` at
+return - no `kick-frame-rebuild`, no `stall`, no ownership flip. State after return: kick frame
+`{paused:false, rs:4, ct:83, h:1080}`, native `{paused:true, muted:true}`, `data-ko-owner="kick"`.
+
 ## Project notes
 
 - The extension is in `kick-overlay/`.
