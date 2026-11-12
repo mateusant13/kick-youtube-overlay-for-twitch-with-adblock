@@ -1021,6 +1021,34 @@ and the hand-back lands with the element unmuted, `it=0`, `vis=twitch`, `audible
 no click. `cleanLatSrc` now says `hls` (2.2-2.4 s), so the clean picture sits at the sync target
 instead of the old `lat 9`.
 
+## Wave record — 2026-11-12, the log said the tabs were three waves behind (0.8.82)
+
+Owner: *"tu fala fala fala e as mesmas coisas tao acontecendo. vai ver o log"* — and the log had the answer in
+one field, not in the code:
+
+    boot {"href":"https://www.twitch.tv/1worst","version":"0.8.79"}
+
+while `manifest.json` was 0.8.81 and `deploy.mjs` reported `loaded=0.8.81 changed-since-last-load=no`. Loading a
+folder into Chrome does not re-inject content scripts into pages that already exist, and `chrome.runtime.reload()`
+does not either (measured 2026-10-27, recorded in this file). The 17 media tabs open at that moment — one Twitch,
+sixteen YouTube — were running 0.8.79/0.8.80, so every fix of 0.8.53 through 0.8.81 was untested on the only
+machine that matters.
+
+**0.8.82 makes a tab report its own age and heal itself.** `KO_VER` is a literal (that is why it can be trusted
+against `chrome.runtime.getManifest().version`); `recoverStale()` compares the two at boot and on every
+`visibilitychange` and, when they differ, reloads **once per version**, recorded in `sessionStorage`, and **only
+while the tab is hidden**: a page the user is looking at is never reloaded under him, and a visible tab logs
+`stale-tab {hidden:false, act:'wait-hidden'}` instead, then heals the moment it goes to the background. Arm `P2p`
+covers all four limbs: up to date ⇒ nothing, visible ⇒ nothing (after waiting for the scheduled reload), hidden ⇒
+exactly one, same version again ⇒ still one. Both guards were proven load-bearing by mutation
+(`a VISIBLE page was reloaded under the user`, `the same version reloaded twice (a loop)`).
+
+Two facts worth keeping from the same log, both from stale code and therefore not to be fixed blind:
+`video-pause` appears 13 times in 1.4 s and the event name **does not exist in HEAD** — dead code of an older
+build; and `overlay-catchup {hold:8, lat:8, source:standby}` repeats every 6 s across four minutes, a standby
+player that skips 5 s and is still 8 s behind every time. The catchup churn must be re-measured on 0.8.82 before
+anyone touches `catchUpClean`, because the numbers in the log belong to the old file.
+
 ## Wave record — 2026-11-12, the owner attribute got one owner, and shared state got an inventory (0.8.80/0.8.81)
 
 Owner order that opened this wave: *"o que falta em todas as skills pra tu parar de ser tao mediocre e so

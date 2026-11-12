@@ -86,6 +86,13 @@ check('manifest', () => {
 // ---- 3. no automatic refresh ---------------------------------------------
 // The page must never reload itself. This detector is intentionally shared by
 // the real check and its negative arm, so the arm proves THIS detector.
+// ONE exception is sanctioned and it is a tool against the opposite defect: a
+// tab opened before an update runs the old content script forever, because
+// loading the folder does not re-inject it (owner 2026-11-12: `boot {ver:'0.8.79'}`
+// while the manifest was three waves ahead). The site must carry the marker
+// `ko-versioned-reload`, must be the ONLY one, and its two guards are arms in
+// content-fix-test.cjs (P2p). Any unmarked reload still fails this check, and the
+// negative arm proves it.
 const AUTO_REFRESH = /(?:window\.)?location\.(?:reload\s*\(|href\s*=\s*(?:window\.)?location\.href)|http-equiv\s*=\s*["']refresh["']/i;
 const AUTO_FILES = [
   'kick-overlay/content.js',
@@ -96,8 +103,20 @@ const AUTO_FILES = [
   'kick-overlay/player.html',
   'kick-overlay/popup.html',
 ].filter((rel) => existsSync(path.join(ROOT, rel)));
+const VERSIONED_RELOAD_MARK = 'ko-versioned-reload';
 function autoRefreshHits(text) {
-  return AUTO_REFRESH.test(text);
+  if (!AUTO_REFRESH.test(text)) return false;
+  const lines = String(text).split('\n');
+  // every match is guilty unless ITS OWN LINE carries the mark, and only one may
+  let marked = 0;
+  for (let i = 0; i < lines.length; i += 1) {
+    const re = new RegExp(AUTO_REFRESH.source, 'gi');
+    if (!re.test(lines[i])) continue;
+    const ctx = lines[i];
+    if (ctx.includes(VERSIONED_RELOAD_MARK)) marked += 1;
+    else return true;
+  }
+  return marked > 1;
 }
 check('no-auto-refresh', () => {
   const hits = AUTO_FILES.filter((rel) => autoRefreshHits(read(rel)));
@@ -106,6 +125,8 @@ check('no-auto-refresh', () => {
 });
 check('no-auto-refresh.neg-arm', () => {
   assert(autoRefreshHits('window.location.reload();'), 'detector did not reject a reload');
+  assert(autoRefreshHits('// ko-versioned-reload\nlocation.reload();'), 'detector accepted a reload whose MARK is only on another line');
+  assert(autoRefreshHits('location.reload(); // ko-versioned-reload\nlocation.reload(); // ko-versioned-reload'), 'detector accepted two marked reloads');
   assert(autoRefreshHits('<meta http-equiv="refresh" content="1">'), 'detector did not reject a meta refresh');
   return 'detector rejected reload and meta refresh';
 });

@@ -308,7 +308,7 @@ const NOT_CHANNEL = new Set([
 
 // Build marker for the diag stream — lets us tell which code a tab runs
 // (content scripts of pre-reload tabs survive extension reloads).
-const KO_VER = '0.8.80';
+const KO_VER = '0.8.82';
 // How long a lost picture may last before the native player is allowed to
 // reclaim the screen (owner 2026-11-11: an ad and the player fighting).
 const OWNER_GRACE_MS = 6000;
@@ -1612,6 +1612,37 @@ function syncOwner() {
     graceMs: KO.picLostAt ? Date.now() - KO.picLostAt : 0,
     vis: visibleSurface(),
   });
+}
+
+// A TAB OPENED BEFORE AN UPDATE RUNS THE OLD FILE FOREVER. Loading this folder
+// into Chrome does not re-inject content scripts into pages that already exist;
+// only a navigation does, and `chrome.runtime.reload()` does not either (measured
+// 2026-10-27 and again 2026-11-12: the owner's own `ko.adlog` carried
+// `boot {ver:'0.8.79'}` while the manifest was 0.8.81, three waves behind, and
+// every symptom he reported was the old file). `KO_VER` is a literal for exactly
+// this reason; the manifest answers with the code that is really installed.
+// One reload per version, recorded in sessionStorage so it can never loop, and a
+// VISIBLE page is never reloaded under the user - the tab heals the next time it
+// goes to the background, or on his own navigation.
+function recoverStale() {
+  let live = '';
+  try { live = chrome.runtime.getManifest().version; } catch { return; }
+  if (!live || live === KO_VER) return;
+  let tried = '';
+  try { tried = sessionStorage.getItem('ko.staleReload') || ''; } catch { /* private */ }
+  if (tried === live) return;
+  if (!document.hidden) {
+    if (!KO.staleShown) {
+      KO.staleShown = true;
+      diag('stale-tab', { script: KO_VER, manifest: live, hidden: false, act: 'wait-hidden' });
+    }
+    return;
+  }
+  try { sessionStorage.setItem('ko.staleReload', live); } catch { /* private */ }
+  diag('stale-tab', { script: KO_VER, manifest: live, hidden: true, act: 'reload' });
+  // The ONE sanctioned reload of the page (ko-verify section 3): once per
+  // version, hidden tabs only, proven by arm P2p.
+  setTimeout(() => { try { location.reload(); } catch { /* teardown */ } }, 800); // ko-versioned-reload
 }
 
 // Does the selected overlay layer actually have a picture of its own right now?
@@ -3627,6 +3658,8 @@ function domReady() {
   injectStyles();
   startWatchers();
   diag('boot', { ver: KO_VER, url: location.href.slice(0, 70), slug: currentSlug(), enabled: KO.enabled, player: KO.player, kickSlug: KO.kickSlug, hidden: document.hidden });
+  recoverStale();
+  document.addEventListener('visibilitychange', () => recoverStale(), true);
   try {
     document.addEventListener('visibilitychange', () => visAudio('visibility'), true);
     // THE ALT-TAB BOUNDARY. Owner 2026-11-12: *"ta pausando ou parando quando to

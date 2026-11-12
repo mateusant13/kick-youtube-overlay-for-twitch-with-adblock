@@ -157,8 +157,11 @@ const doc = {
   removeEventListener() {},
 };
 
+let manifestVersion = require('./manifest.json').version;
+const reloads = [];
 const chromeStub = {
   runtime: {
+    getManifest: () => ({ version: manifestVersion }),
     sendMessage: (m, cb) => {
       swCalls.push(m);
       if (m && m.type === 'ko-yt-play') {
@@ -193,11 +196,13 @@ const chromeStub = {
   tabs: { query: () => Promise.resolve([]) },
 };
 global.chrome = chromeStub;
+const sessionStore = new Map();
+global.sessionStorage = { getItem: (k) => (sessionStore.has(k) ? sessionStore.get(k) : null), setItem: (k, v) => sessionStore.set(k, String(v)) };
 global.window = global; // content.js binds window listeners — alias to global
 global.document = doc;
 global.innerWidth = 1280;
 global.innerHeight = 720;
-global.location = { pathname: '/rodil', search: '', href: 'https://www.twitch.tv/rodil', hash: '' };
+global.location = { pathname: '/rodil', search: '', href: 'https://www.twitch.tv/rodil', hash: '', reload: () => reloads.push(Date.now()) };
 const msgListeners = [];
 global.addEventListener = (t, l) => { if (t === 'message') msgListeners.push(l); };
 global.removeEventListener = () => {};
@@ -885,7 +890,7 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
     addEventListener() {},
     removeEventListener() {},
   };
-  const mountApi = new Function('window', 'document', 'location', 'navigator', src + '\n;return {KO, mount, updateKickBar, teardown, injectStyles, rectTick, syncMute, setupHotBar, teardownHotBar, renderQualityMenu, overlayOwnsPicture, overlayHasPicture, visibleSurface, syncOwner, kickSeekTo, kickBackToLive};')(
+  const mountApi = new Function('window', 'document', 'location', 'navigator', src + '\n;return {KO, mount, updateKickBar, teardown, injectStyles, rectTick, syncMute, setupHotBar, teardownHotBar, renderQualityMenu, overlayOwnsPicture, overlayHasPicture, visibleSurface, syncOwner, recoverStale, kickSeekTo, kickBackToLive};')(
     global, mountDoc, global.location, global.navigator,
   );
   const mKO = mountApi.KO;
@@ -2054,6 +2059,35 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     mountApi.syncOwner();
     assert.strictEqual(mKO.ownerAttr, '', 'a 20 s position regression must hand the screen back');
     console.log('P2o regression: a backwards position releases ownership - OK');
+  }
+  // P2p: a tab opened before an update must stop lying about which code it runs.
+  // Owner 2026-11-12: his `ko.adlog` carried `boot {ver:'0.8.79'}` while the
+  // installed manifest was 0.8.81 - three waves of fixes he never ran, and every
+  // symptom he reported came from the old file. One reload per version, only
+  // while the tab is in the background, recorded so it cannot loop.
+  {
+    const run = async () => {
+      manifestVersion = '0.8.82'; // same as KO_VER: nothing to do
+      reloads.length = 0;
+      mountApi.recoverStale();
+      assert.strictEqual(reloads.length, 0, 'an up-to-date tab was reloaded');
+      manifestVersion = '0.9.0';
+      mountDoc.hidden = false;
+      mountApi.recoverStale();
+      await new Promise((r) => setTimeout(r, 900)); // the reload is scheduled, not immediate
+      assert.strictEqual(reloads.length, 0, 'a VISIBLE page was reloaded under the user');
+      mountDoc.hidden = true;
+      mountApi.recoverStale();
+      await new Promise((r) => setTimeout(r, 900));
+      assert.strictEqual(reloads.length, 1, 'a stale tab in the background did not reload once');
+      mountApi.recoverStale();
+      await new Promise((r) => setTimeout(r, 900));
+      assert.strictEqual(reloads.length, 1, 'the same version reloaded twice (a loop)');
+      mountDoc.hidden = false;
+      manifestVersion = '0.8.82';
+      console.log('P2p stale-tab: a background tab heals once per version - OK');
+    };
+    await run();
   }
   // P2j: the LOG must answer the owner's questions. Every report of 2026-11-11/12
   // (an ad/player fight, a switch that lost the mute, a native left paused) asked

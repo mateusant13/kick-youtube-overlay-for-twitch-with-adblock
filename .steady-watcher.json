@@ -2,70 +2,126 @@
   "app": "Steady Watcher",
   "ok": true,
   "ready": true,
-  "mood": "emergency",
+  "mood": "gaming",
   "run_mode": "auto",
-  "gaming": false,
-  "game": null,
+  "gaming": true,
+  "game": {
+    "pid": 48836,
+    "name": "deadlock.exe",
+    "exe": "",
+    "in_match": true,
+    "started_s_ago": 984.6,
+    "duration_s": 984.6,
+    "match_total_s": 0.0,
+    "state_since_s": 984.6,
+    "ticks": 770,
+    "peak_cpu_pct": 28.3,
+    "peak_commit_gb": 10.79,
+    "sessions": 2
+  },
   "defer_gpu": false,
-  "heavy_job_cap_pct": 7.3,
+  "heavy_job_cap_pct": 4.0,
   "projects": [
     {
-      "id": "brandops",
-      "count": 6,
+      "id": "vodrip",
+      "count": 2,
+      "cpu": 1.393625393481631,
+      "rss": 1017159680,
+      "commit_mb": 2383.61328125,
+      "rate": 4.0,
+      "io_mbps": 0.2,
+      "mood": "gaming",
+      "duty_allow_pct": 60
+    },
+    {
+      "id": "gravador",
+      "count": 1,
       "cpu": 0.0,
       "rss": 0,
-      "commit_mb": 78.16796875,
-      "rate": 7.33,
+      "commit_mb": 252.5859375,
+      "rate": 4.0,
+      "io_mbps": 9.2,
+      "mood": "gaming"
+    },
+    {
+      "id": "brandops",
+      "count": 8,
+      "cpu": 0.0,
+      "rss": 0,
+      "commit_mb": 97.15234375,
+      "rate": 4.0,
       "io_mbps": 0.0,
-      "mood": "emergency"
+      "mood": "gaming"
+    },
+    {
+      "id": "auto_reqwest-0.13.4",
+      "count": 1,
+      "cpu": 0.0,
+      "rss": 141266944,
+      "commit_mb": 308.4140625,
+      "rate": 4.0,
+      "io_mbps": 0.0,
+      "mood": "gaming"
+    },
+    {
+      "id": "auto_clap_builder-4.6.0",
+      "count": 1,
+      "cpu": 0.0,
+      "rss": 137363456,
+      "commit_mb": 204.07421875,
+      "rate": 4.0,
+      "io_mbps": 0.0,
+      "mood": "gaming"
+    },
+    {
+      "id": "superharness",
+      "count": 4,
+      "cpu": 0.4546556741016321,
+      "rss": 1251446784,
+      "commit_mb": 2534.0625,
+      "rate": 4.0,
+      "io_mbps": 0.0,
+      "mood": "gaming"
     },
     {
       "id": "codeintel-worktrees",
-      "count": 1,
-      "cpu": 0.26686592655801944,
-      "rss": 1121214464,
-      "commit_mb": 2554.98828125,
-      "rate": 7.33,
-      "io_mbps": 0.2,
-      "mood": "emergency"
-    },
-    {
-      "id": "vodrip",
-      "count": 1,
-      "cpu": 0.13516435986127862,
-      "rss": 963174400,
-      "commit_mb": 2318.24609375,
-      "rate": 7.33,
-      "io_mbps": 0.2,
-      "mood": "emergency"
+      "count": 2,
+      "cpu": 1.0669926716233102,
+      "rss": 2613190656,
+      "commit_mb": 4381.95703125,
+      "rate": 4.0,
+      "io_mbps": 55.5,
+      "mood": "gaming",
+      "duty_allow_pct": 60
     }
   ],
   "notes": [
-    "22 project processes idle \u2014 they join when they get heavy",
-    "commit released \u2014 resuming 1 ladder-owned project(s); 0 burst/precap-owned kept"
+    "game deadlock.exe \u2014 P-cores + high GPU/IO (client); projects keep running on E-cores",
+    "26 project processes idle \u2014 they join when they get heavy",
+    "memory warn: 5.1G free, commit 85% \u2014 trimming workers, not killing \u2014 held by deadlock.exe (pid 48836) 9.99G, bun.exe (pid 33680) 2.38G [codeintel-worktrees], bun.exe (pid 31192) 2.31G [superharness], bun.exe (pid 36400) 2.28G [vodrip], python.exe (pid 47996) 1.90G [codeintel-worktrees]"
   ],
-  "advice": "Machine is under pressure. Work continues at a hard clamp. Do not retry-loop.",
+  "advice": "A game is in the foreground. Keep all project work running \u2014 the watcher already pinned it to efficiency cores and dropped its GPU/IO class. Do not kill jobs. Do not spawn a second copy because the first looks slow. If you must block, GET /wait (it pulses before caches go cold).",
   "pulse_seconds": 250.0,
   "how_to_wait": "GET http://127.0.0.1:47891/wait?max_ms=250000",
   "how_to_why": "GET http://127.0.0.1:47891/why?pid=<n>[,<n2>] \u2014 per-pid class trace (flags, target, live policy, measurement_class). Call it before trusting any number measured on that pid.",
   "how_to_admission": "GET http://127.0.0.1:47891/admission?project=<your-id>&kind=heavy|light \u2014 allow|degrade|refuse with reasons (mood, gaming, active stall windows). Never treat unknown as allow.",
   "how_to_status": "GET http://127.0.0.1:47891/status?project=<your-id> \u2014 pass your project id to get that job's own rate and wall_multiplier instead of the worst-case slice",
   "throttle": {
-    "wall_multiplier": 13.64,
-    "heavy_job_cap_pct": 7.3,
+    "wall_multiplier": 25.0,
+    "heavy_job_cap_pct": 4.0,
     "basis": "global-max-slice"
   },
-  "tier": "none",
+  "tier": "soft",
   "mood_gate": {
     "armed": true,
     "window_s": 15.0,
-    "applied_mood": "emergency",
+    "applied_mood": "gaming",
     "pending": [],
     "holding_for_s": 0.0,
     "selftest": {
       "armed": true,
       "window_s": 15.0,
-      "at": "2026-11-12T03:47:30Z",
+      "at": "2026-11-12T04:17:32Z",
       "refused": true,
       "earned": true,
       "floor_passes": true,
@@ -74,31 +130,31 @@
   },
   "how_to_toolcall": "POST http://127.0.0.1:47891/toolcall {\"pid\": <pid>, \"timeout_ms\": <ms>} before a bounded op \u2014 the watcher lifts throttling for it until the deadline or POST {\"id\"} to /toolcall/done.",
   "bus": "http://127.0.0.1:47891",
-  "tick": 99519,
-  "tick_ms_last": 578.0,
-  "tick_period_ms": 1094.0,
-  "tick_rate_ema": 0.92,
+  "tick": 100759,
+  "tick_ms_last": 453.0,
+  "tick_period_ms": 1157.0,
+  "tick_rate_ema": 0.996,
   "write_latency": {
     "status": {
-      "p50_ms": 2.548,
-      "p95_ms": 82.259,
+      "p50_ms": 2.587,
+      "p95_ms": 86.629,
       "max_ms": 1255.294,
-      "over_150ms": 3216,
-      "count": 102796
+      "over_150ms": 3270,
+      "count": 104088
     },
     "history": {
-      "p50_ms": 1.294,
-      "p95_ms": 55.542,
+      "p50_ms": 1.298,
+      "p95_ms": 62.371,
       "max_ms": 1116.191,
-      "over_150ms": 2712,
-      "count": 99519
+      "over_150ms": 2756,
+      "count": 100759
     },
     "pulse": {
-      "p50_ms": 110.106,
+      "p50_ms": 111.388,
       "p95_ms": 290.696,
       "max_ms": 70503.403,
-      "over_150ms": 1708,
-      "count": 12439
+      "over_150ms": 1769,
+      "count": 12594
     },
     "errors": {
       "dropped": 0,
@@ -106,14 +162,14 @@
       "queue_depth": 0
     }
   },
-  "updated": "2026-11-12T03:54:26Z",
-  "tick_updated": "2026-11-12T03:54:26Z",
-  "pulse_n": 3289,
+  "updated": "2026-11-12T04:20:12Z",
+  "tick_updated": "2026-11-12T04:20:12Z",
+  "pulse_n": 3341,
   "admin": true,
   "paused": false,
   "presence": "present",
-  "presence_reason": "present (recent input or not yet AFK)",
-  "memory_level": "ok",
+  "presence_reason": "game running",
+  "memory_level": "warn",
   "league_reserve_active": false,
   "perf": {
     "verdicts": [
@@ -124,13 +180,13 @@
         "actor_pid": 0,
         "actor_name": "system",
         "evidence": {
-          "measured": "77.032",
+          "measured": "84.763",
           "threshold": "70",
           "unit": "% of commit limit",
-          "holders": "bun.exe (pid 33680) 2.495G [codeintel-worktrees], bun.exe (pid 31192) 2.324G, bun.exe (pid 36400) 2.264G [vodrip], bun.exe (pid 3832) 1.893G, bun.exe (pid 29104) 1.756G [gravador]",
+          "holders": "deadlock.exe (pid 48836) 9.987G, bun.exe (pid 33680) 2.38G [codeintel-worktrees], bun.exe (pid 31192) 2.309G [superharness], bun.exe (pid 36400) 2.281G [vodrip], python.exe (pid 47996) 1.899G [codeintel-worktrees]",
           "holder_count": "5",
-          "holders_commit_gb": "10.732",
-          "sample_commit_gb": "43.212",
+          "holders_commit_gb": "18.856",
+          "sample_commit_gb": "69.864",
           "min_holder_gb": "0.5"
         }
       },
@@ -141,47 +197,47 @@
         "actor_pid": 0,
         "actor_name": "system",
         "evidence": {
-          "measured": "52",
+          "measured": "66",
           "threshold": "1",
           "unit": "stall windows",
-          "total_ms": "21577.271",
-          "peak_gap_ms": "2206",
+          "total_ms": "23383.299",
+          "peak_gap_ms": "3206",
           "peak_floor_ms": "250",
           "peak_crit_ms": "1000",
-          "peak_dpc_pct": "5.385",
-          "peak_irq_pct": "7.308",
-          "peak_disk_ms": "0.032",
+          "peak_dpc_pct": "5.469",
+          "peak_irq_pct": "5.769",
+          "peak_disk_ms": "0.018",
           "probe_interval_ms": "200",
           "probe_retention_s": "600",
-          "attributed": "ffmpeg.exe (pid 29476)",
+          "attributed": "ffmpeg.exe (pid 48860)",
           "attribution_reason": "heaviest cpu consumer",
           "attributable_gap_ms": "5000"
         }
       }
     ],
     "sample": {
-      "ts": 1794455665.8823886,
-      "cpu_pct": 73.3,
-      "commit_pct": 77.03157744541065,
-      "ram_free_gb": 12.249824523925781,
-      "dpc_pct": 0.856,
-      "irq_pct": 1.119,
-      "dpc_max_core_pct": 6.579,
-      "irq_max_core_pct": 2.632,
+      "ts": 1794457212.3780346,
+      "cpu_pct": 74.8,
+      "commit_pct": 84.76257529874381,
+      "ram_free_gb": 5.135833740234375,
+      "dpc_pct": 0.882,
+      "irq_pct": 1.912,
+      "dpc_max_core_pct": 8.824,
+      "irq_max_core_pct": 5.882,
       "disk_latency_ms": 0.0,
-      "stall_gap_ms": 2.9999999940628075,
-      "agent_pid": 8292,
+      "stall_gap_ms": 18.999999997322437,
+      "agent_pid": 7556,
       "agent_name": "omp.exe",
-      "agent_output_age_s": 78.1858606338501,
+      "agent_output_age_s": 31.364288568496704,
       "agent_outputs_seen": 0,
       "stall": {
-        "windows": 52,
-        "total_ms": 21577.3,
-        "peak_gap_ms": 2206.0,
-        "peak_dpc_pct": 5.385,
-        "peak_irq_pct": 7.308,
-        "peak_disk_ms": 0.03,
-        "actor_pid": 29476,
+        "windows": 66,
+        "total_ms": 23383.3,
+        "peak_gap_ms": 3206.0,
+        "peak_dpc_pct": 5.469,
+        "peak_irq_pct": 5.769,
+        "peak_disk_ms": 0.02,
+        "actor_pid": 48860,
         "actor_name": "ffmpeg.exe",
         "actor_reason": "heaviest cpu consumer",
         "probe_interval_ms": 200.0,
@@ -191,17 +247,17 @@
       "disk": {
         "status": "MEASURED",
         "source": "IOCTL_DISK_PERFORMANCE per volume (CurrentDiskQueueLength/AvgDiskQueueLength/PercentDiskTime)",
-        "interval_ms": 984.0,
+        "interval_ms": 953.0,
         "volumes": [
           {
             "letter": "C",
             "queue_now": 0,
-            "queue_avg": 0.007,
-            "busy_pct": 0.73,
-            "read_bps": 0.0,
-            "write_bps": 2018861.8,
-            "latency_ms": 0.103,
-            "ops": 70
+            "queue_avg": 0.11,
+            "busy_pct": 10.99,
+            "read_bps": 14795886.7,
+            "write_bps": 3210610.7,
+            "latency_ms": 0.167,
+            "ops": 626
           },
           {
             "letter": "D",
@@ -236,126 +292,131 @@
           {
             "letter": "G",
             "queue_now": 0,
-            "queue_avg": 0.001,
-            "busy_pct": 0.11,
-            "read_bps": 0.0,
-            "write_bps": 487024.4,
-            "latency_ms": 0.057,
-            "ops": 19
+            "queue_avg": 0.071,
+            "busy_pct": 7.08,
+            "read_bps": 93185074.5,
+            "write_bps": 0.0,
+            "latency_ms": 1.5,
+            "ops": 45
           },
           {
             "letter": "H",
             "queue_now": 0,
-            "queue_avg": 0.009,
-            "busy_pct": 0.85,
-            "read_bps": 66601.6,
-            "write_bps": 903284.6,
-            "latency_ms": 0.763,
-            "ops": 11
+            "queue_avg": 0.002,
+            "busy_pct": 0.24,
+            "read_bps": 73066.1,
+            "write_bps": 3313762.9,
+            "latency_ms": 0.385,
+            "ops": 6
           },
           {
             "letter": "I",
             "queue_now": 0,
-            "queue_avg": 0.055,
-            "busy_pct": 5.51,
-            "read_bps": 499512.2,
-            "write_bps": 4262504.1,
-            "latency_ms": 2.584,
-            "ops": 21
+            "queue_avg": 0.037,
+            "busy_pct": 3.69,
+            "read_bps": 0.0,
+            "write_bps": 5501448.1,
+            "latency_ms": 5.027,
+            "ops": 7
           }
         ],
         "contenders": [
           {
+            "pid": 47996,
+            "name": "python.exe",
+            "read_mbps": 348.794,
+            "write_mbps": 0.0,
+            "home": "H"
+          },
+          {
+            "pid": 20372,
+            "name": "chrome.exe",
+            "read_mbps": 0.123,
+            "write_mbps": 7.108,
+            "home": "C"
+          },
+          {
             "pid": 48080,
             "name": "chrome.exe",
-            "read_mbps": 3.405,
-            "write_mbps": 0.092,
+            "read_mbps": 7.051,
+            "write_mbps": 0.132,
+            "home": "C"
+          },
+          {
+            "pid": 8032,
+            "name": "explorer.exe",
+            "read_mbps": 2.085,
+            "write_mbps": 0.0,
+            "home": "C"
+          },
+          {
+            "pid": 36624,
+            "name": "msedge.exe",
+            "read_mbps": 0.927,
+            "write_mbps": 0.997,
             "home": "C"
           },
           {
             "pid": 46756,
             "name": "nvcontainer.exe",
             "read_mbps": 0.0,
-            "write_mbps": 2.016,
-            "home": "C"
-          },
-          {
-            "pid": 30704,
-            "name": "chrome.exe",
-            "read_mbps": 0.012,
-            "write_mbps": 0.83,
+            "write_mbps": 1.844,
             "home": "C"
           },
           {
             "pid": 15340,
             "name": "chrome.exe",
-            "read_mbps": 0.531,
-            "write_mbps": 0.16,
+            "read_mbps": 1.084,
+            "write_mbps": 0.482,
             "home": "C"
           },
           {
-            "pid": 23668,
-            "name": "herdr.exe",
-            "read_mbps": 0.159,
-            "write_mbps": 0.243,
-            "home": "C"
-          },
-          {
-            "pid": 23644,
-            "name": "herdr.exe",
-            "read_mbps": 0.206,
-            "write_mbps": 0.0,
-            "home": "C"
-          },
-          {
-            "pid": 4,
-            "name": "System",
-            "read_mbps": 0.0,
-            "write_mbps": 0.089,
-            "home": ""
-          },
-          {
-            "pid": 14464,
-            "name": "python.exe",
-            "read_mbps": 0.086,
-            "write_mbps": 0.0,
+            "pid": 50136,
+            "name": "msedge.exe",
+            "read_mbps": 0.6,
+            "write_mbps": 0.527,
             "home": "C"
           }
         ]
       },
       "creation": {
         "window_s": 10.0,
-        "count": 61,
-        "rate_per_s": 6.31,
-        "decayed_rate_per_s": 14.468,
+        "count": 46,
+        "rate_per_s": 4.636,
+        "decayed_rate_per_s": 9.081,
         "sustained_s": 0.0,
-        "parent_pid": 53332,
-        "parent_name": "bash.exe",
-        "parent_count": 5,
-        "parent_share": 0.082,
-        "parent_rate_per_s": 0.5,
-        "window_rate_per_s": 6.1,
+        "parent_pid": 46064,
+        "parent_name": "node.exe",
+        "parent_count": 7,
+        "parent_share": 0.1522,
+        "parent_rate_per_s": 0.7,
+        "window_rate_per_s": 4.6,
         "mixed": true,
         "parents": [
           [
-            53332,
-            "bash.exe",
-            5
+            46064,
+            "node.exe",
+            7
           ],
           [
-            36400,
-            "bun.exe",
+            47996,
+            "python.exe",
             4
           ],
           [
-            51220,
-            "bash.exe",
+            3832,
+            "bun.exe",
             3
           ]
         ],
-        "child_pids": [],
-        "tracked": 425,
-        "cost_ms": 1.35,
+        "child_pids": [
+          35260,
+          26600,
+          49420,
+          50168
+        ],
+        "tracked": 583,
+        "cost_ms": 1.062,
         "measured": "MEASURED"
       },
       "gpu": {
@@ -373,42 +434,42 @@
           "name": "System",
           "project_id": "",
           "lane": "light",
-          "cpu_pct": 6.115845959623528,
+          "cpu_pct": 8.2825931231622,
           "commit_gb": 5.7220458984375e-05,
-          "io_mbps": 0.08877840909130927,
+          "io_mbps": 0.007461795606452434,
           "protected": true,
           "game": false
         },
         {
-          "pid": 14828,
-          "name": "chatterino.exe",
+          "pid": 8032,
+          "name": "explorer.exe",
           "project_id": "",
           "lane": "light",
-          "cpu_pct": 3.312032418968964,
-          "commit_gb": 0.7175254821777344,
-          "io_mbps": 0.0,
-          "protected": false,
+          "cpu_pct": 4.775549188129558,
+          "commit_gb": 0.2994194030761719,
+          "io_mbps": 2.085308632387944,
+          "protected": true,
           "game": false
         },
         {
-          "pid": 9264,
-          "name": "WmiPrvSE.exe",
+          "pid": 48836,
+          "name": "deadlock.exe",
           "project_id": "",
           "lane": "light",
-          "cpu_pct": 1.8299549549539953,
-          "commit_gb": 0.03430938720703125,
-          "io_mbps": 0.0,
-          "protected": false,
-          "game": false
+          "cpu_pct": 4.327841451742411,
+          "commit_gb": 9.986946105957031,
+          "io_mbps": 0.0035204882835618476,
+          "protected": true,
+          "game": true
         },
         {
-          "pid": 13956,
-          "name": "Taskmgr.exe",
+          "pid": 20372,
+          "name": "chrome.exe",
           "project_id": "",
           "lane": "light",
-          "cpu_pct": 1.8183707398260982,
-          "commit_gb": 0.2599830627441406,
-          "io_mbps": 0.0,
+          "cpu_pct": 3.730897803226217,
+          "commit_gb": 1.1158523559570312,
+          "io_mbps": 7.231412667103215,
           "protected": true,
           "game": false
         },
@@ -417,9 +478,9 @@
           "name": "chrome.exe",
           "project_id": "",
           "lane": "light",
-          "cpu_pct": 1.6884871155528054,
-          "commit_gb": 1.0495834350585938,
-          "io_mbps": 3.496336520775906,
+          "cpu_pct": 3.5816618910971685,
+          "commit_gb": 1.0537185668945312,
+          "io_mbps": 7.183136889864203,
           "protected": true,
           "game": false
         },
@@ -428,76 +489,76 @@
           "name": "dwm.exe",
           "project_id": "",
           "lane": "light",
-          "cpu_pct": 1.3152356902416187,
-          "commit_gb": 0.422515869140625,
+          "cpu_pct": 2.910100286516449,
+          "commit_gb": 0.4406471252441406,
           "io_mbps": 0.0,
           "protected": true,
           "game": false
         },
         {
-          "pid": 23668,
-          "name": "herdr.exe",
+          "pid": 13636,
+          "name": "explorer.exe",
           "project_id": "",
           "lane": "light",
-          "cpu_pct": 1.233894430596281,
-          "commit_gb": 0.16728973388671875,
-          "io_mbps": 0.4027961990997838,
+          "cpu_pct": 2.787250786963262,
+          "commit_gb": 0.26108551025390625,
+          "io_mbps": 0.0,
+          "protected": true,
+          "game": false
+        },
+        {
+          "pid": 14828,
+          "name": "chatterino.exe",
+          "project_id": "",
+          "lane": "light",
+          "cpu_pct": 2.6862464183228765,
+          "commit_gb": 0.717926025390625,
+          "io_mbps": 3.096936653068637e-05,
           "protected": false,
           "game": false
         },
         {
-          "pid": 3832,
-          "name": "bun.exe",
-          "project_id": "",
-          "lane": "heavy",
-          "cpu_pct": 1.1595547309896888,
-          "commit_gb": 1.8929710388183594,
-          "io_mbps": 0.07108122823894444,
-          "protected": true,
-          "game": false
-        },
-        {
-          "pid": 31192,
-          "name": "bun.exe",
-          "project_id": "",
-          "lane": "heavy",
-          "cpu_pct": 0.7862534309287519,
-          "commit_gb": 2.3243484497070312,
-          "io_mbps": 0.03087219082965085,
-          "protected": true,
-          "game": false
-        },
-        {
-          "pid": 1760,
-          "name": "csrss.exe",
+          "pid": 13956,
+          "name": "Taskmgr.exe",
           "project_id": "",
           "lane": "light",
-          "cpu_pct": 0.7247217068685555,
-          "commit_gb": 0.003864288330078125,
+          "cpu_pct": 1.6415950334195355,
+          "commit_gb": 0.26328277587890625,
           "io_mbps": 0.0,
           "protected": true,
           "game": false
         },
         {
-          "pid": 33788,
-          "name": "bun.exe",
-          "project_id": "kicktwitch",
-          "lane": "heavy",
-          "cpu_pct": 0.6432982616689789,
-          "commit_gb": 1.130859375,
-          "io_mbps": 0.048081552915783615,
-          "protected": true,
+          "pid": 21848,
+          "name": "msedge.exe",
+          "project_id": "",
+          "lane": "light",
+          "cpu_pct": 1.4177411652259626,
+          "commit_gb": 0.17540740966796875,
+          "io_mbps": 0.05360979519206109,
+          "protected": false,
           "game": false
         },
         {
-          "pid": 5264,
-          "name": "audiodg.exe",
+          "pid": 36400,
+          "name": "bun.exe",
+          "project_id": "vodrip",
+          "lane": "heavy",
+          "cpu_pct": 1.393625393481631,
+          "commit_gb": 2.2805213928222656,
+          "io_mbps": 0.02201493964133802,
+          "protected": false,
+          "game": false
+        },
+        {
+          "pid": 50136,
+          "name": "msedge.exe",
           "project_id": "",
           "lane": "light",
-          "cpu_pct": 0.5260942760966476,
-          "commit_gb": 0.020977020263671875,
-          "io_mbps": 0.0,
-          "protected": true,
+          "cpu_pct": 1.3431232091614382,
+          "commit_gb": 0.137542724609375,
+          "io_mbps": 1.126272061258686,
+          "protected": false,
           "game": false
         }
       ],
@@ -531,29 +592,29 @@
         "window_s": 600.0,
         "measured_in": "probe thread at thread-priority 0",
         "status": "MEASURED",
-        "p99_ms": 207.0,
+        "p99_ms": 237.0,
         "p50_ms": 3.0,
-        "p95_ms": 50.0,
-        "max_ms": 2112.0,
-        "probes": 2766,
-        "stalls_gt_deadline": 62,
+        "p95_ms": 81.0,
+        "max_ms": 3222.0,
+        "probes": 2730,
+        "stalls_gt_deadline": 91,
         "deadline_ms": 100.0
       },
       "class_population": {
         "counts": {
-          "Idle": 77,
-          "BelowNormal": 115,
-          "Normal": 394,
+          "Idle": 83,
+          "BelowNormal": 74,
+          "Normal": 397,
           "AboveNormal": 15,
           "High": 6,
           "Realtime": 0
         },
-        "total": 625,
+        "total": 593,
         "unreadable": 18,
         "unreadable_reasons": {
           "open-denied": 18
         },
-        "sampled_at": 1794455663.876,
+        "sampled_at": 1794457209.324,
         "cache_s": 5.0,
         "status": "MEASURED"
       },
@@ -563,33 +624,33 @@
         "deadline_ms": 100.0,
         "classes": {
           "Idle": {
-            "stalls_gt_deadline": 330,
-            "probes": 1965,
-            "max_ms": 9316.0,
+            "stalls_gt_deadline": 293,
+            "probes": 1800,
+            "max_ms": 12159.0,
             "status": "MEASURED"
           },
           "BelowNormal": {
-            "stalls_gt_deadline": 59,
-            "probes": 2761,
-            "max_ms": 2081.0,
+            "stalls_gt_deadline": 111,
+            "probes": 2718,
+            "max_ms": 3222.0,
             "status": "MEASURED"
           },
           "Normal": {
-            "stalls_gt_deadline": 62,
-            "probes": 2765,
-            "max_ms": 2112.0,
+            "stalls_gt_deadline": 91,
+            "probes": 2730,
+            "max_ms": 3222.0,
             "status": "MEASURED"
           },
           "AboveNormal": {
-            "stalls_gt_deadline": 49,
-            "probes": 2780,
-            "max_ms": 2128.0,
+            "stalls_gt_deadline": 84,
+            "probes": 2752,
+            "max_ms": 3222.0,
             "status": "MEASURED"
           },
           "High": {
-            "stalls_gt_deadline": 66,
-            "probes": 2772,
-            "max_ms": 2175.0,
+            "stalls_gt_deadline": 77,
+            "probes": 2757,
+            "max_ms": 3222.0,
             "status": "MEASURED"
           }
         },
@@ -606,13 +667,13 @@
         "reasons": {
           "open-denied": 18
         },
-        "total": 625,
+        "total": 593,
         "status": "MEASURED"
       },
       "priority_violations": {
         "sensor": "priority_violations",
         "status": "MEASURED",
-        "count": 1,
+        "count": 3,
         "rows": [
           {
             "pid": 4848,
@@ -620,9 +681,23 @@
             "class": "BelowNormal",
             "interactive": "visible-window",
             "below_by": 1
+          },
+          {
+            "pid": 37496,
+            "image": "msedgewebview2.exe",
+            "class": "Idle",
+            "interactive": "visible-window",
+            "below_by": 2
+          },
+          {
+            "pid": 45756,
+            "image": "WhatsApp.Root.exe",
+            "class": "Idle",
+            "interactive": "visible-window",
+            "below_by": 2
           }
         ],
-        "checked": 8,
+        "checked": 12,
         "unreadable": 0
       }
     },
@@ -633,7 +708,7 @@
     "running": true,
     "poll_ms": 250,
     "max_lifetime_s": 180.0,
-    "polls": 314479,
+    "polls": 318693,
     "watching": 2,
     "flashes": 6,
     "long_lived": 6,
@@ -837,12 +912,12 @@
       "enabled": true,
       "running": true,
       "ready": true,
-      "events": 7555027,
-      "shown": 1027,
-      "hidden": 2707,
+      "events": 7765323,
+      "shown": 1062,
+      "hidden": 2801,
       "queued": 0,
       "dropped": 0,
-      "visible_tracked": 3347,
+      "visible_tracked": 3447,
       "last_error": ""
     },
     "notify": {
@@ -851,13 +926,13 @@
       "dm_tool": "I:/!watcher/tools/herdr-dm.py",
       "cooldown_s": 600.0,
       "min_interval_s": 60.0,
-      "offered": 4155,
+      "offered": 4284,
       "sent": 2,
       "durable_only": 105,
-      "refused": 4047,
+      "refused": 4176,
       "dropped": 0,
       "refusals": {
-        "not-in-the-foreground": 3725,
+        "not-in-the-foreground": 3854,
         "min-interval": 123,
         "pty-client-not-a-window": 9,
         "dm-rc=15: no json": 1,
@@ -879,45 +954,157 @@
     }
   },
   "sample": {
-    "cpu_pct": 73.3,
+    "cpu_pct": 74.8,
     "ram_total": 51229278208,
-    "ram_available": 13067042816,
-    "ram_pct": 74.5,
-    "disk_read_bps": 3090801.024759627,
-    "disk_write_bps": 6876802.732694782,
-    "idle_seconds": 6.781,
+    "ram_available": 5524135936,
+    "ram_pct": 89.2,
+    "disk_read_bps": 152254433.1442417,
+    "disk_write_bps": 12149152.54231162,
+    "idle_seconds": 0.047,
     "user_idle": false,
     "foreground": "chrome.exe",
     "logical_count": 20,
     "hybrid": true,
     "presence": "present",
-    "cursor_frozen_seconds": 47.546000000002095,
+    "cursor_frozen_seconds": 11.047000000005937,
     "media_playing": false,
     "audio_source": "",
-    "commit_pct": 77.03157744541065,
-    "memory_level": "ok"
+    "commit_pct": 84.76257529874381,
+    "memory_level": "warn"
   },
   "procs": [
     {
-      "pid": 33680,
-      "name": "bun.exe",
-      "project_id": "codeintel-worktrees",
-      "cpu": 0.26686592655801944,
-      "rss": 1121214464,
-      "policy": "emergency",
+      "pid": 48836,
+      "name": "deadlock.exe",
+      "project_id": "game",
+      "cpu": 4.327841451742411,
+      "rss": 6061346816,
+      "policy": "no-handle",
       "in_job": false,
-      "ecoqos": true,
-      "duty": false
+      "ecoqos": false,
+      "duty": false,
+      "err": "open failed"
     },
     {
       "pid": 36400,
       "name": "bun.exe",
       "project_id": "vodrip",
-      "cpu": 0.13516435986127862,
-      "rss": 963174400,
-      "policy": "emergency",
+      "cpu": 1.393625393481631,
+      "rss": 1011216384,
+      "policy": "gaming-mem",
       "in_job": false,
       "ecoqos": true,
+      "duty": true
+    },
+    {
+      "pid": 46064,
+      "name": "node.exe",
+      "project_id": "gravador",
+      "cpu": 1.2296694648367332,
+      "rss": 237768704,
+      "policy": "no-handle",
+      "in_job": false,
+      "ecoqos": false,
+      "duty": false,
+      "err": "open failed"
+    },
+    {
+      "pid": 47996,
+      "name": "python.exe",
+      "project_id": "codeintel-worktrees",
+      "cpu": 0.763888888888889,
+      "rss": 1503113216,
+      "policy": "gaming-mem",
+      "in_job": false,
+      "ecoqos": true,
+      "duty": true
+    },
+    {
+      "pid": 31192,
+      "name": "bun.exe",
+      "project_id": "superharness",
+      "cpu": 0.4546556741016321,
+      "rss": 1054875648,
+      "policy": "gaming-compile",
+      "in_job": false,
+      "ecoqos": false,
+      "duty": false
+    },
+    {
+      "pid": 33680,
+      "name": "bun.exe",
+      "project_id": "codeintel-worktrees",
+      "cpu": 0.30310378273442135,
+      "rss": 1110077440,
+      "policy": "gaming-mem",
+      "in_job": false,
+      "ecoqos": true,
+      "duty": true
+    },
+    {
+      "pid": 41896,
+      "name": "ffmpeg.exe",
+      "project_id": "vodrip",
+      "cpu": 0.0,
+      "rss": 5943296,
+      "policy": "gaming",
+      "in_job": false,
+      "ecoqos": true,
+      "duty": false
+    },
+    {
+      "pid": 19468,
+      "name": "rustc.exe",
+      "project_id": "auto_reqwest-0.13.4",
+      "cpu": 0.0,
+      "rss": 141266944,
+      "policy": "gaming-compile",
+      "in_job": false,
+      "ecoqos": false,
+      "duty": false
+    },
+    {
+      "pid": 22864,
+      "name": "rustc.exe",
+      "project_id": "auto_clap_builder-4.6.0",
+      "cpu": 0.0,
+      "rss": 137363456,
+      "policy": "gaming-compile",
+      "in_job": false,
+      "ecoqos": false,
+      "duty": false
+    },
+    {
+      "pid": 33404,
+      "name": "timeout.exe",
+      "project_id": "superharness",
+      "cpu": 0.0,
+      "rss": 1994752,
+      "policy": "gaming-compile",
+      "in_job": false,
+      "ecoqos": false,
+      "duty": false
+    },
+    {
+      "pid": 43820,
+      "name": "bash.exe",
+      "project_id": "superharness",
+      "cpu": 0.0,
+      "rss": 14921728,
+      "policy": "gaming-compile",
+      "in_job": false,
+      "ecoqos": false,
+      "duty": false
+    },
+    {
+      "pid": 44564,
+      "name": "cargo.exe",
+      "project_id": "superharness",
+      "cpu": 0.0,
+      "rss": 179654656,
+      "policy": "gaming-compile",
+      "in_job": false,
+      "ecoqos": false,
       "duty": false
     }
   ],
@@ -946,79 +1133,79 @@
     "action_path": {
       "ok": true,
       "detail": "",
-      "last_change": "2026-11-12T03:53:26.886Z",
-      "fails": 111,
-      "last_ok_ts": "2026-11-12T03:53:26.886Z"
+      "last_change": "2026-11-12T04:19:31.171Z",
+      "fails": 113,
+      "last_ok_ts": "2026-11-12T04:19:31.171Z"
     },
     "perf_probe": {
       "ok": true,
       "detail": "",
-      "last_change": "2026-11-12T03:54:25.628Z",
-      "fails": 124,
-      "last_ok_ts": "2026-11-12T03:54:25.628Z"
+      "last_change": "2026-11-12T04:20:12.109Z",
+      "fails": 125,
+      "last_ok_ts": "2026-11-12T04:20:12.109Z"
     },
     "evidence_queue": {
       "ok": true,
       "detail": "",
-      "last_change": "2026-11-12T03:54:25.628Z",
+      "last_change": "2026-11-12T04:20:12.109Z",
       "fails": 0,
-      "last_ok_ts": "2026-11-12T03:54:25.628Z"
+      "last_ok_ts": "2026-11-12T04:20:12.109Z"
     },
     "audio_probe": {
       "ok": true,
       "detail": "",
-      "last_change": "2026-11-12T03:54:24.958Z",
+      "last_change": "2026-11-12T04:20:11.427Z",
       "fails": 1,
-      "last_ok_ts": "2026-11-12T03:54:24.958Z"
+      "last_ok_ts": "2026-11-12T04:20:11.427Z"
     },
     "mood_gate": {
       "ok": true,
       "detail": "",
-      "last_change": "2026-11-12T03:47:30.789Z",
+      "last_change": "2026-11-12T04:17:32.108Z",
       "fails": 0,
-      "last_ok_ts": "2026-11-12T03:47:30.789Z"
+      "last_ok_ts": "2026-11-12T04:17:32.108Z"
     },
     "creation_sensor": {
       "ok": true,
       "detail": "",
-      "last_change": "2026-11-12T03:54:03.503Z",
+      "last_change": "2026-11-12T04:20:07.284Z",
       "fails": 0,
-      "last_ok_ts": "2026-11-12T03:54:03.503Z"
+      "last_ok_ts": "2026-11-12T04:20:07.284Z"
     },
     "stutter_relief": {
       "ok": true,
       "detail": "",
-      "last_change": "2026-11-12T03:53:51.497Z",
+      "last_change": "2026-11-12T04:19:45.833Z",
       "fails": 3,
-      "last_ok_ts": "2026-11-12T03:53:51.497Z"
+      "last_ok_ts": "2026-11-12T04:19:45.833Z"
     },
     "jobs": {
       "ok": true,
       "detail": "",
-      "last_change": "2026-11-12T03:54:14.033Z",
+      "last_change": "2026-11-12T04:18:53.970Z",
       "fails": 0,
-      "last_ok_ts": "2026-11-12T03:54:14.033Z"
+      "last_ok_ts": "2026-11-12T04:18:53.970Z"
     },
     "terminal_watch": {
       "ok": true,
       "detail": "",
-      "last_change": "2026-11-12T03:54:01.120Z",
+      "last_change": "2026-11-12T04:19:43.053Z",
       "fails": 0,
-      "last_ok_ts": "2026-11-12T03:54:01.120Z"
+      "last_ok_ts": "2026-11-12T04:19:43.053Z"
     },
     "diskhealth": {
       "ok": false,
       "detail": "NTFS events 55/98 in System log (5)",
-      "last_change": "2026-11-12T03:53:53.314Z",
-      "fails": 1988,
+      "last_change": "2026-11-12T04:19:52.223Z",
+      "fails": 2013,
       "last_ok_ts": "2026-11-11T18:02:30.984Z"
     },
     "herdr_notify": {
       "ok": true,
       "detail": "",
-      "last_change": "2026-11-12T03:53:40.121Z",
+      "last_change": "2026-11-12T04:20:03.003Z",
       "fails": 1,
-      "last_ok_ts": "2026-11-12T03:53:40.121Z"
+      "last_ok_ts": "2026-11-12T04:20:03.003Z"
     }
   },
   "vram": {
