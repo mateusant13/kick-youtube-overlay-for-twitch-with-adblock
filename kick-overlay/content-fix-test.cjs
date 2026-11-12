@@ -224,7 +224,7 @@ const bridgeSrc = fs.readFileSync('player-bridge.js', 'utf8');
 const scope = {};
 const fn = new Function('window', 'document', 'location', 'navigator', src + '\n;return {KO, probe, apply, ensureYtHls, injectStyles, teardown, setPlayer, saveState, ' +
   'loadState, rectTick, rectFromHost, currentSlug, resolveYtPageKick, ensureYtIframe, ensureKick, showKickLayer, showYtLayer, hideWrap, hideWrapForProbe, ' +
-  'renderQualityMenu, mount, updateKickBar, seekOverlayStep, onOverlayKeydown, syncMute, overlayOwnsPicture};');
+  'renderQualityMenu, mount, updateKickBar, seekOverlayStep, onOverlayKeydown, syncMute, overlayOwnsPicture, visibleSurface};');
 const api = fn(global, doc, global.location, global.navigator);
 const KO = api.KO;
 
@@ -885,7 +885,7 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
     addEventListener() {},
     removeEventListener() {},
   };
-  const mountApi = new Function('window', 'document', 'location', 'navigator', src + '\n;return {KO, mount, updateKickBar, teardown, injectStyles, rectTick, syncMute, setupHotBar, teardownHotBar, renderQualityMenu, overlayOwnsPicture, overlayHasPicture, kickSeekTo, kickBackToLive};')(
+  const mountApi = new Function('window', 'document', 'location', 'navigator', src + '\n;return {KO, mount, updateKickBar, teardown, injectStyles, rectTick, syncMute, setupHotBar, teardownHotBar, renderQualityMenu, overlayOwnsPicture, overlayHasPicture, visibleSurface, kickSeekTo, kickBackToLive};')(
     global, mountDoc, global.location, global.navigator,
   );
   const mKO = mountApi.KO;
@@ -925,7 +925,7 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
   mKO.wrap.style.display = 'none';
   // ...and the resume half is about a layer that FAILED (no picture), which is
   // why the fixture drops its report here.
-  mKO.ytState = { ready: false, playing: false, live: false, muted: true, dur: 0, ct: 0, error: 0 };
+  mKO.ytState = { ready: false, playing: false, live: false, muted: true, dur: 0, ct: 0, error: 1 };
   mountApi.rectTick();
   assert.strictEqual(nativeVideo.paused, false, 'hidden failed overlay resumes Twitch playback');
   assert.strictEqual(nativeVideo.muted, false, 'still no mute write on the way out');
@@ -1957,6 +1957,87 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     api.syncMute();
     assert.strictEqual(cold.paused, false, 'a channel with no layer on the way is never held');
     console.log('P2g cold open: the preroll window is held, then released - OK');
+  }
+  // P2h: SOUND follows the same ownership predicate as the picture. Owner
+  // 2026-11-12: "saiu do player, foi pro player da twitch, e deixou pausado e
+  // desmutado". The surface used to be read off the bar's CSS: a hidden bar
+  // declared the native audible in the same tick that ownership paused it.
+  {
+    KO.player = 'kick';
+    KO.wrap = el('div');
+    KO.kickState = { state: 'Playing', paused: false, muted: true, pos: 10, lat: 1, dur: 0, ts: Date.now() };
+    KO.ytState = null;
+    KO.picSeenAt = Date.now();
+    KO.picLostAt = 0;
+    KO.kickPrewarm = null;
+    KO.twDeleted = false;
+    KO.wrap.style.display = 'none';
+    assert.strictEqual(api.visibleSurface(), 'kick', 'a hidden bar does not hand the sound to the native while the layer owns the picture');
+    KO.kickState = { state: 'Idle', paused: true, muted: true, pos: 0, lat: 0, dur: 0, ts: Date.now() };
+    KO.picSeenAt = 0; // never painted, past the cold window
+    KO.bootAt = performance.now() - 30000;
+    assert.strictEqual(api.visibleSurface(), 'twitch', 'with no picture at all the native is the surface that is heard');
+    console.log('P2h surface: ownership decides the sound, not the bar CSS - OK');
+  }
+  // P2i: one tick cannot pause and resume the native. In the state below the
+  // hysteresis says OWNED while the raw picture test says nothing (a `Ready`
+  // report between segments), and the rect loop used to resume on the raw test
+  // in the same tick that syncMute paused on ownership. Guarded structurally
+  // because the resume path needs a real player to drive.
+  {
+    mKO.player = 'kick';
+    mKO.wrap = el('div');
+    mKO.wrap.style.display = 'none';
+    mKO.twDeleted = false;
+    mKO.kickState = { state: 'Ready', paused: false, muted: false, pos: 10, lat: 1, dur: 0, ts: Date.now() };
+    mKO.kickPrewarm = null;
+    mKO.ytState = null;
+    mKO.picSeenAt = Date.now() - 500;
+    mKO.picLostAt = Date.now() - 500;
+    assert.strictEqual(mountApi.overlayHasPicture(), false, 'precondition: the raw picture test says no picture');
+    assert.strictEqual(mountApi.overlayOwnsPicture(), true, 'precondition: ownership is held by the hysteresis');
+    const resumeLines = src.split('\n').filter((l) => /resumeTwitchIfOurs\(\)/.test(l) && !l.trim().startsWith('//'));
+    const raw = resumeLines.filter((l) => /overlayHasPicture\(\)/.test(l));
+    assert.strictEqual(raw.length, 0, `a resume still asks the raw picture test: ${raw.join(' | ')}`);
+    const guarded = resumeLines.filter((l) => /overlayOwnsPicture\(\)/.test(l));
+    assert.ok(guarded.length >= 1, 'no resume is guarded by the ownership predicate');
+    console.log('P2i tick: one predicate for pause and resume (no churn inside a tick) - OK');
+  }
+  // P2j: the LOG must answer the owner's questions. Every report of 2026-11-11/12
+  // (an ad/player fight, a switch that lost the mute, a native left paused) asked
+  // "who had the screen, what changed, and why" - and content.js sent those
+  // decisions to the extension console only, never to `ko.adlog`.
+  {
+    const events = () => swCalls.filter((m) => m && m.__koDiag).map((m) => m.__koDiag.ev);
+    swCalls.length = 0;
+    const logVid = videoEl('tw-log');
+    logVid.paused = false;
+    fakeVideos.length = 0;
+    fakeVideos.push(logVid);
+    KO.player = 'kick';
+    KO.wrap = el('div');
+    KO.kickState = { state: 'Playing', paused: false, muted: false, pos: 10, lat: 1, dur: 0, ts: Date.now() };
+    KO.ytState = null;
+    KO.kickPrewarm = null;
+    KO.picSeenAt = 0;
+    KO.picLostAt = 0;
+    KO.ownerAttr = undefined;
+    api.syncMute();
+    assert.ok(logVid.paused, 'precondition: the layer paused the native');
+    assert.ok(events().includes('owner'), 'no owner transition in the log: the screen changing hands is unanswerable');
+    const own = swCalls.filter((m) => m && m.__koDiag && m.__koDiag.ev === 'owner').pop().__koDiag.data;
+    assert.strictEqual(own.to, 'kick', 'the owner line does not say who took the screen');
+    assert.strictEqual(typeof own.pic, 'boolean', 'the owner line does not say WHY (picture/failed/cold)');
+    assert.ok(events().includes('native-pause'), 'no native-pause line: a paused player with no reason in the log');
+    api.setPlayer('twitch');
+    const sw = swCalls.filter((m) => m && m.__koDiag && m.__koDiag.ev === 'player-switch').pop();
+    assert.ok(sw, 'no player-switch line: a switch that loses the mute leaves no trace');
+    // The arbiter is absent in this harness world, so the field is null here and
+    // populated in the extension; the contract is that the LINE carries it.
+    assert.ok('intent' in sw.__koDiag.data, 'the switch line carries no intent field');
+    // and the sink: diag() must ALSO reach the ring adblock-bridge.js persists.
+    assert.ok(/ko-adlog/.test(src.slice(src.indexOf('function diag('), src.indexOf('function diag(') + 900)), 'diag() does not persist to ko.adlog');
+    console.log('P2j log: ownership, pause and switch decisions persist with their reason - OK');
   }
   // P2f: HYSTERESIS. A re-buffer reports Buffering/Ready between segments; a raw
   // picture test dropped ownership there, the native resumed, the ad path took a

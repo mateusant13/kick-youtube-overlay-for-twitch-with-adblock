@@ -222,9 +222,9 @@ function makeWorld(opts, extra) {
     querySelectorAll: (sel) => (sel === 'video' ? (extraVideos.length ? [video, ...extraVideos] : [video]) : []),
     getElementById: () => null,
     dispatchEvent(ev) {
-      if (ev && ev.type === 'ko-adlog') {
+      if (ev && (ev.type === 'ko-adlog' || ev.type === 'ko-audio-log')) {
         try {
-          adLogs.push(JSON.parse(ev.detail));
+          adLogs.push(Object.assign({ type: ev.type }, JSON.parse(ev.detail)));
         } catch {
           /* malformed */
         }
@@ -473,6 +473,11 @@ function assert(cond, msg) {
 }
 
 async function main() {
+  // ---- 0: the swap carries the mute (owner 2026-11-12) ------------------
+  {
+    const w = makeWorld();
+    check('swap carries the mute, and the log records the carry', () => swapCarryArm(w));
+  }
   // ---- 1: the report. A muted user, an ad swaps the player. --------------
   {
     const page = makeWorld();
@@ -872,6 +877,25 @@ async function main() {
   console.log('');
   console.log(`RESULT ${failed.length ? 'FAIL' : 'PASS'} mute-decision checks=${checks.length} failed=${failed.length}`);
   process.exit(failed.length ? 1 : 0);
+}
+
+// THE SWAP CARRIES THE SOUND, and the log says so. Owner 2026-11-12: "O PLAYER
+// TAVA MUTADO, SAIU DO PLAYER, FOI PRO PLAYER DA TWITCH, E DEIXOU PAUSADO E
+// DESMUTADO". The mute must follow the surface, and the line that proves it
+// (audio-inherit) must exist in the log the owner's report is read from.
+function swapCarryArm(w) {
+  const audio = w.audio;
+  audio.setVisible('kick');
+  audio.setIntent('kick', { muted: true, volume: 0.4 }, { persist: true });
+  assert(audio.intent('kick').muted === true, 'precondition: the overlay layer is muted');
+  const before = w.logs().length;
+  audio.setVisible('twitch'); // the switch the owner described
+  assert(audio.intent('twitch').muted === true, 'the swap lost the mute: the native comes up unmuted');
+  assert(Math.abs(audio.intent('twitch').volume - 0.4) < 0.03, 'the swap lost the volume');
+  const lines = w.logs().slice(before).filter((l) => l.ev === 'audio-inherit');
+  assert(lines.length === 1, `audio-inherit lines: ${lines.length}`);
+  assert(lines[0].d.now.muted === true, 'the log line does not say the mute was carried');
+  console.log('PASS swap carries the mute, and the log records the carry');
 }
 
 if (require.main === module) {

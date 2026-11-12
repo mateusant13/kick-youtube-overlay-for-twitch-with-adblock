@@ -58,12 +58,26 @@
     kick: { muted: false, volume: 1 },
     yt: { muted: false, volume: 1 },
   };
+  // Every audio decision is reported, so the log answers the owner's questions
+  // instead of the code being asked again: which surface was audible, WHAT
+  // changed its state, and whether a swap carried the mute. content.js forwards
+  // `ko-audio-log` into `ko.adlog` (owner order 2026-11-12: "era pros logs te
+  // falar TUDO que eu ja te falei antes. FAÇA OS LOGS OUTPUTAREM O QUE DEVEM").
+  function report(ev, d) {
+    try {
+      document.dispatchEvent(new CustomEvent('ko-audio-log', { detail: JSON.stringify({ ev, d: d || {} }) }));
+    } catch {
+      /* a log line must never break audio */
+    }
+  }
+
   const writers = Object.create(null);   // surface -> { kind, ... }
   const shares = Object.create(null);    // surface -> the surface whose intent it uses
   const policy = new Set();              // surfaces silenced by browser policy
   const sent = Object.create(null);      // surface -> last state COMMANDED (echo guard)
   const writes = new WeakMap();          // Element -> { at, muted, volume }
   const listeners = new Set();           // intent change subscribers
+  let lastApplyStamp = '';               // last reported derived state
   let requested = null;                  // the surface the page's own layers show
   let claimed = null;                    // a surface that COVERS the page (the ad
   let releasedAt = 0;                // when the claim was released (the machine's mute window)
@@ -176,6 +190,23 @@
 
   // Apply the derived state to every registered surface, writing only diffs.
   function apply() {
+    // TRANSITION ONLY: a 400 ms tick that changes nothing logs nothing.
+    let stamp = '';
+    try {
+      stamp = Object.keys(writers)
+        .sort()
+        .map((n) => {
+          const t = want(n);
+          return `${n}:${t.muted ? 'm' : '-'}${t.volume.toFixed(2)}`;
+        })
+        .join(' ');
+    } catch {
+      stamp = '';
+    }
+    if (stamp && stamp !== lastApplyStamp) {
+      lastApplyStamp = stamp;
+      report('audio-apply', { vis: visibleNow(), st: stamp });
+    }
     for (const name of Object.keys(writers)) {
       const w = writers[name];
       const target = want(name);
@@ -401,9 +432,15 @@
     const src = intentOf(from);
     const dst = intentOf(to);
     if (dst.muted === !!src.muted && Math.abs(dst.volume - clamp(src.volume)) <= VOL_EPS) return;
+    const was = { muted: dst.muted, volume: clamp(dst.volume) };
     dst.muted = !!src.muted;
     dst.volume = clamp(src.volume);
     persistTab();
+    // The swap rule, measured: "se antes tava desmutado > vai pra desmutado no
+    // player. e vice versa" (owner 2026-11-09). This line is what proves the
+    // carry happened, or that it did NOT (owner 2026-11-12: "O PLAYER TAVA
+    // MUTADO ... DEIXOU PAUSADO E DESMUTADO").
+    report('audio-inherit', { from: surfaceOf(from), to: surfaceOf(to), was, now: { muted: dst.muted, volume: clamp(dst.volume) } });
   }
 
   // The surface the extension's own layers show. Overridden by a claim.
@@ -413,6 +450,7 @@
     const prev = requested;
     requested = next;
     inheritState(prev, next);
+    report('audio-visible', { from: prev, to: next, claimed: claimed || null });
     apply();
     notify();
     return KOAudio;
@@ -425,7 +463,9 @@
     const next = surface || null;
     if (next === claimed) return KOAudio;
     if (!next) releasedAt = Date.now();
+    const prevClaim = claimed;
     claimed = next;
+    report('audio-claim', { from: prevClaim || null, to: next || null });
     apply();
     notify();
     return KOAudio;
@@ -445,6 +485,15 @@
     if (patch && typeof patch.muted === 'boolean') it.muted = patch.muted;
     if (patch && isNum(patch.volume)) it.volume = clamp(patch.volume);
     const changed = before.muted !== it.muted || Math.abs(before.volume - it.volume) > 0.0001;
+    if (changed) {
+      report('audio-intent', {
+        surface: String(surface),
+        before,
+        after: { muted: it.muted, volume: clamp(it.volume) },
+        why: String((opts && opts.why) || 'direct'),
+        silent: !!(opts && opts.silent),
+      });
+    }
     if (changed && !(opts && opts.silent)) {
       apply();
       notify();

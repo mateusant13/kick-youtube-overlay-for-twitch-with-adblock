@@ -239,11 +239,46 @@ function visAudio(tag) {
   }
 }
 
-function diag(ev, data) {
+// The audio authority cannot write the log itself (it has no message channel and
+// must stay side-effect free); it dispatches, and this forwards. One listener,
+// attached once, so a second copy of content.js cannot double every audio line.
+function listenAudioLog() {
+  if (window.__koAudioLog) return;
+  window.__koAudioLog = true;
   try {
-    chrome.runtime.sendMessage({ __koDiag: { ev, data: data || {} } }, () => void chrome.runtime.lastError);
+    document.addEventListener(
+      'ko-audio-log',
+      (ev) => {
+        try {
+          const d = JSON.parse(String(ev && ev.detail));
+          if (d && typeof d.ev === 'string') diag(d.ev, d.d || {});
+        } catch {
+          /* malformed line */
+        }
+      },
+      true,
+    );
+  } catch {
+    /* document gone */
+  }
+}
+
+function diag(ev, data) {
+  const d = data || {};
+  try {
+    chrome.runtime.sendMessage({ __koDiag: { ev, data: d } }, () => void chrome.runtime.lastError);
   } catch {
     /* beacon must never break the overlay */
+  }
+  // ...AND into the ring the owner's reports are read from. The worker message
+  // above only reaches the extension console: every ownership decision, pause and
+  // player switch this file reported for two days was invisible in `ko.adlog`,
+  // which is why the same question had to be asked again (owner 2026-11-12:
+  // "era pros logs te falar TUDO que eu ja te falei antes").
+  try {
+    document.dispatchEvent(new CustomEvent('ko-adlog', { detail: JSON.stringify({ ev, d }) }));
+  } catch {
+    /* document may be gone */
   }
 }
 
@@ -273,7 +308,7 @@ const NOT_CHANNEL = new Set([
 
 // Build marker for the diag stream — lets us tell which code a tab runs
 // (content scripts of pre-reload tabs survive extension reloads).
-const KO_VER = '0.8.78';
+const KO_VER = '0.8.79';
 // How long a lost picture may last before the native player is allowed to
 // reclaim the screen (owner 2026-11-11: an ad and the player fighting).
 const OWNER_GRACE_MS = 6000;
@@ -632,12 +667,7 @@ function plausibleKickSlug(slug) {
 // `ko-adlog` CustomEvent the bridge persists (that is how `vis-audio` lands).
 // Without this the next pod has to re-derive the mint by hand.
 function kickLog(ev, d) {
-  diag(ev, d);
-  try {
-    document.dispatchEvent(new CustomEvent('ko-adlog', { detail: JSON.stringify({ ev, d }) }));
-  } catch {
-    /* a diag line must never break the mint */
-  }
+  diag(ev, d); // diag() persists to ko.adlog too - one sink, no double line
 }
 
 async function kickPlaybackUrl(slug) {
@@ -1543,10 +1573,26 @@ function syncOwner() {
   // protection, on a player the user can see is not ours. The term is the
   // PICTURE now — a mount attempt always has a gap with no picture, and that
   // gap must belong to the native player.
-  const want = overlayOwnsPicture() ? KO.player : '';
+  const owned = overlayOwnsPicture();
+  const want = owned ? KO.player : '';
   if (KO.ownerAttr === want) return;
+  const prev = KO.ownerAttr;
   KO.ownerAttr = want;
   try { document.documentElement.setAttribute('data-ko-owner', want); } catch { /* teardown */ }
+  // TRANSITION LOG. Every owner change answers "who had the screen, and why",
+  // which is the first question every owner report of 2026-11-11/12 needed and
+  // the log could not answer: the attribute flipped silently while the native
+  // and the ad path reacted to it.
+  diag('owner', {
+    from: prev || null,
+    to: want || null,
+    pick: KO.player,
+    pic: overlayHasPicture(),
+    failed: layerFailed(),
+    cold: coldHoldActive(),
+    graceMs: KO.picLostAt ? Date.now() - KO.picLostAt : 0,
+    vis: visibleSurface(),
+  });
 }
 
 // Does the selected overlay layer actually have a picture of its own right now?
@@ -1590,6 +1636,7 @@ const COLD_HOLD_MS = 8000;
 function coldHoldActive() {
   if (KO.player === 'twitch' || !KO.wrap) return false;
   if (KO.picSeenAt) return false; // it already painted once: the grace rule owns this
+  if (layerFailed()) return false; // a dead layer is never held open
   if (typeof performance === 'undefined') return false;
   // The hold exists for a layer that is COMING. Most Twitch channels have no kick
   // counterpart, and holding the native for those would put a black screen in
@@ -1600,6 +1647,15 @@ function coldHoldActive() {
   if (!coming) return false;
   const t0 = KO.bootAt || performance.now();
   return performance.now() - t0 < COLD_HOLD_MS;
+}
+
+function layerFailed() {
+  if (KO.player === 'youtube') {
+    const y = KO.ytState || {};
+    return !!(y.error || y.ended);
+  }
+  const st = KO.kickState || {};
+  return !!st.error || /failed|error|ended/i.test(String(st.state || ''));
 }
 
 // Playback ownership, in one place: the selected overlay layer owns the native
@@ -1620,6 +1676,13 @@ function overlayOwnsPicture() {
     KO.picSeenAt = 0;
     return false;
   }
+  // A layer that REPORTED a failure owns nothing, grace or not: the grace exists
+  // so a re-buffer does not hand the screen back, never so a dead frame does.
+  if (layerFailed()) {
+    KO.picLostAt = 0;
+    KO.picSeenAt = 0;
+    return false;
+  }
   if (overlayHasPicture()) {
     KO.picLostAt = 0;
     KO.picSeenAt = Date.now();
@@ -1635,10 +1698,18 @@ function overlayOwnsPicture() {
 // Which surface is being LISTENED to — one answer, from the same predicate that
 // decides which layer is on screen.
 function visibleSurface() {
+  // ONE predicate for picture, pause AND sound. This used to read the bar's CSS:
+  // a hidden bar (hover-out, or Twitch deleting our node while the layer still
+  // painted) declared the NATIVE the audible surface, so the same tick paused the
+  // native (ownership) and unmuted it (surface!==visible had stopped applying) -
+  // the owner's "saiu do player, foi pro player da twitch, e deixou pausado e
+  // desmutado" (2026-11-12). The layer that OWNS the picture is the surface that
+  // is listened to, whatever its bar is doing; with no picture the native is.
   const page = KO.audioNative || 'twitch';
   if (KO.player === 'twitch' || !KO.wrap) return page;
-  if (KO.wrap.style.display === 'none' && !KO.twDeleted) return page;
-  return KO.player === 'youtube' ? 'yt' : 'kick';
+  const layer = KO.player === 'youtube' ? 'yt' : 'kick';
+  if (overlayOwnsPicture() || coldHoldActive()) return layer;
+  return page;
 }
 
 // The 400 ms enforcement tick: PLAYBACK ownership only. Audio follows from
@@ -1655,13 +1726,17 @@ function syncMute() {
   // churn on the user's player, with the ad path also standing down for an
   // owner that was not on screen. Only pause what the overlay can replace.
   const ownedPicture = overlayOwnsPicture();
-  if (ownedPicture || coldHoldActive()) {
+  const cold = !ownedPicture && coldHoldActive();
+  if (ownedPicture || cold) {
+    let pausedNow = 0;
     for (const v of document.querySelectorAll('video')) {
       if (v.paused) continue;
       v.pause();
       KO.twWasPlaying = true;
       KO.twPaused.add(v); // ownership: only an element we paused is ours to resume
+      pausedNow += 1;
     }
+    if (pausedNow) diag('native-pause', { n: pausedNow, why: ownedPicture ? 'picture' : 'cold-open' });
   }
   syncOwner();
   if (!window.KOAudio) return;
@@ -1714,6 +1789,7 @@ function resumeTwitchIfOurs() {
   }
   if (!v || !KO.twPaused.has(v)) return;
   KO.twPaused.delete(v);
+  diag('native-resume', { why: KO.player === 'twitch' ? 'player-twitch' : 'layer-lost-picture', pic: overlayHasPicture(), own: overlayOwnsPicture(), cold: coldHoldActive() });
   try {
     const p = v.play();
     if (p && p.catch) p.catch(() => { /* autoplay policy */ });
@@ -2435,7 +2511,17 @@ function updateKickBar() {
 
 function setPlayer(p) {
   if (p === KO.player) return;
+  const from = KO.player;
   KO.player = p;
+  const a = window.KOAudio;
+  diag('player-switch', {
+    from,
+    to: p,
+    vis: visibleSurface(),
+    intent: a
+      ? { kick: a.intent('kick'), yt: a.intent('yt'), twitch: a.intent('twitch') }
+      : null,
+  });
   // Manual switch = retry intent (see the storage.onChanged note): a flip to
   // youtube must attempt a FRESH mint, not replay a stale failure.
   if (p === 'youtube') { KO.ytHlsFailed = false; KO.ytHlsFailedAt = 0; }
@@ -3198,7 +3284,11 @@ function rectTick() {
       // player volta de novo, segundos atras ... e fica a 360p" (2026-11-11).
       enforceOverlayRendering(false);
       syncMute();
-      if (!KO.twDeleted && !overlayHasPicture()) resumeTwitchIfOurs();
+      // The SAME ownership predicate syncMute pauses with: resuming on the raw
+      // picture while syncMute paused on the hysteresis made one tick pause and
+      // resume the native, which is what "deixou pausado e desmutado" looks like
+      // from the seat (2026-11-12).
+      if (!KO.twDeleted && !overlayOwnsPicture() && !coldHoldActive()) resumeTwitchIfOurs();
     } else {
       enforceOverlayRendering(false);
       resumeTwitchIfOurs();
@@ -3454,6 +3544,7 @@ function domReady() {
   // Navigation -> this line is the floor of the cold-open swap: at
   // document_idle it is where the mint can first start (owner 2026-11-11).
   KO.bootAt = typeof performance !== 'undefined' ? Math.round(performance.now()) : 0;
+  listenAudioLog();
   audioBoot(); // surfaces + intent store must exist before the first state load
   await loadState();
   // URL-param setup (?koyt=<yt channel>&kokick=<slug>&koplayer=<player>):

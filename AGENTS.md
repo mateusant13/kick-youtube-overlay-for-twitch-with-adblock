@@ -246,6 +246,41 @@ Not measurable on 2026-11-11: a cold open on a channel live on kick - `titiltei`
 `scriptingkata` were all OFFLINE on Twitch (`node _tools/ko-harness.mjs live --channel=...`), so no kick
 layer existed to measure and the hold correctly released the native instead.
 
+## Wave record - 2026-11-12, the swap lost the sound; the log now answers the question (0.8.79)
+
+Owner, verbatim: *"essa merda trocou de player, O PLAYER TAVA MUTADO, SAIU DO PLAYER, FOI PRO PLAYER
+DA TWITCH, E DEIXOU PAUSADO E DESMUTADO"* and *"DEPOIS APARECEU UM AD, ELE TOCOU POR UNS SEGUNDOS,
+TROCOU DE PLAYER. MUTADO DE NOVO"* - then the order that reframes all of it: *"era pros logs te falar
+TUDO que eu ja te falei antes. FAÇA OS LOGS OUTPUTAREM O QUE DEVEM"*.
+
+**One predicate, or a tick argues with itself.** `visibleSurface()` read the BAR's CSS: a hidden bar
+(hover-out, or Twitch deleting our node while the layer still painted) declared the NATIVE the audible
+surface. In the same 400 ms tick `syncMute()` paused the native (it owned the picture) and the arbiter
+unmuted it (surface !== visible had stopped applying): paused and unmuted, exactly the report. The rect
+loop had the mirror-image defect - it resumed on the RAW picture test while syncMute paused on the
+hysteresis, so one tick could pause and resume the same element. Picture, pause and sound now all ask
+`overlayOwnsPicture()` (plus `coldHoldActive()`), and `layerFailed()` releases a dead layer
+immediately instead of after the 6 s grace. Tests `P2h`/`P2i`, both red without the change.
+
+**The log was the actual defect.** `diag()` in content.js sent every decision to
+`chrome.runtime.sendMessage`, whose only sink is the extension console: ownership changes, native
+pause/resume and player switches NEVER reached `ko.adlog`, so every report needed the code to be
+re-read instead of the log being read. `diag()` now persists to the ring as well, and `ko-audio.js`
+reports `audio-intent` / `audio-visible` / `audio-apply` / `audio-inherit` / `audio-claim` through a
+`ko-audio-log` DOM event that content.js forwards. Ring raised 500 -> 1200 entries. New lines, all
+transition-only: `owner {from,to,pick,pic,failed,cold,graceMs,vis}`, `native-pause {n,why}`,
+`native-resume {why,pic,own,cold}`, `player-switch {from,to,vis,intent}`, `kick-first-play {at,bootAt}`.
+
+Measured live on `twitch.tv/rodil` (kick side live - the first time a kick layer mounted in a guest
+this week), 0.8.79, ~2 minutes: `owner {cold:true,pic:false,vis:"kick"}` at 212451, `audio-visible
+{from:"twitch",to:"kick"}`, `audio-apply {st:"ad:m1.00 kick:-1.00 twitch:m1.00"}`, `kick-first-play
+{at:3691,bootAt:223}`, `owner {to:"kick",pic:true}`, `native-pause {n:1,why:"picture"}`. ONE ownership
+transition in the window and no flips - the ad/player fight of 0.8.77 does not reproduce. The swap rule
+itself is now proven by a line: `mute-decision` "swap carries the mute, and the log records the carry"
+(`audio-inherit {from:"kick",to:"twitch",now:{muted:true}}`).
+
+Gate `RESULT PASS checks=20 failed=0`; suites `mute-decision` 39, `content-fix` all green.
+
 ## Project notes
 
 - The extension is in `kick-overlay/`.

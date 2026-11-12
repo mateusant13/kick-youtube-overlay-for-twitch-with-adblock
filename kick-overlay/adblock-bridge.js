@@ -16,7 +16,7 @@
 (() => {
   const KEY = 'ko.v2';
   const LOG_KEY = 'ko.adlog';
-  const LOG_MAX = 500;
+  const LOG_MAX = 1200;
   const sid = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
   let booted = false;
 
