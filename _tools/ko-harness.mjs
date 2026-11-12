@@ -1361,7 +1361,15 @@ async function main() {
       // on the replay is the case this row is about, and it must hold there.
       const a = await st();
       if (!a.onDvr) {
-        const target = Math.max(1, a.dur - 60);
+        // MID-DVR, never `dur - 60`. `dur` is the report's own max while
+        // `kickSeekTo` clamps against `KO.kickDur`, and right after the layer
+        // mounts the two disagree by seconds — a target 60 s from the edge then
+        // lands inside `KICK_EDGE_GO_LIVE_SEC` of the clamp, the click is
+        // translated into "go live", and the row waits 45 s for a replay the
+        // click deliberately did not ask for. Measured 2026-11-12, three runs:
+        // `no replay {pos:74.09, onDvr:false, dur:1454.9}` while `rewind-60s`
+        // on the same player reached `onDvr=true` every time.
+        const target = Math.max(1, Math.round(a.dur * 0.5));
         await seekBarTo(target);
         // 45 s, not 25: the DVR->replay load is the same source switch the
         // `go-live` row documents at ~35 s (the IVS replay starts at its lowest

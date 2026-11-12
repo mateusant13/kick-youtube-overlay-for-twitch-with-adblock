@@ -1085,8 +1085,13 @@ guest on twitch.tv/rodil with 0.8.84 (`chrome.runtime.getManifest().version` = `
   (`liveClock=true adv=2.00s`) and failed `pause-freezes` instead, on the row's own 25 s precondition:
   `no replay {pos:84.33, onDvr:false}` and then `pos=1.36`, while `rewind-60s-holds` on the same player
   PASSED at `onDvr=true`. The DVR->replay load is the same ~35 s source switch the `go-live` row already
-  documents, so the row's window was widened to 45 s (instrument, not product) and re-run; the suite's own
-  verdict, not this paragraph, is what to read.
+  documents. Two instrument defects, both in the ROW and not the product: the window was 25 s for a ~35 s
+  switch, and its precondition targeted `dur - 60`, which lands inside `KICK_EDGE_GO_LIVE_SEC` of the clamp the
+  moment `KO.kickDur` lags the report's `dur` — so the click was translated into "go live" and the row then
+  waited for a replay nobody asked for. Widened to 45 s and retargeted mid-DVR (`dur * 0.5`). Final:
+  `RESULT PASS kickparity rows=9 failed=0` (`pause` moved=0.00s, `resume` 1.00s, arrow-back 4.35s,
+  rewind-60s got=732.6 advanced=2.84s, rewind-10s advanced=3.00s, seek-in-DVR 609.15, go-live
+  `liveClock=true adv=2.00s`, quality, `latency 1.3s`).
 
 **A real pod is still owed.** Nothing above is a pod: the hand-back mute, the skip guard and the revealed-player
 catch-up were measured in the harness, and the live run above only proves the pieces around them. The four rows stay
