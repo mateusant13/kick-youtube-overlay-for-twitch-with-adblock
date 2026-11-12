@@ -465,7 +465,19 @@
     if (!next) releasedAt = Date.now();
     const prevClaim = claimed;
     claimed = next;
-    report('audio-claim', { from: prevClaim || null, to: next || null });
+    // The claim is the single fact that decides whose sound is on screen, so it
+    // carries the sound it is about to silence/restore, not just its own name.
+    const w = next ? want(next) : null;
+    report('audio-claim', {
+      from: prevClaim || null,
+      to: next || null,
+      visible: visibleNow(),
+      wanted: w ? { muted: !!w.muted, volume: +Number(w.volume).toFixed(2) } : null,
+      intents: {
+        twitch: { muted: !!intentOf('twitch').muted, volume: +clamp(intentOf('twitch').volume).toFixed(2) },
+        kick: { muted: !!intentOf('kick').muted, volume: +clamp(intentOf('kick').volume).toFixed(2) },
+      },
+    });
     apply();
     notify();
     return KOAudio;
@@ -492,6 +504,12 @@
         after: { muted: it.muted, volume: clamp(it.volume) },
         why: String((opts && opts.why) || 'direct'),
         silent: !!(opts && opts.silent),
+        // WHO is on screen and what covers it, at the instant the decision was
+        // written. Without these three, an accepted mute cannot be told apart
+        // from the machine's, which is exactly the report of 2026-11-12.
+        visible: visibleNow(),
+        claimed: claimed || null,
+        surfaces: Object.keys(writers),
       });
     }
     if (changed && !(opts && opts.silent)) {
@@ -617,6 +635,13 @@
       // the owner's "it muted by itself".
       const fresh = Date.now() - lastInputAt <= INPUT_FRESH_MS;
       if (!fresh) {
+        report('audio-refused', {
+          why: 'stale-input',
+          owner,
+          el: { muted: !!el.muted, volume: +Number(el.volume || 0).toFixed(2) },
+          sinceInputMs: lastInputAt ? Date.now() - lastInputAt : null,
+          intent: { muted: !!intentOf(owner).muted, volume: clamp(intentOf(owner).volume) },
+        });
         apply();
         return;
       }
@@ -624,6 +649,12 @@
       // cannot have a real gesture (Chrome silencing an autoplay). It can veto
       // the event above, never decide it.
       if (!userActive()) {
+        report('audio-refused', {
+          why: 'never-activated',
+          owner,
+          el: { muted: !!el.muted, volume: +Number(el.volume || 0).toFixed(2) },
+          intent: { muted: !!intentOf(owner).muted, volume: clamp(intentOf(owner).volume) },
+        });
         // Machine-driven: a player that muted itself, or Chrome's autoplay
         // policy. Neither is the user's choice, so it must not become one; and
         // it must not silence the surface either, because the intent says the
@@ -647,10 +678,34 @@
       // ends, Twitch re-mutes its own element, the click made the event FRESH,
       // and the mute became his intent for the rest of the session. An UNMUTE
       // is still his, so only the silencing direction is refused here.
-      const machineWindow = claimed
-        ? surfaceOf(owner) !== surfaceOf(claimed)
-        : (releasedAt > 0 && Date.now() - releasedAt <= CLAIM_RELEASE_MS);
+      // WHILE A CLAIM IS UP, EVERY MUTE IS THE MACHINE'S. The old test compared
+      // `surfaceOf(owner) !== surfaceOf(claimed)`, and the ad surface SHARES the
+      // `twitch` intent by design - so `surfaceOf('twitch') === surfaceOf('ad')`
+      // and the guard was blind for the one claim that always covers the page.
+      // Measured in the owner's own ko.adlog 2026-11-12 390919, mid-pod:
+      //   audio-intent {surface:"twitch", before:{muted:false,volume:0.88},
+      //                 after:{muted:true,volume:0}, silent:true}
+      //   ... 38 s later: audio-claim {from:"ad", to:null} -> page comes back
+      //                   muted, volume 0 ("voltou MUTADO sendo que antes eu
+      //                   estava com a live DESMUTADA").
+      // The claimed surface is what silences the page's element: the user cannot
+      // even see that player while the layer covers it, so a mute there is never
+      // his. An UNMUTE is still his (0.8.54 carries it to the new surface).
+      const machineWindow = !!claimed || (releasedAt > 0 && Date.now() - releasedAt <= CLAIM_RELEASE_MS);
       if (machineWindow && !!el.muted) {
+        // Say it out loud: an ACCEPTED intent beside an unlogged refusal is
+        // what made the owner's own adlog look like the extension muting him
+        // for no reason. This line names the claim, the surface it covers and
+        // the intent it was protecting.
+        report('audio-refused', {
+          why: 'covered',
+          owner,
+          claimed: claimed || null,
+          releasedMsAgo: releasedAt ? Date.now() - releasedAt : null,
+          el: { muted: !!el.muted, volume: +Number(el.volume || 0).toFixed(2) },
+          intent: { muted: !!intentOf(owner).muted, volume: clamp(intentOf(owner).volume) },
+          visible: visibleNow(),
+        });
         apply();
         return;
       }

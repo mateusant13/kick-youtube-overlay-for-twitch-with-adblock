@@ -1021,6 +1021,78 @@ and the hand-back lands with the element unmuted, `it=0`, `vis=twitch`, `audible
 no click. `cleanLatSrc` now says `hls` (2.2-2.4 s), so the clean picture sits at the sync target
 instead of the old `lat 9`.
 
+## Wave record — 2026-11-12, the pods were paying rent in jump-cuts and seven-second freezes (0.8.83)
+
+Four owner reports from the same session, closed from his own `ko.adlog` rather than from the code:
+
+> *"deixou a live com delay ... e voltou MUTADO sendo que antes eu estava com a live DESMUTADA"*
+> *"travou por uns 7 segundos. depois, destravou"*
+> *"destravou, e avancou e malguma parte da live que eu nao sei se e tempo real ou nao"*
+> *"voltou 1-2s atras"*
+
+**1. The pod's own silence was recorded as his choice.** His log, mid-pod:
+`audio-intent {surface:"twitch", before:{muted:false,volume:0.88}, after:{muted:true,volume:0}}`, then
+`ad-end` handed back a page that was muted at volume 0. The machine-mute guard existed and was blind for the one
+claim that always covers the page: it compared `surfaceOf(owner) !== surfaceOf(claimed)`, and the `ad` surface
+SHARES the `twitch` intent (it renders the same stream), so the pods compared equal and the mute was accepted.
+The window is now a plain `claimed || within CLAIM_RELEASE_MS of release`, with the shares test kept only for the
+release half. Arms: intent stays `{muted:false, volume:0.88}` and the page returns audible, plus a RED that restores
+the shares-blind guard and is caught. **The arm only measures past the arbiter's 700 ms own-write TTL** — before
+that the echo guard discards the event and the arm would pass vacuously.
+
+**2. The 7 s freeze was our own seek into nothing.** `native-handoff {buf:468, ct:468}` ->
+`native-edge-recover {from:468, to:470.5}` left the element at `ct:467, rs:1`, then five
+`native-resume {rs:1}` retries over 7 s with a `video-pause {rs:1}` under each. `seekCovered()` now refuses any
+forward seek below `HAVE_FUTURE_DATA` when the buffer holds nothing in front of the playhead — doing nothing IS the
+recovery, because Twitch refills from its own edge — and logs `native-seek-skipped {why:'no-data'}` instead of
+silently parking the element.
+
+**3. The catch-up was the jump-cut.** `overlay-catchup {lat:9, hold:8.98, pos:36, to:41}` -> `{41, to:47}` ->
+`{47.5, 53}` -> `{58, 63}`, five times while the clean player was on screen, `lat` never closing, the picture
+jumping 5-6 s roughly every 6 s. The cause is structural: in a healthy hls.js live player the playhead sits
+`liveSyncDuration` (3 s, `player-bridge.js`) behind the playlist edge while `buffered` ends within ~0.4 s of it, so
+`pos + hold - 1` lands where the player already is and hls.js's `maxLiveSyncPlaybackRate: 1.5` pulls it back.
+`catchUpClean` now refuses on a REVEALED player unless `force` is set; pre-reveal standbys and the go-live chip
+keep their jump. The drift is hls.js's to close, smoothly. Arm: four samples at `lat:9, buffered:8.6` produce zero
+seeks, and the RED (guard removed) jumps 5 s forward — which is exactly the reported symptom.
+
+**4. The "1-2 s back" was the same recovery, unclamped.** `seekCovered` had a `want - from >= POD_RECOVER_MIN`
+escape hatch that accepted ANY forward seek of 10 s or more regardless of what the element could prove it held;
+the readiness test is now the discriminator and the pod-recovery case keeps its seek only at `rs >= 3`.
+
+**5. The log was a hint, and the owner said so.** *"os logs nao devem ser hints, mas a resposta inteira"*. One
+transition used to need a join across a dozen events, several naming a value without the surface that owned the
+picture. `snap()` publishes the whole decision (`srf` surface, `aud` owner+published mute/volume, `nat` element
+`{ct,rs,paused,buf,se,muted,vol,vis}`, `clean` `{pos,lat,hold,rs,paused,muted,src,age}`, `who`
+`{adActive,standby,revealed,playing,own,holdAt,holdCt,cold,parked}`) and `adLogState()` attaches it to the eight
+transitions only, never to the 1 Hz heartbeat. A DISCARDED mute now says why: `audio-refused {why:'stale-input' |
+'never-activated' | 'covered', owner, claimed, intent}`, and `audio-intent`/`audio-claim` carry the visible surface,
+the claim and the intent table at the instant of the decision. An accepted intent beside an unlogged refusal is what
+made his own log look like the extension muting him.
+
+Verification: `node _tools/ko-verify.mjs` -> `RESULT PASS`; `mute-decision` 46 checks, `ad-time-continuity` 49
+checks, every new arm paired with a mutation that restores the pre-fix behaviour. Live proof is PARTIAL, measured in the
+guest on twitch.tv/rodil with 0.8.84 (`chrome.runtime.getManifest().version` = `0.8.84`, `audio` -> `ONE`):
+
+- the swap carries the decision: `KOAudio.setVisible('kick')` with `kick {muted:true, volume:0.42}` then
+  `setVisible('twitch')` returns `twitch {muted:true, volume:0.42}`, and `audio-inherit {from:'kick',
+  to:'twitch', was:{muted:false,volume:1}, now:{muted:true,volume:0.42}}` is in `ko.adlog`;
+- a machine mute under the claim is discarded AND SAID: `audio-refused {why:'covered', claimed:'ad', owner:'twitch',
+  intent:{muted:false,volume:1}, el:{muted:true,volume:1}}`, and the realigned page element stays at his intent;
+- `kickparity` first run: 8 of 9 rows PASS. `go-live` failed with `live never advanced {"pos":787.19,
+  "lat":3.56,"state":"Buffering"}` while the switch was still in flight; a minute later the player was
+  `onDvr:false, dur:0, pos:74.4, lat:2.26`, i.e. the live url. Two later runs passed `go-live`
+  (`liveClock=true adv=2.00s`) and failed `pause-freezes` instead, on the row's own 25 s precondition:
+  `no replay {pos:84.33, onDvr:false}` and then `pos=1.36`, while `rewind-60s-holds` on the same player
+  PASSED at `onDvr=true`. The DVR->replay load is the same ~35 s source switch the `go-live` row already
+  documents, so the row's window was widened to 45 s (instrument, not product) and re-run; the suite's own
+  verdict, not this paragraph, is what to read.
+
+**A real pod is still owed.** Nothing above is a pod: the hand-back mute, the skip guard and the revealed-player
+catch-up were measured in the harness, and the live run above only proves the pieces around them. The four rows stay
+`fixed` until a live stream with 0.8.84 installed shows one hand-back audible at his intent, one freeze that either
+does not happen or produces `native-seek-skipped`, and no `overlay-catchup` line from a revealed player.
+
 ## Wave record — 2026-11-12, the log said the tabs were three waves behind (0.8.82)
 
 Owner: *"tu fala fala fala e as mesmas coisas tao acontecendo. vai ver o log"* — and the log had the answer in

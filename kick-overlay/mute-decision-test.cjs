@@ -534,6 +534,99 @@ async function main() {
     });
   }
 
+  // ---- 2b2: the pod's own silence is never his intent. --------------------
+  // Owner report 2026-11-12: "acabou de trocar o player ... e voltou MUTADO
+  // sendo que antes eu estava com a live DESMUTADA". His ko.adlog, mid-pod:
+  //   audio-intent {surface:"twitch", before:{muted:false,volume:0.88},
+  //                 after:{muted:true,volume:0}, silent:true}
+  // then ad-end -> the page came back muted at volume 0. The guard that exists
+  // for exactly this compared `surfaceOf(owner) !== surfaceOf(claimed)`, and the
+  // ad surface SHARES the twitch intent, so it was blind for the one claim that
+  // always covers the page.
+  {
+    const page = makeWorld();
+    await runPod(page, { mutedBeforeAd: false });
+    assert(page.video.muted === true, 'precondition: the claim silenced the covered page');
+    // Past the arbiter's 700 ms own-write TTL: the claim's write is ours, and a
+    // mute inside that window is discarded by the echo guard instead of being
+    // measured. In the owner's own log the pod had been up for 38 s.
+    await new Promise((r) => setTimeout(r, 900));
+    page.clickDocument(); // a real click makes the event look fresh
+    page.machineMutesNative(); // the page element muted by the swap itself
+    check('a mute arriving while a claim covers the page is never the user choice', () => {
+      assert(page.audio.intent('twitch').muted === false,
+        `intent became muted=${page.audio.intent('twitch').muted} from the pod's own silence`);
+      assert(page.audio.intent('twitch').volume > 0.5,
+        `intent volume became ${page.audio.intent('twitch').volume} (the user never touched it)`);
+    });
+    page.bypass({ type: 'ad-end' });
+    check('...and the page comes back at the sound the user left it at', () => {
+      assert(page.video.muted === false, `the page returned muted=${page.video.muted}`);
+      assert(page.video.volume > 0.5, `the page returned at volume ${page.video.volume}`);
+    });
+  }
+  {
+    // RED: restore the shares-blind guard and the same event must be recorded.
+    const blind = AUDIO
+      .split('const machineWindow = !!claimed || (releasedAt > 0 && Date.now() - releasedAt <= CLAIM_RELEASE_MS);')
+      .join('const machineWindow = claimed ? surfaceOf(owner) !== surfaceOf(claimed) : (releasedAt > 0 && Date.now() - releasedAt <= CLAIM_RELEASE_MS);');
+    check('mutation: the claim-window guard exists to be disarmed', () => {
+      assert(blind !== AUDIO, 'the claim-window guard was not found');
+    });
+    const page = makeWorld({ audioSource: blind });
+    await runPod(page, { mutedBeforeAd: false });
+    await new Promise((r) => setTimeout(r, 900)); // past the own-write TTL
+    page.clickDocument();
+    page.machineMutesNative();
+    check('RED: the shares-blind guard records the pod mute as intent', () => {
+      assert(page.audio.intent('twitch').muted === true,
+        'the mutant discarded it too: this arm is not measuring the guard');
+    });
+  }
+
+  // ---- 2b3: the log carries the ANSWER, not a hint. ----------------------
+  // Owner order 2026-11-12: "os logs nao devem ser hints, mas a resposta
+  // inteira". Reading his adlog, one transition needed a join across a dozen
+  // events, several of which named a value without the surface that owned the
+  // picture. Every transition now carries the whole state under `st`.
+  {
+    const page = makeWorld();
+    await runPod(page, { mutedBeforeAd: false });
+    const reveal = page.logs().filter((l) => l.ev === 'overlay-reveal').pop();
+    check('a transition line carries the whole state, not just its own field', () => {
+      assert(!!reveal, 'no overlay-reveal line was written');
+      const st = reveal.d && reveal.d.st;
+      assert(!!st, 'the transition carries no state snapshot');
+      // `null` on this world: content.js is the writer of data-ko-owner and this
+      // harnesses only the ad path, the bridge and the arbiter.
+      assert(st.srf === null || typeof st.srf === 'string', `srf=${JSON.stringify(st.srf)}`);
+      assert(!!st.aud && 'm' in st.aud && 'v' in st.aud, 'no audio state in the snapshot');
+      assert(!!st.nat, 'no native element state in the snapshot');
+      assert('ct' in st.nat && 'rs' in st.nat && 'muted' in st.nat, 'the native block is incomplete');
+      assert(!!st.clean, 'the clean player reported nothing at reveal');
+      assert('pos' in st.clean && 'lat' in st.clean && 'hold' in st.clean, 'the clean block is incomplete');
+      assert(!!st.who && 'revealed' in st.who && 'own' in st.who, 'the ownership block is missing');
+    });
+    // A refused mute must SAY so. An accepted intent beside an unlogged refusal
+    // is exactly what made his own log look like the extension muting him.
+    await new Promise((r) => setTimeout(r, 900)); // past the arbiter's own-write TTL
+    page.clickDocument();
+    page.machineMutesNative();
+    const refused = page.logs().filter((l) => l.ev === 'audio-refused').pop();
+    check('a discarded mute names the reason it was discarded', () => {
+      assert(!!refused, 'the refusal was silent');
+      assert(refused.d.why === 'covered', `why=${refused.d.why}`);
+      assert(!!refused.d.claimed, 'the line does not name the claim that covered the page');
+      assert(!!refused.d.intent, 'the line does not say what intent it protected');
+    });
+    const claim = page.logs().filter((l) => l.ev === 'audio-claim').pop();
+    check('the claim carries the sound it is about to silence', () => {
+      assert(!!claim, 'no audio-claim line');
+      assert(!!claim.d.wanted, 'the claim does not say what it is silencing');
+      assert(!!claim.d.intents, 'the claim does not publish the table it derives from');
+    });
+  }
+
   // ---- 2c: positive control — the SAME event well after the window IS his. -
   {
     const page = makeWorld();

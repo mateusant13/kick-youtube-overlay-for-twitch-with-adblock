@@ -339,6 +339,78 @@
     if (document.visibilityState === 'visible') requestStandby(0);
   });
 
+  // ---- THE LOG CARRIES THE ANSWER, NOT A HINT ----------------------------
+  // Owner order 2026-11-12: "os logs nao devem ser hints, mas a resposta
+  // inteira". Every line that matters used to say only what IT did — `{ct:468,
+  // rs:1}` here, `{lat:9, pos:36}` there — and reconstructing one transition
+  // took a join across a dozen events, several of which named a value without
+  // the surface that owned the picture. `snap()` publishes the whole state of
+  // the decision in one object, so a single line answers: which surface is on
+  // screen, which one the authority believes is audible and at what volume,
+  // where each element is on the timeline, and who owns playback. Attached ONLY
+  // to transitions — never to the 1 Hz heartbeat, which is what makes it
+  // affordable to read four elements and five attributes there.
+  function snap() {
+    const out = { srf: String(document.documentElement.getAttribute('data-ko-owner') || '') || null };
+    try {
+      const root = document.documentElement;
+      out.aud = {
+        owner: root.getAttribute('data-ko-owner') || '',
+        m: root.getAttribute('data-ko-audio-m'),
+        v: root.getAttribute('data-ko-audio-v'),
+      };
+    } catch { /* ignore */ }
+    try {
+      const v = mainVideo();
+      out.nat = v
+        ? {
+            ct: +Number(v.currentTime || 0).toFixed(1),
+            rs: Number(v.readyState || 0),
+            paused: !!v.paused,
+            buf: v.buffered && v.buffered.length ? +Number(v.buffered.end(v.buffered.length - 1)).toFixed(1) : null,
+            se: v.seekable && v.seekable.length ? +Number(v.seekable.end(v.seekable.length - 1)).toFixed(0) : null,
+            muted: !!v.muted,
+            vol: +Number(v.volume || 0).toFixed(2),
+            vis: !!document.visibilityState && document.visibilityState === 'visible',
+          }
+        : null;
+    } catch { /* ignore */ }
+    const st = overlay.lastSt;
+    if (st) {
+      out.clean = {
+        pos: +Number(st.pos || 0).toFixed(1),
+        lat: +Number(st.lat || 0).toFixed(1),
+        hold: Number.isFinite(Number(st.buffered)) ? +Number(st.buffered).toFixed(2) : null,
+        rs: st.rs == null ? null : Number(st.rs),
+        paused: !!st.paused,
+        muted: !!st.muted,
+        src: st.latSrc || null,
+        age: overlay.lastStAt ? Math.round(Date.now() - overlay.lastStAt) : null,
+      };
+    }
+    out.who = {
+      adActive: !!overlay.adActive,
+      standby: !!overlay.standby,
+      revealed: !!overlay.revealed,
+      playing: !!overlay.playing,
+      own: overlayOwnsPlayback(),
+      holdAt: overlay.holdAt ? Math.round((Date.now() - overlay.holdAt) / 100) / 10 : 0,
+      holdCt: +Number(overlay.holdCt || 0).toFixed(1),
+      cold: !!overlay.coldPreroll,
+      parked: !!overlay.pauseBeforeAd,
+    };
+    return out;
+  }
+  stats.snap = snap;
+  // `adLog(ev, snap()-merged detail)`: the transition's own fields stay, so
+  // existing readers and the ledger arms keep working, and the snapshot is
+  // added beside them under `st`.
+  function adLogState(ev, detail) {
+    let extra = null;
+    try { extra = snap(); } catch { extra = null; }
+    adLog(ev, Object.assign({}, detail || {}, extra ? { st: extra } : {}));
+  }
+
   function mainVideo() {
     let best = null;
     let bestArea = 0;
@@ -440,6 +512,48 @@
     return 0;
   }
   stats.nativeEdge = nativeEdge;
+  // Can this element actually land on `want`? Two honest sources say yes:
+  // the media is already downloaded there (`buffered.end`), or the element is
+  // at HAVE_FUTURE_DATA or better and its own network stack is fetching, which
+  // is the state every healthy hand-back in the owner's logs was in when a
+  // forward seek worked (`readyState 4` -> ct advanced). At `readyState 1`
+  // (HAVE_METADATA only, no future data — the state Twitch leaves an element in
+  // after its surface is restored) a forward seek goes nowhere: measured in his
+  // ko.adlog 2026-11-12, `native-edge-recover {from:468, to:470.5}` on an
+  // `rs:1` element parked it at 467 and froze the picture for ~10 s.
+  // A SMALL FORWARD SEEK IS NEVER WORTH A STALL. `readyState` alone is not the
+  // test: the measured freeze happened at `rs:4` with `buffered.end` EQUAL to
+  // currentTime (no forward data at all), because the sentinel edge means the
+  // fetch target is unknown and Twitch leaves the element at `rs:1` afterwards.
+  // So the rule is about what the element can prove it holds, plus the one case
+  // where the risk is worth taking: recovering a whole pod's worth of delay
+  // (>= POD_RECOVER_MIN sec), which is the "deixou a live com delay múltiplas
+  // vezes" report and cannot be fixed by waiting.
+  const POD_RECOVER_MIN = 10;
+  function seekCovered(v, want) {
+    if (!v) return false;
+    const from = Number(v.currentTime || 0);
+    const end = nativeBufferedEnd(v);
+    if (end > 0 && want <= end + 0.5) return true; // downloaded there already
+    const se = nativeEdge(v);
+    if (se > 0 && want <= se - RESUME_GAP_SEC) return true; // a real edge ahead
+    // The element holds NOTHING in front of the playhead and has not reached
+    // HAVE_FUTURE_DATA: a forward seek there parks it at readyState 1 and Twitch
+    // only recovers by rebuilding the source. Measured in the owner's ko.adlog
+    // 2026-11-12: `native-handoff {buf:468, ct:468}` -> `native-edge-recover
+    // {from:468, to:470.5}` left the element at 467/rs:1 and the picture froze
+    // for seven seconds ("travou por uns 7 segundos"). Doing nothing IS the
+    // recovery: the element keeps its position and Twitch refills from the edge.
+    // Below HAVE_FUTURE_DATA (the state a restored surface is left in) a seek
+    // past the playhead parks the element: measured `video-pause {rs:1}` for
+    // seven seconds in the reported episode. At HAVE_FUTURE_DATA or better the
+    // element IS fetching, and a forward seek there is how the 2026-11-11
+    // "deixou a live com delay multiplas vezes" case gets its pod's duration
+    // back — worth it even past the downloaded data.
+    if (Number(v.readyState || 0) < 3) return false;
+    return true;
+  }
+  stats.seekCovered = seekCovered;
   function nativeLatency(v) {
     const e = nativeEdge(v);
     if (!(e > 0)) return 0;
@@ -519,13 +633,59 @@
     // followed 2 s later by `playing-not-healthy {buffered:0.019, rs:2}` and the
     // standby never played — the clean source was dead for the whole pod.
     if (!(hold > 0)) return false;
+    // THE BUFFER FRONTIER IS THE HONEST LIVE EDGE. `lat` is the distance to the
+    // PLAYLIST edge (hls.js's own number, `latSrc:'hls'`); `hold` is how much
+    // media is already downloaded in front of the playhead. When they are
+    // equal, the newest downloaded second IS the edge and there is nothing to
+    // skip to — the remaining seconds are the source's own segment cadence, not
+    // a delay this code can remove. Seeking there spends the buffer and buys
+    // zero latency. Measured in the owner's ko.adlog 2026-11-12 (the reported
+    // episode): five catch-ups while the clean player was on screen, each one
+    // `{lat:8-9, hold:8, pos:36, to:41}` -> `{pos:41, to:47}` -> `{47.5, 53}`
+    // -> `{58, 63}`: the picture jumped forward 5-7 s roughly every 6 s, the
+    // reported seconds never closed, and the user saw "avançou pra uma parte da
+    // live que eu não sei se é tempo real". Only skip when the distance to the
+    // edge EXCEEDS what is already in hand.
     const ceiling = pos + hold - 1;
     const target = Math.min(want, ceiling);
     // A seek that leaves under 1.5s of buffer is worse than the drift it fixes.
     if (!(target - pos >= RESUME_GAP_SEC)) return false;
+    // A REVEALED LIVE PLAYER IS NEVER NUDGED FORWARD BY THIS CODE. Two measured
+    // reports agree that the forward seek never closed the reported latency and
+    // only jumped the picture: 2026-11-07 (`overlay-catchup lat=20.3` firing
+    // over a whole pod) and 2026-11-12, five times while the clean player was on
+    // screen — `{lat:9, hold:8.98, pos:36, to:41}` -> `{41, to:47}` ->
+    // `{47.5, 53}` -> `{58, 63}`, the picture jumping 5-6 s every 6 s and `lat`
+    // never closing ("avancou e malguma parte da live que eu nao sei se e tempo
+    // real"). The reason is structural, not incidental: in a healthy hls.js
+    // live player the playhead SITS `liveSyncDuration` behind the playlist edge
+    // while the buffer ends within a second of that edge (`hold - lat` ~ 0,4s in
+    // both rows above), so a seek to `pos + hold - 1` lands where the player
+    // already is and hls.js's own maxLiveSyncPlaybackRate pulls it back. The
+    // drift is hls.js's to close, at 1.5x, smoothly. `force` (pre-reveal
+    // standbys, the go-live chip) is the only caller allowed to jump.
+    if (overlay.revealed && !force) return false;
+    // TWO KINDS OF GAP, and only one of them is ours to close.
+    //  (a) the buffer frontier is the edge (`lat - hold` ~ 0): the remaining
+    //      seconds are the source's own segment cadence, and a seek to the
+    //      frontier lands where the player already is — hls.js then pulls the
+    //      playhead straight back to its own live position. Measured in the
+    //      owner's ko.adlog 2026-11-12, five times while the clean player was
+    //      ON SCREEN: `{lat:9, hold:8.98, pos:36, to:41}` -> `{41, to:47}` ->
+    //      `{47.5, 53}` -> `{58, 63}`, `lat` never closing, the picture jumping
+    //      5-6 s every 6 s ("avancou e malguma parte da live que eu nao sei se
+    //      e tempo real"). Do not seek there.
+    //  (b) there is real runway at the destination (>= HEALTH_BUFFER_SEC of
+    //      buffer left after the jump), or the frontier is a genuine gap behind
+    //      the edge (`lat - hold` >= 2 s, i.e. a delay the viewer can feel).
+    //      Both are honest catch-ups: 2026-11-08 measured that aiming PAST the
+    //      buffer starves the player, which is why the ceiling exists.
+    const runway = hold - (target - pos);
+    const frontierGap = lat - hold;
+    if (!(runway >= HEALTH_BUFFER_SEC || frontierGap >= 2)) return false;
     overlaySend({ t: 'seek', s: target });
     overlaySend({ t: 'play' });
-    adLog('overlay-catchup', {
+    adLogState('overlay-catchup', {
       lat: +lat.toFixed(1),
       pos: +pos.toFixed(1),
       to: +target.toFixed(1),
@@ -595,7 +755,7 @@
     const last = overlay.audioSent;
     if (last && last.muted === muted && Math.abs(last.volume - volume) < 0.02) return;
     overlay.audioSent = { muted, volume };
-    adLog('overlay-audio', { muted, volume: +Number(volume).toFixed(2), refused: !!overlay.audioRefused });
+    adLogState('overlay-audio', { muted, volume: +Number(volume).toFixed(2), refused: !!overlay.audioRefused });
     overlaySend({ t: 'mute', m: muted });
     overlaySend({ t: 'volume', v: volume });
   }
@@ -965,7 +1125,31 @@
         // wall-clock target is a real seekable offset (his own log: buffer ended
         // at 532.2 while the live offset was 554.8, so clamping would have kept
         // 23 s of delay for good). One target, one seek.
-        if (want > from + RESUME_GAP_SEC) {
+        //
+        // EXCEPT WHEN THE ELEMENT HOLDS NOTHING AT ALL. A seek on an element
+        // with no data at either end parks it at readyState 1 and it stays
+        // there: play() cannot start, every retry re-logs the same refusal, and
+        // Twitch only recovers when its own player rebuilds the source.
+        // Measured in the owner's ko.adlog 2026-11-12 (the reported freeze):
+        // `native-handoff {buf:468, ct:468, cleanPos:187.5}` ->
+        // `native-edge-recover {from:468, gap:2.6, to:470.5}` ->
+        // `native-resume {ct:467, rs:1}` repeated at 300/1200/2500/4000/watch
+        // ms for SEVEN seconds, every one `native-edge-unusable {rs:1}`,
+        // `video-pause {rs:1}` under each: "travou por uns 7 segundos". His
+        // own element had been emptied by the surface restore. With a live
+        // seek that the buffer cannot cover, doing nothing is the recovery: the
+        // element keeps its position, Twitch refills from its live edge, and
+        // the play() retries then succeed on their own.
+        const covered = seekCovered(v, want);
+        if (!covered) {
+          adLogState('native-seek-skipped', {
+            why: 'no-data',
+            from: +from.toFixed(1),
+            to: +want.toFixed(1),
+            buffered: v.buffered && v.buffered.length ? +Number(v.buffered.end(v.buffered.length - 1)).toFixed(1) : null,
+            rs: v.readyState,
+          });
+        } else if (want > from + RESUME_GAP_SEC) {
           v.currentTime = want;
           const payload = {
             from: +from.toFixed(1),
@@ -977,7 +1161,7 @@
           };
           if (why.startsWith('edge-recover')) payload.behind = overlay.recoverBehind;
           overlay.recoverBehind = 0;
-          adLog(why.startsWith('edge-recover') ? 'native-edge-recover' : 'native-catchup', payload);
+          adLogState(why.startsWith('edge-recover') ? 'native-edge-recover' : 'native-catchup', payload);
         }
         overlay.holdAt = 0;
       }
@@ -991,7 +1175,7 @@
     } catch {
       /* ignore */
     }
-    adLog('native-resume', {
+    adLogState('native-resume', {
       tag,
       paused: v.paused,
       ct: +v.currentTime.toFixed(1),
@@ -1202,7 +1386,7 @@
       // clean window before any resume call.
       try {
         const hv = mainVideo();
-        adLog('native-handoff', {
+        adLogState('native-handoff', {
           replaced: !!(hv && overlay.video && hv !== overlay.video),
           ct: hv ? +Number(hv.currentTime || 0).toFixed(1) : null,
           buf: hv && hv.buffered.length ? +hv.buffered.end(hv.buffered.length - 1).toFixed(1) : null,
@@ -1381,7 +1565,7 @@
       } catch {
         /* frame gone */
       }
-      adLog('overlay-reveal', {
+      adLogState('overlay-reveal', {
         reason,
         rewound: overlay.rewound,
         playing: overlay.playing,

@@ -562,6 +562,125 @@ async function main() {
     });
   }
 
+  // ---- 10a2. the catch-up does not turn the buffer frontier into a jump ---
+  // Owner report 2026-11-12: "destravou, e avancou e malguma parte da live que
+  // eu nao sei se e tempo real ou nao". His ko.adlog from that same session has
+  // the mechanism, five times over, while the clean player was ON SCREEN:
+  //   overlay-catchup {lat:9, hold:8.98, pos:36, to:41, want:41}
+  //   overlay-catchup {lat:8, hold:8.03, pos:41, to:47, want:47}
+  //   overlay-catchup {lat:8.5, hold:8.47, pos:47.5, to:53, want:53}
+  // `lat` never closed because the seconds it counts are the source's own
+  // segment cadence: the buffer already reaches the edge, so every seek threw
+  // the picture 5-6 s forward and bought nothing.
+  {
+    const page = makeWorld();
+    page.bypass({ type: 'ad-hold' });
+    page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+    await settle(20);
+    page.frameMsg({ t: 'ready' });
+    // Prime the player HEALTHY at the target, so the reveal's own pre-show
+    // alignment (which is allowed to seek) has already happened and this arm
+    // measures the steady state only.
+    for (let i = 0; i < 3; i++) page.frameMsg(healthySt({ pos: 33, lat: 3, buffered: 8 }));
+    await settle(60);
+    // Exactly the reported shape: the edge is 9 s away, the buffer holds 8.6.
+    for (let i = 0; i < 3; i++) page.frameMsg(healthySt({ pos: 36, lat: 9, buffered: 8.6 }));
+    await settle(10);
+    const before = page.seeks().length;
+    for (let i = 0; i < 4; i++) {
+      page.frameMsg(healthySt({ pos: 41 + i * 5, lat: 9, buffered: 8.6 }));
+      await settle(2200); // past the 2 s catch-up throttle
+    }
+    check('a catch-up never seeks when the buffer already reaches the edge', () => {
+      const rows = page.logsOf('overlay-catchup');
+      assert(rows.length === 0, `catch-up fired ${rows.length}x on an edge the buffer already reaches: ${JSON.stringify(rows.map((r) => r.d))}`);
+      assert(page.seeks().length === before, `the clean player was seeked ${page.seeks().length - before}x`);
+    });
+  }
+  {
+    // RED: drop the buffer-frontier rule and the same samples DO jump.
+    const page = makeWorld({
+      adSource: mutate([['    if (overlay.revealed && !force) return false;', '    if (false) return false;']]),
+    });
+    page.bypass({ type: 'ad-hold' });
+    page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+    await settle(20);
+    page.frameMsg({ t: 'ready' });
+    for (let i = 0; i < 3; i++) page.frameMsg(healthySt({ pos: 33, lat: 3, buffered: 8 }));
+    await settle(60);
+    for (let i = 0; i < 3; i++) page.frameMsg(healthySt({ pos: 36, lat: 9, buffered: 8.6 }));
+    await settle(10);
+    page.frameMsg(healthySt({ pos: 41, lat: 9, buffered: 8.6 }));
+    await settle(2200);
+    check('RED: without the buffer-frontier rule the picture jumps 5 s forward', () => {
+      const rows = page.logsOf('overlay-catchup');
+      assert(rows.length >= 1, 'the mutant did not catch up either: the arm measures nothing');
+      assert(rows[0].d.to - rows[0].d.pos >= 4, `the mutant sought only ${rows[0].d.to - rows[0].d.pos}s`);
+    });
+  }
+
+  // ---- 10a3. no seek the element cannot cover (the 7 s freeze) -----------
+  // Owner report 2026-11-12: "travou por uns 7 segundos. depois, destravou".
+  // His ko.adlog: `native-handoff {buf:468, ct:468}` -> `native-edge-recover
+  // {from:468, to:470.5}` -> `native-resume {ct:467, rs:1}` repeated at 300 /
+  // 1200 / 2500 / 4000 / watch ms, every retry `native-edge-unusable {rs:1}`
+  // and a `video-pause {rs:1}` under it, for seven seconds. The element held
+  // nothing forward and Twitch's seekable edge is the 2^30 sentinel, so the
+  // 2.6 s seek could only park it.
+  {
+    const page = makeWorld();
+    setNative(page, { ct: 468, edge: 1073741824, bufferedEnd: 468 });
+    page.video.readyState = 1; // HAVE_METADATA, no future data
+    await pod(page);
+    // The pod must have COST wall-clock time for a recovery to be proposed at
+    // all: `behind = elapsed - advanced`, and his log shows `gap:2.6`.
+    await new Promise((r) => setTimeout(r, 2100));
+    const writes = [];
+    let clock = page.video.currentTime;
+    Object.defineProperty(page.video, 'currentTime', {
+      configurable: true,
+      get: () => clock,
+      set: (x) => {
+        writes.push(+Number(x).toFixed(1));
+        clock = x;
+      },
+    });
+    page.bypass({ type: 'ad-end' });
+    await settle(120);
+    check('a small forward seek the element cannot cover is skipped, and logged', () => {
+      const rows = page.logsOf('native-seek-skipped');
+      assert(rows.length === 1, `native-seek-skipped rows: ${rows.length}`);
+      assert(rows[0].d.why === 'no-data', `skip reason: ${rows[0].d.why}`);
+      assert(writes.length === 0, `the native clock was written: ${JSON.stringify(writes)}`);
+    });
+  }
+  {
+    // RED: without the guard the same hand-back seeks into nothing.
+    const page = makeWorld({
+      adSource: mutate([['        const covered = seekCovered(v, want);', '        const covered = true;']]),
+    });
+    setNative(page, { ct: 468, edge: 1073741824, bufferedEnd: 468 });
+    page.video.readyState = 1;
+    await pod(page);
+    await new Promise((r) => setTimeout(r, 2100));
+    const writes = [];
+    let clock = page.video.currentTime;
+    Object.defineProperty(page.video, 'currentTime', {
+      configurable: true,
+      get: () => clock,
+      set: (x) => {
+        writes.push(+Number(x).toFixed(1));
+        clock = x;
+      },
+    });
+    page.bypass({ type: 'ad-end' });
+    await settle(120);
+    check('RED: without the guard the hand-back seeks past everything it holds', () => {
+      assert(writes.length === 1, `the mutant wrote the clock ${writes.length}x: ${JSON.stringify(writes)}`);
+      assert(writes[0] > 468, `the mutant seeked to ${writes[0]}, not forward`);
+    });
+  }
+
   // ---- 10b. the hand-back is ONE seek, and the retries never seek --------
   // Owner report 2026-11-11, right after the pod: "it then came back to the
   // twitch player and flicked/glitched. showed a part of the livestream, then

@@ -1363,7 +1363,12 @@ async function main() {
       if (!a.onDvr) {
         const target = Math.max(1, a.dur - 60);
         await seekBarTo(target);
-        const dw = await waitFor((v) => v.onDvr && v.state === 'Playing' && Math.abs(v.pos - target) <= 20, 25000);
+        // 45 s, not 25: the DVR->replay load is the same source switch the
+        // `go-live` row documents at ~35 s (the IVS replay starts at its lowest
+        // rendition), so a 25 s window declared a working switch a failure and
+        // then measured the click mid-load (measured 2026-11-12: two runs failed
+        // here with `pos=1.36` while `rewind-60s` on the same player passed).
+        const dw = await waitFor((v) => v.onDvr && v.state === 'Playing' && Math.abs(v.pos - target) <= 20, 45000);
         if (!dw.ok) return { pass: false, detail: `precondition: no replay (${JSON.stringify(dw.v)})` };
       }
       // Wait for STEADY Playing (two consecutive samples): the first Playing
