@@ -1021,6 +1021,55 @@ and the hand-back lands with the element unmuted, `it=0`, `vis=twitch`, `audible
 no click. `cleanLatSrc` now says `hls` (2.2-2.4 s), so the clean picture sits at the sync target
 instead of the old `lat 9`.
 
+## Wave record — 2026-11-12, the owner attribute got one owner, and shared state got an inventory (0.8.80/0.8.81)
+
+Owner order that opened this wave: *"o que falta em todas as skills pra tu parar de ser tao mediocre e so
+implementando oq EU testo e observo inves de TU ENTENDER o comportamento real e 100% do codigo"*.
+
+**The inventories are the deliverable, and they live here because the next wave needs them.**
+
+`data-ko-owner` — one writer, one predicate, three read sites:
+
+| site | predicate it applies |
+|---|---|
+| `content.js:1597` (`syncOwner`) | WRITES `KO.player` while `overlayOwnsPicture()`; otherwise `''` |
+| `twitch-adblock.js:640` (observer) | attribute changed ⇒ re-read; no decision of its own |
+| `twitch-adblock.js:1476` (`overlayOwnsPlayback`) | non-empty, read LIVE, and latched for `OWNER_LATCH_MS` after it empties |
+| `twitch-adblock.js:2065` (`ad-skip` log) | reports the value only |
+
+Ownership predicates in `content.js`, and which question each answers:
+
+| predicate | answers |
+|---|---|
+| `overlayHasPicture()` | does the frame report a picture RIGHT NOW (state + a report younger than `STALE_REPORT_MS = 3000`) |
+| `layerFailed()` | has the layer proved itself dead (error/ended, retry ceiling) |
+| `overlayOwnsPicture()` | picture, or a loss inside `OWNER_GRACE_MS = 6000`, minus a dead layer |
+| `coldHoldActive()` | cold window, `COLD_WINDOW_MS = 8000`, picture tried, still under `COLD_COVER_BOUND_MS = 12000` |
+| `visibleSurface()` | which surface is HEARD: the same ownership, plus the cold window |
+
+Two of those deliberately disagree, and the disagreement is now stated instead of accidental: during the
+cold window `visibleSurface()` says the layer while `data-ko-owner` stays empty, so the ad path is still
+free to answer a pod with its clean player (live picture in ~2 s instead of black), and that clean player
+claims the audio, so the muted native is never heard.
+
+**0.8.80 (same day, before this record)** — the node's own report became the ownership predicate
+(`overlayHasPicture`, dropping the 8 s bar-clone term and the `!document.hidden` term that caused *"troquei
+de aba, voltei e ficou tudo preto"*), the latch closed the ad-path seam, `adLog` became a closed vocabulary,
+foreign-teardown recovery (`KO.destroyed`, which webarchive autoplay used to trigger), and the cold open moved
+off `document.hidden`.
+
+**0.8.81 — two holes the inventories exposed.**
+
+- A frame report has an AGE. `overlayHasPicture()` read `state:'Playing'` with no freshness, so a bridge that
+  went silent kept the screen forever (the owner's *"o player trava, e tenho q reiniciar a pagina"*). The
+  report must be younger than `STALE_REPORT_MS`; past the hysteresis the native takes the screen back while the
+  frame watchdog rebuilds. Arm `P2n` (fresh and stale, kick and youtube, fresh is the RED-side control).
+- A seek is not a picture. A rewind or a re-show can leave the frame reporting `Playing` without advancing; a
+  position that goes BACKWARDS by more than 3 s while owned hands the screen to the native. Arm `P2o`.
+
+Both arms were proven red against the pre-fix file (`covered is not the same as fresh` → `a 10 s old Playing
+report is still read as a picture`; `a 20 s position regression must hand the screen back`), then green.
+
 ## Wave record — 2026-11-11, one player at a time, black instead of green, no proxy
 
 Owner reports in one session, verbatim: *"aparentemente o player da twitch ta funcionando ao mesmo

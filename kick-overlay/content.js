@@ -312,6 +312,8 @@ const KO_VER = '0.8.80';
 // How long a lost picture may last before the native player is allowed to
 // reclaim the screen (owner 2026-11-11: an ad and the player fighting).
 const OWNER_GRACE_MS = 6000;
+// A frame report older than this is not evidence about the picture right now.
+const STALE_REPORT_MS = 3000;
 // ONE canonical yt state object: every reset site (boot, teardown, the
 // frame-death watchdog) must agree, or a drained/live flag survives a rebuild.
 function freshYtState() {
@@ -388,6 +390,7 @@ const KO = {
   spaTimer: null,
   hideTicks: 0,
   stallTicks: 0,
+  ownerPos: 0, // playback position at the last owner publish (regression guard)
   picLostAt: 0, // epoch ms when the overlay last stopped having a picture
   picSeenAt: 0, // epoch ms of the last picture it DID have (gate for the grace)
   lastTickT: 0,
@@ -1573,7 +1576,23 @@ function syncOwner() {
   // protection, on a player the user can see is not ours. The term is the
   // PICTURE now — a mount attempt always has a gap with no picture, and that
   // gap must belong to the native player.
-  const owned = overlayOwnsPicture();
+  let owned = overlayOwnsPicture();
+  // A SEEK IS NOT A PICTURE WE CAN KEEP (2026-11-12). A rewind and a re-show
+  // both leave the frame reporting `Playing` for a moment before the element is
+  // really advancing, and a frame that cannot advance keeps that report forever
+  // (the owner's "o player trava"). A position that goes BACKWARDS while the
+  // source is unchanged is the one cheap proof that the element did not follow
+  // the command; hand the screen to the native, which the user can drive.
+  const here = (KO.kickState && KO.kickState.pos) || (KO.ytState && KO.ytState.pos) || 0;
+  if (owned && here > 0 && KO.ownerPos > 0 && here < KO.ownerPos - 3) {
+    diag('owner-regress', { from: KO.ownerPos, to: here, pick: KO.player });
+    KO.ownerPos = 0;
+    owned = false;
+  } else if (owned) {
+    KO.ownerPos = here;
+  } else {
+    KO.ownerPos = 0;
+  }
   const want = owned ? KO.player : '';
   if (KO.ownerAttr === want) return;
   const prev = KO.ownerAttr;
@@ -1606,12 +1625,21 @@ function overlayHasPicture() {
   // yt layer read as "no picture" — and, after the ownership change below, a
   // playing yt layer would read the same way and hand the screen to the native
   // underneath it.
+  // A report has an AGE. The bridge publishes once a second; a `Playing` state
+  // from ten seconds ago describes a player that may already be frozen, and the
+  // old code held the screen on it (owner 2026-11-12: "o player trava, e tenho q
+  // reiniciar a pagina"). Three missed samples is the line: past it the layer has
+  // no picture, the hysteresis grace runs out and the native takes the screen back
+  // while the frame watchdog rebuilds in the background.
+  const stale = (ts) => !ts || Date.now() - ts > STALE_REPORT_MS;
   if (KO.player === 'youtube') {
     const y = KO.ytState || {};
+    if (stale(KO.lastYtSt || y.ts)) return false;
     return !!(y.ready && y.playing && !y.ended);
   }
   const st = KO.kickState;
   if (!st) return false;
+  if (stale(st.ts)) return false;
   const state = String(st.state || '');
   if (state) return /playing|buffering|loading/i.test(state) && !/ended|idle|failed/i.test(state);
   return st.paused === false;

@@ -885,7 +885,7 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
     addEventListener() {},
     removeEventListener() {},
   };
-  const mountApi = new Function('window', 'document', 'location', 'navigator', src + '\n;return {KO, mount, updateKickBar, teardown, injectStyles, rectTick, syncMute, setupHotBar, teardownHotBar, renderQualityMenu, overlayOwnsPicture, overlayHasPicture, visibleSurface, kickSeekTo, kickBackToLive};')(
+  const mountApi = new Function('window', 'document', 'location', 'navigator', src + '\n;return {KO, mount, updateKickBar, teardown, injectStyles, rectTick, syncMute, setupHotBar, teardownHotBar, renderQualityMenu, overlayOwnsPicture, overlayHasPicture, visibleSurface, syncOwner, kickSeekTo, kickBackToLive};')(
     global, mountDoc, global.location, global.navigator,
   );
   const mKO = mountApi.KO;
@@ -1890,6 +1890,8 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   api.syncMute();
   assert.strictEqual(ownershipVideo.paused, false, 'yt loading: the native is not paused (kickState is not the yt report)');
   assert.strictEqual(doc.documentElement.attrs['data-ko-owner'] || '', '', 'yt loading: data-ko-owner is empty');
+  // the report carries its own clock: `lastYtSt` is stamped by the real st handler
+  KO.lastYtSt = Date.now();
   KO.ytState = { ready: true, playing: true, muted: false, live: true, dur: 0, ct: 0, error: 0 };
   KO.ownerAttr = undefined;
   api.syncMute();
@@ -2002,6 +2004,56 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     const guarded = resumeLines.filter((l) => /overlayOwnsPicture\(\)/.test(l));
     assert.ok(guarded.length >= 1, 'no resume is guarded by the ownership predicate');
     console.log('P2i tick: one predicate for pause and resume (no churn inside a tick) - OK');
+  }
+  // P2n: a frame report has an AGE. The bridge publishes once a second, so a
+  // `Playing` state from ten seconds ago is not evidence about the picture now;
+  // the old test held the screen on it and the owner saw a frozen player he had
+  // to reload the page to fix. RED arm: pass the same state with a fresh `ts`.
+  {
+    mKO.player = 'kick';
+    mKO.wrap = el('div');
+    mKO.wrap.style.display = 'none';
+    mKO.twDeleted = false;
+    mKO.kickPrewarm = null;
+    mKO.ytState = null;
+    mKO.kickState = { state: 'Playing', paused: false, muted: true, pos: 10, lat: 1, dur: 0, ts: Date.now() - 10000 };
+    mKO.picSeenAt = Date.now();
+    mKO.picLostAt = 0;
+    assert.strictEqual(mountApi.overlayHasPicture(), false, 'a 10 s old Playing report is still read as a picture');
+    const fresh = { ...mKO.kickState, ts: Date.now() };
+    mKO.kickState = fresh;
+    assert.strictEqual(mountApi.overlayHasPicture(), true, 'RED arm: a fresh Playing report must still count');
+    // and youtube answers the same way through its own stamp
+    mKO.player = 'youtube';
+    mKO.ytState = { ready: true, playing: true, ended: false, pos: 5, ts: Date.now() - 10000 };
+    mKO.lastYtSt = Date.now() - 10000;
+    assert.strictEqual(mountApi.overlayHasPicture(), false, 'a stale youtube report is still read as a picture');
+    mKO.ytState = { ready: true, playing: true, ended: false, pos: 5, ts: Date.now() };
+    mKO.lastYtSt = Date.now();
+    assert.strictEqual(mountApi.overlayHasPicture(), true, 'RED arm: a fresh youtube report must count');
+    console.log('P2n staleness: a frame report has an age - OK');
+  }
+  // P2o: a position that goes BACKWARDS hands the screen back. A seek or a
+  // re-show can leave the frame reporting `Playing` without advancing; the
+  // regression is the cheap proof the element did not follow the command.
+  {
+    mKO.player = 'kick';
+    mKO.wrap = el('div');
+    mKO.wrap.style.display = 'none';
+    mKO.twDeleted = false;
+    mKO.kickPrewarm = null;
+    mKO.ytState = null;
+    mKO.kickState = { state: 'Playing', paused: false, muted: true, pos: 500, lat: 1, dur: 0, ts: Date.now() };
+    mKO.picSeenAt = Date.now();
+    mKO.picLostAt = 0;
+    mKO.ownerAttr = '';
+    mKO.ownerPos = 0;
+    mountApi.syncOwner();
+    assert.strictEqual(mKO.ownerAttr, 'kick', 'precondition: the layer with a picture owns the screen');
+    mKO.kickState = { ...mKO.kickState, pos: 480, ts: Date.now() };
+    mountApi.syncOwner();
+    assert.strictEqual(mKO.ownerAttr, '', 'a 20 s position regression must hand the screen back');
+    console.log('P2o regression: a backwards position releases ownership - OK');
   }
   // P2j: the LOG must answer the owner's questions. Every report of 2026-11-11/12
   // (an ad/player fight, a switch that lost the mute, a native left paused) asked
