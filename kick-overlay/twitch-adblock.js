@@ -1096,14 +1096,52 @@
   // Real ad chrome only. The old any-aria-label match treated Twitch's
   // "Experimenta 1 mês sem anúncios" promo button (32x32) as an ad, which
   // logged fake ad-ui-on events and could delay uncovering the native player.
+  // How big is this ad surface REALLY? Twitch's wrapper is a shell: on his own
+  // Chrome (measured 2026-11-15) the only wrapper on the page was the
+  // squeezeback node, 0x0 itself, while its inner container carried the size
+  // inline. Measuring the wrapper alone therefore answered 0x0 for a surface
+  // that was painting.
+  function adSurfaceRect(root) {
+    let best = { width: 0, height: 0 };
+    const consider = (el) => {
+      try {
+        const cs = getComputedStyle(el);
+        if (!cs || cs.display === 'none' || cs.visibility === 'hidden') return;
+        if (Number(cs.opacity) === 0) return;
+        const r = el.getBoundingClientRect();
+        if (r.width * r.height > best.width * best.height) best = r;
+      } catch {
+        /* geometry is best-effort */
+      }
+    };
+    consider(root);
+    try {
+      for (const c of root.querySelectorAll('*')) {
+        // Stop as soon as something paints: a full-player ad is found on the
+        // first sized child, and a 500 ms tick must not walk a big subtree.
+        if (best.width > 20 && best.height > 20) break;
+        consider(c);
+      }
+    } catch {
+      /* ignore */
+    }
+    return best;
+  }
   function adUiDetail() {
     try {
-      // Twitch can keep a hidden squeezeback wrapper before the visible ad
-      // wrapper; querySelector() would only ever see the hidden one.
-      for (const sda of document.querySelectorAll('[class*="stream-display-ad__wrapper"]')) {
-        const r = sda.getBoundingClientRect();
-        const cls = String(sda.className || '');
-        if (r.width > 20 && r.height > 20 && !/hidden/i.test(cls)) {
+      // `__wrapper-hidden` is a PERMANENT class on Twitch's squeezeback node,
+      // not a visibility flag: the same node carries `__wrapper_squeezeback`
+      // and `__wrapper-hidden` at once and is revealed by resizing its
+      // container. Testing the class token therefore refused every real ad
+      // this page ever showed (measured 2026-11-15: zero `ad-ui-on` rows in a
+      // 1200-entry ring while a whole 15 s pod played). Size decides, not the
+      // class name; whether an ad surface is big enough to be worth pausing
+      // for is adHoldWorthy()'s question, not this one's.
+      for (const sda of document.querySelectorAll(
+        '[class*="stream-display-ad__wrapper"], [data-test-selector="sda-wrapper"]',
+      )) {
+        const r = adSurfaceRect(sda);
+        if (r.width > 20 && r.height > 20) {
           return { kind: 'wrapper', w: Math.round(r.width), h: Math.round(r.height) };
         }
       }
@@ -1118,6 +1156,35 @@
         const r = e.getBoundingClientRect();
         if (r.width > 10 && r.height > 5) {
           return { kind: 'aria', label: label.slice(0, 120), w: Math.round(r.width), h: Math.round(r.height) };
+        }
+      }
+      // The slate the owner pasted verbatim on 2026-11-15 ("Continue com
+      // FredTheFinch logo após esse anúncio comercial … Anúncio (0:15)") is
+      // TEXT in the player, with no aria-label and no sized wrapper, so both
+      // branches above answered null while a whole pod played. Scan only the
+      // player subtree (not the document) and only text nodes, so the cost
+      // stays well under a millisecond on a 500 ms tick.
+      const player = document.querySelector('[data-a-target="video-player"]') || document.querySelector('.video-player');
+      if (player) {
+        const walker = document.createTreeWalker(player, NodeFilter.SHOW_TEXT);
+        let node = null;
+        let seen = 0;
+        while ((node = walker.nextNode()) && seen++ < 400) {
+          const t = String(node.nodeValue || '').trim();
+          if (!t || t.length > 200) continue;
+          // Both halves of the real slate, and the countdown itself. The promo
+          // button ("Teste 1 mês sem anúncios") never carries a countdown.
+          const countdown = /\(\s*\d{1,2}\s*:\s*\d{2}\s*\)/.test(t) && /an.ncio|advert/i.test(t);
+          const slate = /logo\s+ap[oó]s\s+esse\s+an.ncio|right\s+after\s+this\s+ad|apoiar\s+a\s+transmiss/i.test(t);
+          if (!countdown && !slate) continue;
+          const host = node.parentElement;
+          const r = host ? host.getBoundingClientRect() : null;
+          return {
+            kind: countdown ? 'countdown' : 'slate',
+            label: t.slice(0, 120),
+            w: r ? Math.round(r.width) : 0,
+            h: r ? Math.round(r.height) : 0,
+          };
         }
       }
     } catch {
@@ -1148,7 +1215,10 @@
   // the countdown label (which only exists while one is running).
   function adHoldWorthy(detail, v) {
     if (!detail) return false;
-    if (detail.kind === 'aria') return true;
+    // A label the page itself puts in the player (the countdown or the slate
+    // text) is the ad talking, not a background element: it has no size to
+    // measure, and requiring one is how the detector lost a whole pod.
+    if (detail.kind === 'aria' || detail.kind === 'countdown' || detail.kind === 'slate') return true;
     try {
       const r = v && v.getBoundingClientRect ? v.getBoundingClientRect() : null;
       if (!r || !r.width || !r.height) return true; // geometry unknown: trust the wrapper
@@ -1198,6 +1268,12 @@
     // player, and this pause is ours: stamp it or the hand-back refuses to
     // resume its own hold (the 2026-11-15 freeze).
     overlay.selfPausedAt = adUiHeldAt;
+    // A paused ad frame is still an ad frame. The worker's playlist probe only
+    // fires on the next segment refresh — that gap IS the "ad toca por uns 4
+    // segundos até finalmente ser defendido" report (owner 2026-11-15). The ad
+    // wrapper appearing is proof enough to start warming a clean source now,
+    // so the cover is the freeze plus one HLS segment instead of a full refresh.
+    requestStandby(0, true);
     adLogState('ad-ui-hold', { act: 'paused', ct: +Number(v.currentTime || 0).toFixed(1), rs: v.readyState });
   }
   // Any play the extension did not issue means the user took the player back:
@@ -3230,7 +3306,11 @@
   setInterval(() => {
     try {
       const adDetail = adUiDetail();
-      const ad = !!adDetail;
+      // Presence is not an ad: Twitch keeps a squeezeback wrapper shell in the
+      // DOM permanently, and a banner must never cost the user his picture.
+      // The same predicate that gates the hold now gates the log and the tick,
+      // so `ad-ui-on` can never name a node that is not worth pausing for.
+      const ad = adHoldWorthy(adDetail, mainVideo());
       if (ad !== rec.ad) {
         const since = rec.adSince;
         rec.ad = ad;
@@ -4165,55 +4245,76 @@
     };
   }
 
-  try {
-    const NativeWorker = window.Worker;
-    if (typeof NativeWorker === 'function') {
-      window.Worker = class KoAdblockWorker extends NativeWorker {
-        constructor(url, options) {
-          const src = String(url);
-          if (!isOn()) {
-            super(url, options);
-            return;
-          }
-          if (!/^blob:https:\/\/(?:www\.)?twitch\.tv\//.test(src)) {
-            super(url, options);
-            return;
-          }
-          let code = '';
-          try {
-            const x = new XMLHttpRequest();
-            x.open('GET', src, false);
-            x.overrideMimeType('text/javascript');
-            x.send();
-            code = x.responseText || '';
-          } catch {
-            stats.workerFailures++;
-          }
-          if (!code) {
-            super(url, options);
-            return;
-          }
-          try {
-            const prelude =
-              'const __KO_CLIENT_ID=' + JSON.stringify(CLIENT_ID) + ';' +
-              'const __KO_GQL_HASH=' + JSON.stringify(GQL_HASH) + ';' +
-              'const __KO_GQL_URL=' + JSON.stringify(GQL_URL) + ';' +
-              'const __KO_PLAYER_TYPE=' + JSON.stringify(PLAYER_TYPE) + ';' +
-              'const __KO_PLATFORM=' + JSON.stringify(CLEAN_PLATFORM) + ';' +
-              'const __KO_PAGE_ID=' + JSON.stringify(pageId) + ';';
-            const blob = new Blob([prelude + '(' + workerMain.toString() + ')();\n' + code], {
-              type: 'text/javascript',
-            });
-            super(URL.createObjectURL(blob), options);
-            stats.workerHooks++;
-          } catch {
-            stats.workerFailures++;
-            super(url, options);
-          }
+  // Twitch moved its player to a SHARED worker feeding `video.srcObject =
+  // MediaSourceHandle` (measured on the owner's Chrome 2026-11-15: the page
+  // video had `srcObject` of type MediaSourceHandle, and the playlist never
+  // crossed `self.fetch` in ANY context we patched). The old hook wrapped only
+  // `window.Worker`, so that entire player ran unpatched: the ring had zero
+  // `worker-playlist` rows for a whole page load while a 15 s pod played, and
+  // the only defence left was the DOM detector. Both constructors now go
+  // through one wrapper, because which one the player picks is Twitch's
+  // decision, not ours.
+  function makePatchedWorker(Native, isShared) {
+    return class KoAdblockWorker extends Native {
+      constructor(url, options) {
+        const src = String(url);
+        if (!isOn()) {
+          super(url, options);
+          return;
         }
-      };
-    }
+        if (!/^blob:https:\/\/(?:www\.)?twitch\.tv\//.test(src)) {
+          super(url, options);
+          return;
+        }
+        let code = '';
+        try {
+          const x = new XMLHttpRequest();
+          x.open('GET', src, false);
+          x.overrideMimeType('text/javascript');
+          x.send();
+          code = x.responseText || '';
+        } catch {
+          stats.workerFailures++;
+        }
+        if (!code) {
+          super(url, options);
+          return;
+        }
+        try {
+          const prelude =
+            'const __KO_CLIENT_ID=' + JSON.stringify(CLIENT_ID) + ';' +
+            'const __KO_GQL_HASH=' + JSON.stringify(GQL_HASH) + ';' +
+            'const __KO_GQL_URL=' + JSON.stringify(GQL_URL) + ';' +
+            'const __KO_PLAYER_TYPE=' + JSON.stringify(PLAYER_TYPE) + ';' +
+            'const __KO_PLATFORM=' + JSON.stringify(CLEAN_PLATFORM) + ';' +
+            'const __KO_PAGE_ID=' + JSON.stringify(pageId) + ';';
+          const blob = new Blob([prelude + '(' + workerMain.toString() + ')();\n' + code], {
+            type: 'text/javascript',
+          });
+          super(URL.createObjectURL(blob), options);
+          if (isShared) stats.workerHooksShared = (stats.workerHooksShared || 0) + 1;
+          else stats.workerHooks++;
+          // Say it out loud: "no worker-playlist rows" must never again be
+          // ambiguous between "the playlist was clean" and "we never saw it".
+          adLog('worker-hook', { kind: isShared ? 'shared' : 'worker', src: src.slice(0, 90) });
+        } catch (e) {
+          stats.workerFailures++;
+          adLog('worker-hook-fail', { kind: isShared ? 'shared' : 'worker', err: String(e).slice(0, 120) });
+          super(url, options);
+        }
+      }
+    };
+  }
+  try {
+    if (typeof window.Worker === 'function') window.Worker = makePatchedWorker(window.Worker, false);
   } catch {
     /* worker hook is optional — the GQL rewrite remains active */
+  }
+  try {
+    if (typeof window.SharedWorker === 'function') {
+      window.SharedWorker = makePatchedWorker(window.SharedWorker, true);
+    }
+  } catch {
+    /* shared-worker hook is optional */
   }
 })();

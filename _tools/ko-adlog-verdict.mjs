@@ -50,6 +50,8 @@ const SCREEN = new Set([
   'ad-ui-hold',
   'ad-ui-release',
   'ad-hold',
+  'worker-hook',
+  'worker-hook-fail',
 ]);
 const SOUND = new Set([
   'audio-intent',
@@ -139,6 +141,9 @@ function episodesOf(log) {
 
 function reportEpisode(ep, idx) {
   const evs = ep.events;
+  // Worker-hook rows are the load's own statement about whether the media
+  // fetcher was patched. Collected once, reported in AD DEFENCE.
+  const seenHooks = [];
   const last = evs.length ? evs[evs.length - 1].t : ep.start;
   const span = last - ep.start;
   const lines = [];

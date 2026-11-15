@@ -426,6 +426,27 @@ check('tab-audio-scope', () => {
   return 'one tab gesture stays in that tab; shared record carries no audio; positive control + 2 mutations';
 });
 
+// ---- 6g. ad DETECTION: the DOM detector and the media worker -------------
+// Owner report 2026-11-15: "eu tomei anuncio INTEIRO". His ring had zero
+// `ad-ui-on`, zero `ad-hold` and zero `worker-playlist` rows for a whole page
+// load while a 15 s pod played, because (a) the DOM detector tested Twitch's
+// permanent `__wrapper-hidden` class token instead of the surface it paints, and
+// never read the countdown/slate text at all, and (b) only `window.Worker` was
+// hooked while the player that feeds `MediaSourceHandle` uses `SharedWorker`.
+// Both arms above, each with the pre-fix mutation required to go RED.
+check('ad-detect', () => {
+  const rel = 'kick-overlay/ad-detect-test.cjs';
+  assert(existsSync(path.join(ROOT, rel)), `missing ${rel}`);
+  const r = spawnSync(process.execPath, [path.join(ROOT, rel)], {
+    cwd: path.join(ROOT, 'kick-overlay'),
+    encoding: 'utf8',
+  });
+  const out = String(r.stdout || '') + String(r.stderr || '');
+  assert(r.status === 0, `${rel}: ${out.trim().slice(-400)}`);
+  assert(/ARMS (\d+)\/\1\b/.test(out), `${rel}: arm count not equal-sided:\n${out.trim().slice(-300)}`);
+  return 'wrapper measured by paint not class token, countdown/slate text read, SharedWorker hooked; 2 pre-fix arms go RED';
+});
+
 // ---- 7. bug ledger -------------------------------------------------------
 // States are explicit. `fixed` is allowed; `verified` needs an independent
 // verifier, and `arm-verified` is the narrower claim: the negative arm was
