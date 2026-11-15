@@ -32,6 +32,23 @@ design redoes work is the worst available answer.
 - **Measure, then say it.** A performance claim names process id (or job), measured CPU/RSS before and
   after, and the instrument. `CANNOT-MEASURE` is an acceptable answer; an unqualified "otimizado" is not.
 
+## Owner rule — every report is answered FROM THE LOG, never from the code (2026-11-15)
+
+Verbatim: *"QUALQUER coisa q eu te falo tu tem q ver nos logs. bota isso no agents.md"*, and before it the
+same order in the diagnostic form: *"os logs nao devem ser hints, mas a resposta inteira"*.
+
+- The FIRST action on any owner report is a read of his own ring:
+  `node _tools/ko-adlog-verdict.mjs --episodes=N` (defect classes, exits 1 when one is present) and
+  `node _tools/ko-adlog-window.mjs 9222 ROWS --keep a,b,c` for the rows behind a verdict. Re-reading the
+  source is what happens when the ring cannot answer, and **that gap is itself the defect to fix**.
+- A row must be a TRANSITION, never a per-heartbeat sample: 70 identical `audio-mismatch` lines buried the
+  chronology they were supposed to explain, and the same class of duplication pushed the pod rows out.
+- Every write that changes what he sees or hears names its author and its numbers in the row that makes
+  it: `native-nudge {from,to,ahead,runway}`, `native-resume {behind}`, `reveal-caught-up {lat,target}`,
+  `audio-intent {origin,ev}`, `ad-ui-hold {ct,rs}`. A clock move with no row is the defect KO-20261115-08.
+- When a report is about a window the ring no longer holds, say so and name the missing row instead of
+  explaining the code. `CANNOT-MEASURE` is an answer; a plausible narrative is not.
+
 ## Owner rule — nothing is done until a LIVE Twitch stream proved it (2026-11-08)
 
 **Do not declare done, fixed, working or finished until the change is tested and observed on a real
@@ -1332,6 +1349,61 @@ guest on twitch.tv/rodil with 0.8.84 (`chrome.runtime.getManifest().version` = `
 catch-up were measured in the harness, and the live run above only proves the pieces around them. The four rows stay
 `fixed` until a live stream with 0.8.84 installed shows one hand-back audible at his intent, one freeze that either
 does not happen or produces `native-seek-skipped`, and no `overlay-catchup` line from a revealed player.
+
+## Wave record — 2026-11-15 (later), the freeze was a hand-back at the frontier (0.8.93)
+
+Owner, verbatim: *"ad toca por uns 4 segundos até finalmente ser 'defendido' pela extensao. ao trocar pro
+outro player, nao sei se ta em tempo real (talvez sim talvez nao). ao voltar pro player da twitch, ele TRAVA
+inves de voltar pro tempo real (nunca skippando frames, nao e pra ser diferente do player do 360p, se ta no
+frame 100 no player 360p, é pra na twitch ir pro frame 101), e pra destravar eu q tenho q clicar em pause
+despause, e ainda ACHO que fica mutado nesse tempo quando nao deveria. TUDO ISSO deveria estar nos logs."*
+
+His 0.8.92 ring (`twitch.tv/hagizao`) had the whole chain, and the freeze was one row:
+
+|ms|row|what it says|
+|---|---|---|
+|768868|`native-handoff {ct:4771.9, buf:4774.1, cleanLat:6.3, se:1073741824}`|handed back ON the newest downloaded frame: 2.2 s of runway|
+|768870|`native-seek-skipped {why:'no-data'}`|the edge was the 2^30 sentinel: no forward seek possible|
+|771376|`rs:2`|the buffer drained, `play()` lost HAVE_FUTURE_DATA|
+|771382|`rs:1`, then ct 849.3|Twitch reloaded its own source; the picture came back 4 s later|
+
+Three defects, each with an arm and a RED that restores the pre-fix line:
+
+1. **A hand-back at the frontier of what is downloaded is a freeze with a delay on it.** `play()` needs
+   `HAVE_FUTURE_DATA` (3 s here), and the element had 2.2. `nudgeNativeToBuffer()` gated on `ahead >= 0.5`,
+   so it declined to help. The gate is now `HEALTH_BUFFER_SEC`, and the hand-back runs it whenever the
+   element is live and short of runway, not only at `readyState < 3`. It rewinds inside media the element
+   ALREADY HOLDS: no network, no skip, and Twitch's own live-sync pulls the picture back to the edge.
+2. **The recovery watcher waited 2500 ms whatever the state, and never armed when the element was
+   user-parked.** 2500 ms is longer than the freeze it was meant to fix (`recovery NEVER RAN` in this very
+   ring). The first check is now 700 ms when the element is handed back below `HAVE_FUTURE_DATA`, and the
+   watcher arms on every exit from the hand-back, including the frame-less one.
+3. **The reveal raced its own catch-up.** `revealOverlay()` called `catchUpClean(..., true)` and raised the
+   frame in the same synchronous task; the frame applies a seek asynchronously, so the first picture was
+   still the delay. His ring: `overlay-reveal {clean:{lat:6.3, hold:4.34}}`. The reveal now asks for the
+   catch-up, waits (bounded, `REVEAL_AWAIT_MS = 1600`) for a report showing the new position, and logs
+   `reveal-caught-up` or `reveal-behind` with its measured delay. A silent frame still gets its picture at
+   the bound, because a pod with no picture is worse than a late one.
+
+**Every move of the clock is now a row.** `nudgeNativeToBuffer()` wrote `v.currentTime` and returned a
+boolean; nothing reached the ring. It logs `native-nudge {from, to, ahead, runway, rs}`. The verdict tool
+prints a `HAND-BACK` section (`ct`, `buf`, `resume`, `rs`, `behind` or `behind=NOT-MEASURABLE(sentinel
+edge)`, reload, seek, and whether the recovery ran) and a `catch-up LANDED` / `catch-up TIMED OUT` swap row,
+so "travou" and "não sei se tá em tempo real" are answered by the log instead of by re-reading the code.
+`AD WINDOW` already printed how long an ad played before it was stopped; the cold path's hold still lands on
+`ad-start`, and the measured ~4 s is the mint, which no timer on our side removes.
+
+**A hold whose pod never arrived left the picture paused** ("tela piscou preta sem anuncio, ai a live
+pausou e tive q despausar", 2026-11-15). The hold pauses the native as soon as Twitch's ad wrapper appears,
+before any clean frame exists; when the pod's lifecycle never starts, the cold-cover bound was the only exit
+and it returned through the frame-less branch, which was written before the hold paused anything. That branch
+now resumes and arms the recovery watcher, logged as `native-resume {tag:'no-frame-exit'}`. Arms: the hold
+pauses before a frame exists, the bound hands back a PLAYING player, and a RED that removes the resume.
+
+Gate `RESULT PASS checks=22 failed=0`; `ad-time-continuity` 80 checks. Not verified and worth saying: the
+live pod half needs his own Chrome with 0.8.93 installed, and the guest cannot summon a pod. It stays `fixed`
+until a live hand-back shows `native-nudge` (or none, when runway was held), no `rs<3` resume pair, and a
+`reveal-caught-up` at the sync target.
 
 ## Wave record — 2026-11-15, the recovery aimed at a timeline that no longer existed (0.8.92)
 

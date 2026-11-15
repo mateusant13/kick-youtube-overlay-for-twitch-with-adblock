@@ -389,6 +389,11 @@ function makeWorld(opts, extra) {
     clickDocument() {
       for (const f of (document.listeners.pointerdown || []).slice()) f({ type: 'pointerdown' });
     },
+    // A click with a TARGET: the arbiter asks whether that control could have
+    // carried a volume, which a target-less event cannot answer.
+    clickDocumentTarget(target) {
+      for (const f of (document.listeners.pointerdown || []).slice()) f({ type: 'pointerdown', target });
+    },
     // The MACHINE muting the page video while a click is still fresh (owner
     // report 2026-11-11: he clicks to recover the delay, Twitch mutes its own
     // element as the pod takes over). No pointerdown is fired here: the click
@@ -678,6 +683,56 @@ async function main() {
     check('a mute 3 s after the hand-back is recorded as intent', () => {
       assert(page.audio.intent('twitch').muted === true,
         'a real mute outside the machine window was discarded (detector measures nothing)');
+    });
+  }
+
+  // ---- 2c2: WHICH input, not just WHEN. --------------------------------
+  // Measured in the owner's ko.adlog 2026-11-15 (0.8.92, twitch.tv/buzzyi_):
+  // `audio-intent {origin:"user:pointer", ev:{input:"click", inputAgeMs:57},
+  // after:{muted:true}}` — he clicked the PICTURE to recover a stall, Twitch
+  // muted its own element 57 ms later, and the freshest-input rule made that his
+  // decision, which the next live he opened inherited. A mute is only his when
+  // the input could have changed a volume.
+  {
+    const page = makeWorld();
+    await runPod(page, { mutedBeforeAd: false });
+    page.bypass({ type: 'ad-end' });
+    await new Promise((r) => setTimeout(r, 2800));
+    // A real click on the PICTURE: a target no volume control lives in.
+    page.clickDocumentTarget({ tagName: 'VIDEO' });
+    page.machineMutesNative();
+    const refused = page.logs().filter((l) => l.ev === 'audio-refused').pop();
+    check('a mute after a click on the picture is not the user muting', () => {
+      assert(page.audio.intent('twitch').muted === false,
+        'a click on the picture became a mute intent (the 2026-11-15 defect)');
+      assert(!!refused, 'the refusal wrote no audio-refused line');
+      assert(refused.d.why === 'not-volume-control',
+        `why=${JSON.stringify(refused.d.why)} does not name the control test`);
+      assert(refused.d.input === 'pointerdown', `input=${JSON.stringify(refused.d.input)} is not the click that was read`);
+    });
+    // The SAME gesture on our own volume control IS his: the refusal must not
+    // be a blanket ban on muting.
+    page.clickDocumentTarget({ tagName: 'DIV', closest: (sel) => (String(sel).includes('#ko-mute') ? {} : null) });
+    page.machineMutesNative();
+    check('the same mute from our own volume control IS the user choice', () => {
+      assert(page.audio.intent('twitch').muted === true,
+        'a mute on the volume control was refused (the guard is too broad)');
+    });
+  }
+
+  // ---- 2c3: RED control — without the control test the click muting returns.
+  {
+    const blind = AUDIO.split('if (!!el.muted && !lastInputVolumeCapable) {').join('if (false && !!el.muted && !lastInputVolumeCapable) {');
+    if (blind === AUDIO) throw new Error('the control-test mutation did not apply');
+    const page = makeWorld({ audioSource: blind });
+    await runPod(page, { mutedBeforeAd: false });
+    page.bypass({ type: 'ad-end' });
+    await new Promise((r) => setTimeout(r, 2800));
+    page.clickDocumentTarget({ tagName: 'VIDEO' });
+    page.machineMutesNative();
+    check('mutation: the control test exists to be disarmed', () => {
+      assert(page.audio.intent('twitch').muted === true,
+        'the mutant refused it too: this arm is not measuring the guard');
     });
   }
 

@@ -132,7 +132,7 @@ function mutate(pairs) {
 
 // Native player at a controllable position. `edge` is the live edge, so
 // `edge - ct` is the native's own latency.
-function setNative(page, { ct, edge, bufferedEnd, paused = false, muted = false }) {
+function setNative(page, { ct, edge, bufferedEnd, bufferedStart, paused = false, muted = false }) {
   const v = page.video;
   v.currentTime = ct;
   v.paused = paused;
@@ -144,7 +144,8 @@ function setNative(page, { ct, edge, bufferedEnd, paused = false, muted = false 
   v.volume = 1;
   v.plays = 0;
   v.seekable = { length: 1, start: () => Math.max(0, edge - 3600), end: () => edge };
-  v.buffered = { length: 1, start: () => Math.max(0, edge - 3600), end: () => bufferedEnd };
+  const bStart = bufferedStart == null ? Math.max(0, edge - 3600) : bufferedStart;
+  v.buffered = { length: 1, start: () => bStart, end: () => bufferedEnd };
   return v;
 }
 
@@ -212,10 +213,42 @@ async function main() {
     page.bypass({ type: 'ad-hold' }); // a warm playing standby is revealed here
     await settle(20);
     check('a 6s-behind standby is re-aligned before it covers the native', () => {
-      assert(page.frame.style.opacity === '1', 'the standby was not revealed');
+      // Owner report 2026-11-15: "ao trocar pro outro player, não sei se tá em
+      // tempo real". His own 0.8.92 ring shows why: `overlay-reveal
+      // {clean:{lat:6.3,hold:4.34}}` — the seek was sent on the same tick the
+      // frame was raised, so the first picture he saw was still 6.3 s behind.
+      // The seek is asked for, and the reveal WAITS for the frame to report the
+      // new position (bounded) instead of racing it.
       const seeks = page.seeks();
-      assert(seeks.length >= 1, `revealed without a catch-up seek: ${JSON.stringify(page.sent)}`);
+      assert(seeks.length >= 1, `no catch-up seek: ${JSON.stringify(page.sent)}`);
       assert(Math.abs(seeks[0] - (200 + 6 - 3)) < 0.6, `seek target ${seeks[0]} != edge-3 (203)`);
+      assert(page.frame.style.opacity !== '1',
+        'the frame was raised on the same tick as the seek: the picture shown is the old position');
+    });
+    // One report that carries the caught-up position IS the landing.
+    page.frameMsg(healthySt({ pos: 203, lat: 3, buffered: 30 }));
+    await settle(20);
+    check('the reveal lands on the report that shows the position the seek aimed at', () => {
+      assert(page.frame.style.opacity === '1', `still hidden after the caught-up report: ${JSON.stringify(page.sent)}`);
+      assert(page.seeks().length === 1, `re-seeked a frame that had already moved: ${JSON.stringify(page.seeks())}`);
+    });
+  }
+  // A frame that never reports again must not leave the user without a picture.
+  {
+    const page = makeWorld();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    await warmStandby(page, { pos: 200, lat: 6 });
+    page.bypass({ type: 'ad-hold' });
+    await settle(20);
+    check('a silent frame is revealed at the bound, and the delay is stated', () => {
+      assert(page.frame.style.opacity !== '1', 'the reveal did not wait at all');
+    });
+    await new Promise((r) => setTimeout(r, 1750));
+    check('...and the bound fires: reveal-behind is logged with the measured delay', () => {
+      assert(page.frame.style.opacity === '1', 'the bound never revealed: the pod has no picture at all');
+      const rec = page.logsOf('reveal-behind').pop();
+      assert(!!rec, `no reveal-behind row: ${JSON.stringify(page.sent)}`);
+      assert(typeof rec.d.lat === 'number' && rec.d.lat > 0, `lat missing: ${JSON.stringify(rec.d)}`);
     });
   }
 
@@ -933,7 +966,296 @@ async function main() {
     check('an unmute made during the pod is not overwritten by the heartbeat', () => {
       const after = page.muteSent().slice(idx).filter((m) => m === true).length;
       assert(after === 0, `the heartbeat re-muted the player ${after} times after the user unmuted`);
-      assert(page.video.paused === false || page.logsOf('mute-intent').length >= 1, 'the unmute never reached the page');
+      // The unmute reaching the page is the CLEAN frame being told `mute:false`
+      // and the authority holding that intent; the native's own `paused` flag is
+      // no evidence here, because a held pod pauses it by design (and, since
+      // 0.8.93, from `ad-hold` itself rather than from the first frame).
+      assert(page.muteSent().includes(false), `the clean frame was never unmuted: ${JSON.stringify(page.muteSent())}`);
+      assert(page.audio.intent('twitch').muted === false, 'the authority lost the unmute');
+    });
+  }
+
+  // ---- 10. THE AD STOPS WHEN TWITCH SAYS IT IS AN AD --------------------
+  // Owner report 2026-11-15, verbatim: "bugs: ad toca por uns 4 segundos até
+  // finalmente ser 'defendido' pela extensao". `ad-hold` is posted by the
+  // worker's playlist probe, which needs a segment refresh; Twitch's own ad
+  // wrapper is in the DOM before that, and those seconds are exactly what he
+  // sees. The hold therefore also starts from the page's own signal.
+  {
+    const page = makeWorld();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    const api = page.stats();
+    // 1. the signal is enough on its own, with no worker message at all
+    api.adUiHold({ kind: 'wrapper', w: 1280, h: 720 });
+    await settle(5);
+    check('the ad wrapper appearing pauses the player before any ad-hold arrives', () => {
+      assert(page.video.paused === true, 'the ad kept playing until the worker noticed');
+      const l = page.logsOf('ad-ui-hold');
+      assert(l.length >= 1, 'the hold wrote no ad-ui-hold line');
+      assert(l[0].d.act === 'paused', `act=${JSON.stringify(l[0].d.act)}`);
+      assert(api.adUiHeldAt() > 0, 'the hold did not record when it started');
+    });
+    // 2. the page calls play() again: one pause is not enough
+    page.video.play();
+    api.adUiHoldTick();
+    await settle(5);
+    check('the page taking the pause back is re-asserted, not accepted', () => {
+      assert(page.video.paused === true, 'Twitch resumed the ad and the hold gave up');
+    });
+    // 3. the ad ends with no pod ever starting: the player comes back by itself
+    api.adUiRelease();
+    await settle(30);
+    check('an ad with no clean source hands the player back on its own', () => {
+      assert(page.video.paused === false, 'the hold left the player frozen after the ad');
+      const r = page.logsOf('ad-ui-release').pop();
+      assert(!!r, 'the release wrote no line');
+      assert(r.d.act === 'resume', `act=${JSON.stringify(r.d.act)}`);
+      assert(r.d.reasserts >= 1, `reasserts=${JSON.stringify(r.d.reasserts)} does not count the take-back`);
+    });
+  }
+  // A banner or a squeezeback is not a playing ad: the hold must not cost the
+  // user his picture there.
+  {
+    const page = makeWorld();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    const api = page.stats();
+    check('a small squeezeback does not pause the stream', () => {
+      assert(api.adHoldWorthy({ kind: 'wrapper', w: 240, h: 135 }, page.video) === false,
+        'a 240x135 squeezeback was judged a playing ad');
+      assert(api.adHoldWorthy({ kind: 'wrapper', w: 1280, h: 720 }, page.video) === true,
+        'a full-size wrapper was not judged a playing ad');
+      assert(api.adHoldWorthy({ kind: 'aria', label: 'Anúncio (0:12)' }, page.video) === true,
+        'the countdown label was not judged a playing ad');
+    });
+    api.adUiHold({ kind: 'wrapper', w: 240, h: 135 });
+    await settle(5);
+    check('the squeezeback hold is a no-op in effect', () => {
+      assert(page.video.paused === false, 'the squeezeback paused the picture');
+    });
+  }
+  // 4. RED: without the area/label gate every wrapper is an ad.
+  {
+    const blind = mutate([["      return detail.w * detail.h >= 0.5 * r.width * r.height;", "      return true;"]]);
+    const page = makeWorld({ adSource: blind });
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    page.stats().adUiHold({ kind: 'wrapper', w: 240, h: 135 });
+    await settle(5);
+    check('RED: a wrapper-only gate pauses the stream on a squeezeback', () => {
+      assert(page.video.paused === true,
+        'the mutant refused the squeezeback too: this arm is not measuring the gate');
+    });
+  }
+  // 5. THE FREEZE: our own pause must not be read as the user parking the player.
+  // Owner report 2026-11-15: "ao voltar pro player da twitch, ele TRAVA inves de
+  // voltar pro tempo real ... pra destravar eu q tenho q clicar em pause
+  // despause". The hold pauses the element seconds before the pod takes over,
+  // and `pauseBeforeAd = !!v.paused` then recorded OUR pause as HIS, so every
+  // resume was refused and the picture stayed stopped.
+  {
+    const page = makeWorld();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    page.stats().adUiHold({ kind: 'wrapper', w: 1280, h: 720 });
+    await settle(5);
+    check('the instant hold really paused the element first', () => {
+      assert(page.video.paused === true, 'the arm needs the hold to have paused the native');
+    });
+    page.bypass({ type: 'ad-hold' });
+    page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+    await settle(20);
+    page.frameMsg({ t: 'ready' });
+    for (let i = 0; i < 3; i++) page.frameMsg(healthySt({ pos: 100, lat: 3 }));
+    await settle(10);
+    page.bypass({ type: 'ad-end' });
+    await settle(60);
+    check('a pod that took over from our own hold still hands the picture back', () => {
+      assert(page.video.paused === false, 'the hand-back left the native frozen (the reported freeze)');
+      const r = page.logsOf('native-resume').pop();
+      assert(!!r, 'the hand-back wrote no native-resume line');
+      assert(r.d.userParked === false, `userParked=${JSON.stringify(r.d.userParked)} blames the user for our pause`);
+      assert(typeof r.d.behind === 'number', 'native-resume did not say how far from the edge the picture is');
+    });
+  }
+  // 6. RED: the pre-fix attribution freezes exactly that hand-back.
+  {
+    const blind = mutate([["overlay.pauseBeforeAd = !!v.paused && !selfPausedRecently() && !overlay.coldPreroll;",
+      "overlay.pauseBeforeAd = !!v.paused;"]]);
+    const page = makeWorld({ adSource: blind });
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    page.stats().adUiHold({ kind: 'wrapper', w: 1280, h: 720 });
+    await settle(5);
+    page.bypass({ type: 'ad-hold' });
+    page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+    await settle(20);
+    page.frameMsg({ t: 'ready' });
+    for (let i = 0; i < 3; i++) page.frameMsg(healthySt({ pos: 100, lat: 3 }));
+    await settle(10);
+    page.bypass({ type: 'ad-end' });
+    await settle(60);
+    check('RED: reading our own hold as the user freeze the hand-back', () => {
+      assert(page.video.paused === true,
+        'the mutant resumed it too: this arm is not measuring the attribution');
+    });
+  }
+
+  // ---- 11. "AM I IN REAL TIME?" IS A LOG FIELD ---------------------------
+  {
+    const page = makeWorld();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    // The frame is the only code that can say WHICH instrument measured `lat`,
+    // so the reports that lead to the reveal carry one. The reveal is a
+    // transition: a later report cannot retroactively label it.
+    page.bypass({ type: 'ad-hold' });
+    page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+    await settle(20);
+    page.frameMsg({ t: 'ready' });
+    for (let i = 0; i < 3; i++) page.frameMsg(healthySt({ pos: 100 + i, lat: 3.4, buffered: 6, latSrc: 'hls' }));
+    await settle(20);
+    const r = page.logsOf('overlay-reveal').pop();
+    check('the reveal says how far behind the edge the picture that went up is', () => {
+      assert(!!r, 'no overlay-reveal line');
+      assert(r.d.lat === 3.4, `lat=${JSON.stringify(r.d.lat)} is not the frame's own measurement`);
+      assert(r.d.latSrc === 'hls', `latSrc=${JSON.stringify(r.d.latSrc)} does not name the instrument`);
+      assert('edgeBehind' in r.d, 'the reveal does not carry the native edge distance');
+      assert(r.d.edgeBehind === 3, `edgeBehind=${JSON.stringify(r.d.edgeBehind)} is not edge-ct`);
+      assert(r.d.target === 3, `target=${JSON.stringify(r.d.target)} is not the sync target`);
+    });
+  }
+
+  // ---- 12. THE HAND-BACK UNSTICKS ITSELF --------------------------------
+  // Owner report 2026-11-15: "ao voltar pro player da twitch, ele TRAVA inves
+  // de voltar pro tempo real ... pra destravar eu q tenho q clicar em pause
+  // despause". Measured in HIS 0.8.92 ring: `native-resume {ct:19.1, rs:2}`
+  // followed by 8.7 s of nothing while the element held 0.1 s in front of the
+  // playhead. The nudge threshold was 1 s, and `play()` needs 3.
+  {
+    const page = makeWorld();
+    // The element sits at the head of what it already holds: exactly the
+    // hand-back state his log shows.
+    // 1.0 s of runway: above the old 0.5 s gate and below the health gate's 3 s,
+    // which is the whole window the reported freeze lived in. The edge is the
+    // sentinel on purpose (his own ring: `se:1073741824`), so no forward seek
+    // can rescue the element and the nudge is the only recovery there is.
+    setNative(page, { ct: 18.2, edge: 1073741824, bufferedStart: 0, bufferedEnd: 19.2 });
+    page.bypass({ type: 'ad-hold' });
+    page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+    await settle(20);
+    page.frameMsg({ t: 'ready' });
+    for (let i = 0; i < 3; i++) page.frameMsg(healthySt({ pos: 30, lat: 3 }));
+    await settle(20);
+    page.bypass({ type: 'ad-end' });
+    await settle(3000);
+    const moves = page.logsOf('native-nudge');
+    check('a hand-back with no runway rewinds into its own buffer instead of waiting', () => {
+      assert(moves.length === 1, `expected one nudge, got ${moves.length}: ${JSON.stringify(moves.map((r) => r.d))}`);
+      assert(moves[0].d.to < 18.2, `nudged to ${moves[0].d.to}, not back from 18.2`);
+      assert(moves[0].d.runway >= 3 - 0.05, `runway after the nudge was ${moves[0].d.runway}s`);
+      assert(page.video.currentTime < 18.2, `currentTime=${page.video.currentTime} was not moved back into the buffer`);
+    });
+  }
+  // RED: a half-second threshold leaves the element parked (the reported freeze).
+  {
+    const blind = mutate([
+      ['if (b.end(i) - b.start(i) >= HEALTH_BUFFER_SEC + 0.5 && b.end(i) - ct < HEALTH_BUFFER_SEC) {',
+        'if (b.end(i) - b.start(i) >= 2 && b.end(i) - ct < 0.5) {'],
+      ['if (ahead >= HEALTH_BUFFER_SEC || target === null) return false;', 'if (ahead >= 0.5 || target === null) return false;'],
+    ]);
+    const page = makeWorld({ adSource: blind });
+    // 1.0 s of runway: above the old 0.5 s gate and below the health gate's 3 s,
+    // which is the whole window the reported freeze lived in. The edge is the
+    // sentinel on purpose (his own ring: `se:1073741824`), so no forward seek
+    // can rescue the element and the nudge is the only recovery there is.
+    setNative(page, { ct: 18.2, edge: 1073741824, bufferedStart: 0, bufferedEnd: 19.2 });
+    page.bypass({ type: 'ad-hold' });
+    page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+    await settle(20);
+    page.frameMsg({ t: 'ready' });
+    for (let i = 0; i < 3; i++) page.frameMsg(healthySt({ pos: 30, lat: 3 }));
+    await settle(20);
+    page.bypass({ type: 'ad-end' });
+    await settle(3000);
+    const rec = page.logsOf('native-recover').pop();
+    check('RED: with the pre-fix threshold the element is left parked', () => {
+      assert(page.logsOf('native-nudge').length === 0, 'the mutant moved the clock, so it is not measuring the threshold');
+      assert(!!rec && rec.d.nudged === false,
+        `the mutant nudged too (${JSON.stringify(rec && rec.d)}): this arm is not measuring the threshold`);
+    });
+  }
+
+  // ---- 12b. A HOLD WHOSE POD NEVER ARRIVED STILL OWES HIM THE PLAYER ------
+  // His 2026-11-15 report: "tela piscou preta sem anuncio, ai a live pausou e
+  // tive q despausar". The hold pauses the native the moment the ad UI shows;
+  // when the pod's own lifecycle never starts (the mint failed, or the ad UI
+  // was the only signal), the cold-cover bound is the ONLY exit - and it used
+  // to return through the frame-less branch without resuming, because that
+  // branch was written when nothing had paused the element yet.
+  {
+    const page = makeWorld();
+    setNative(page, { ct: 300, edge: 400, bufferedEnd: 400 });
+    page.bypass({ type: 'ad-hold', channel: 'rodil' });
+    await settle(20);
+    check('the hold pauses the native before any frame exists', () => {
+      assert(page.video.paused === true, 'the hold never paused the element: this arm measures nothing');
+    });
+    // Past COLD_COVER_BOUND_MS with no clean picture available.
+    await new Promise((r) => setTimeout(r, 3200));
+    check('a hold whose pod never arrived hands the player back playing', () => {
+      assert(page.video.paused === false,
+        'the native was left paused with no ad and no clean player: "a live pausou e tive q despausar"');
+      assert((page.video.plays || 0) >= 1, 'play() was never called on the held element');
+    });
+  }
+  // RED: the pre-fix frame-less exit leaves the element paused.
+  {
+    const blind = mutate([
+      ["      try {\n        const nv = mainVideo();\n        if (nv && nv.isConnected && nv.paused && !resumeRefusedByUser(nv)) {\n          resumeNative(nv, 'no-frame-exit');\n          armNativeRecovery(nv, 'no-frame-exit');\n        }\n      } catch { /* ignore */ }",
+       "      try { const nv = mainVideo(); void nv; } catch { /* ignore */ }"],
+    ]);
+    const page = makeWorld({ adSource: blind });
+    setNative(page, { ct: 300, edge: 400, bufferedEnd: 400 });
+    page.bypass({ type: 'ad-hold', channel: 'rodil' });
+    await new Promise((r) => setTimeout(r, 3200));
+    check('RED: without the frame-less resume the held native stays paused', () => {
+      assert(page.video.paused === true, 'the mutant resumed the element: this arm is not measuring the exit');
+    });
+  }
+
+  // ---- 13. A HAND-BACK THAT LANDS AT THE EDGE STILL HAS NO RUNWAY ---------
+  // His 0.8.92 ring 2026-11-15, the exact row: `native-handoff {ct:4771.9,
+  // buf:4774.1}` — the element came back ON the newest frame Twitch had, 2.2 s
+  // in front of the playhead, reported rs:4 `native-resume`, and drained to
+  // rs:1 within 1.5 s. `play()` needs HAVE_FUTURE_DATA (3 s here), so the
+  // hand-back owes the element that runway before it calls play.
+  //
+  // The edge is the sentinel, because that is what his element reported: no
+  // forward seek can rescue it, so the nudge inside the buffer is the only
+  // recovery in the code path.
+  async function handBackAt(ct, bufEnd, { paused = false } = {}) {
+    const page = makeWorld();
+    setNative(page, { ct, edge: 1073741824, bufferedStart: 0, bufferedEnd: bufEnd, paused });
+    await pod(page);
+    page.bypass({ type: 'ad-end' });
+    await settle(60);
+    return page;
+  }
+  {
+    const page = await handBackAt(4771.9, 4774.1);
+    check('a hand-back with 2.2s of runway is moved back to the health gate, not left to drain', () => {
+      const moved = page.seeks().length ? page.seeks() : [page.video.currentTime];
+      assert(page.video.currentTime < 4771.9,
+        `ct=${page.video.currentTime}: the element was handed back at the frontier it cannot play forward from`);
+      // The source's own constant, quoted as the number it is (3 s): a test
+      // that reads the product constant would pass if the product changed it.
+      assert(4774.1 - page.video.currentTime >= 2.95,
+        `runway ${(4774.1 - page.video.currentTime).toFixed(2)}s < 3s`);
+    });
+  }
+  {
+    // ...and an element that ALREADY has the runway is not touched: the rule is
+    // about starvation, not about always rewinding.
+    const page = await handBackAt(4771.9, 4780);
+    check('a hand-back that already holds the runway is left exactly where it is', () => {
+      const moved = page.logsOf('native-recover').filter((r) => r.d && r.d.nudged === true);
+      assert(moved.length === 0, `nudged a healthy hand-back: ${JSON.stringify(moved.map((r) => r.d))}`);
     });
   }
 

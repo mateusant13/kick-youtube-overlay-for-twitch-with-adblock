@@ -46,6 +46,10 @@ const SCREEN = new Set([
   'cold-cover',
   'overlay-no-playing',
   'video-emptied',
+  'ad-ui-on',
+  'ad-ui-hold',
+  'ad-ui-release',
+  'ad-hold',
 ]);
 const SOUND = new Set([
   'audio-intent',
@@ -152,6 +156,13 @@ function reportEpisode(ep, idx) {
         kind: 'native -> CLEAN',
         why: `reveal #${reveals} reason=${d.reason || '?'}`,
         extra: [
+          // "esta em tempo real?" is a NUMBER, not a feeling: the clean picture's
+          // own latency and the instrument that measured it, beside the native's
+          // distance from the edge, in the row that names the swap.
+          d.lat != null ? `lat=${d.lat}s(${d.latSrc || '?'})` : null,
+          d.target != null ? `target=${d.target}s` : null,
+          d.edgeBehind != null ? `nativeEdgeBehind=${d.edgeBehind}s` : null,
+          d.q != null ? `q=${d.q}` : null,
           d.advanced != null ? `advanced=${d.advanced}s` : null,
           d.sinceMs != null ? `since=${fmt(d.sinceMs)}` : null,
         ].filter(Boolean),
@@ -169,12 +180,72 @@ function reportEpisode(ep, idx) {
     } else if (e.ev === 'audio-claim') {
       if (d.to === 'ad' && !d.from) swaps.push({ t: e.t, kind: 'claim(ad)', why: 'clean player covers the page', extra: [] });
       else if (d.from && !d.to) swaps.push({ t: e.t, kind: 'release(ad)', why: 'clean player gone', extra: [] });
-    } else if (e.ev === 'cold-cover') {
+      } else if (e.ev === 'cold-cover') {
       swaps.push({ t: e.t, kind: 'cold-cover', why: `painted=${d.painted}`, extra: [] });
+    } else if (e.ev === 'reveal-caught-up' || e.ev === 'reveal-behind') {
+      // The reveal that waited for the catch-up is a different event from the
+      // reveal that raced it: one shows real time, the other shows the delay it
+      // was asked to close. Owner report 2026-11-15 ("não sei se tá em tempo
+      // real") is answered BY THIS ROW, not by reading the code.
+      swaps.push({
+        t: e.t,
+        kind: e.ev === 'reveal-caught-up' ? 'catch-up LANDED' : 'catch-up TIMED OUT',
+        why: `${e.ev} after ${fmt(d.ms || 0)}`,
+        extra: [d.lat != null ? `lat=${d.lat}s` : null, d.target != null ? `target=${d.target}s` : null].filter(Boolean),
+      });
     }
   }
+  // ---- the ad window: how long an ad played before it was stopped ----------
+  // Owner report 2026-11-15: "ad toca por uns 4 segundos até finalmente ser
+  // defendido". `ad-ui-on` is when Twitch painted the ad, `ad-ui-hold` is when
+  // we stopped it; the difference IS the number that report is about.
+  const adWindows = [];
+  let adSeen = null;
+  for (const e of evs) {
+    const d = e.d || {};
+    if (e.ev === 'ad-ui-on' && !adSeen) adSeen = { at: e.t, hold: null, release: null, worker: null };
+    if (e.ev === 'ad-hold' && adSeen && !adSeen.worker) adSeen.worker = e.t;
+    if (e.ev === 'ad-ui-hold' && adSeen && adSeen.hold == null) adSeen.hold = { t: e.t, act: d.act };
+    if (e.ev === 'ad-ui-release' && adSeen) {
+      adSeen.release = { t: e.t, act: d.act, reasserts: d.reasserts };
+      adWindows.push(adSeen);
+      adSeen = null;
+    }
+  }
+  if (adSeen) adWindows.push(adSeen);
   const screenSwaps = swaps.filter((s) => s.kind.includes('->') || s.kind === 'cold-cover');
   if (screenSwaps.length > 1) findings.push(`${screenSwaps.length} screen changes in this page (a pod is one)`);
+
+  // ---- hand-back: what the picture was when the pod ended ------------------
+  // His 2026-11-15 report has three questions and this section answers two:
+  // did the native come back (or stay parked), and how far from the edge is the
+  // picture it came back with. `behind:null` means the edge was the 2^30
+  // sentinel, i.e. the element's distance from live was NOT measurable at that
+  // instant - stated, never guessed.
+  const handbacks = [];
+  for (let i = 0; i < evs.length; i += 1) {
+    if (evs[i].ev !== 'native-handoff') continue;
+    const h = evs[i];
+    const after = evs.slice(i + 1, i + 40);
+    const resume = after.find((e) => e.ev === 'native-resume');
+    const reset = after.find((e) => e.ev === 'native-timeline-reset');
+    const recover = after.find((e) => e.ev === 'native-edge-recover');
+    const skipped = after.find((e) => e.ev === 'native-seek-skipped');
+    const rec = after.find((e) => e.ev === 'native-recover');
+    const reload = after.find((e) => e.ev === 'native-reload');
+    handbacks.push({
+      t: h.t,
+      ct: h.d && h.d.ct,
+      buf: h.d && h.d.buf,
+      resumeAfter: resume ? resume.t - h.t : null,
+      behind: resume && resume.d ? resume.d.behind : null,
+      rs: resume && resume.d ? resume.d.rs : null,
+      reloaded: !!reset || !!reload,
+      recovered: rec ? { nudged: rec.d && rec.d.nudged, rs: rec.d && rec.d.rs, after: rec.t - h.t } : null,
+      skipped: !!skipped,
+      seeked: recover ? +(recover.d && recover.d.to) : null,
+    });
+  }
 
   // ---- freezes: a native parked at readyState<3 after a hand-back
   const freezes = [];
@@ -208,6 +279,8 @@ function reportEpisode(ep, idx) {
     const d = e.d || {};
     if (e.ev === 'overlay-nudge' && typeof d.to === 'number' && typeof d.pos === 'number' && d.to - d.pos > 1.5)
       jumps.push({ t: e.t, delta: +(d.to - d.pos).toFixed(1), what: 'clean picture nudge' });
+    if (e.ev === 'native-nudge' && typeof d.from === 'number' && typeof d.to === 'number' && d.from - d.to > 1.5)
+      jumps.push({ t: e.t, delta: -(d.from - d.to).toFixed(1), what: 'native runway nudge (rewind inside held media)' });
     if (e.ev === 'native-catchup' && typeof d.from === 'number' && typeof d.to === 'number' && d.to - d.from > 3)
       jumps.push({ t: e.t, delta: +(d.to - d.from).toFixed(1), what: 'native catch-up' });
     if (e.ev === 'native-edge-recover' && typeof d.behind === 'number' && d.behind > 3)
@@ -312,6 +385,37 @@ function reportEpisode(ep, idx) {
     lines.push('  ON SCREEN');
     for (const s of screenSwaps) lines.push(`    ${fmt(s.t - ep.start).padStart(7)}  ${s.kind.padEnd(16)} ${s.why}${s.extra.length ? '  ' + s.extra.join(' ') : ''}`);
   }
+  if (adWindows.length) {
+    lines.push('  AD WINDOW (how long it played before it was stopped)');
+    for (const w of adWindows) {
+      const defended = w.hold ? w.hold.t - w.at : null;
+      const workerLate = w.worker ? w.worker - w.at : null;
+      lines.push(
+        `    ${fmt(w.at - ep.start).padStart(7)}  played=${defended == null ? 'NOT STOPPED' : fmt(defended)}` +
+          `  by=${w.hold ? w.hold.act : '-'}  worker=${workerLate == null ? '-' : fmt(workerLate)}` +
+          `  held=${w.release ? fmt(w.release.t - (w.hold ? w.hold.t : w.at)) : '?'}  end=${w.release ? w.release.act : 'no-uioff'}` +
+          `  reasserts=${w.release ? w.release.reasserts : '-'}`,
+      );
+    }
+  }
+  if (handbacks.length) {
+    lines.push('  HAND-BACK (the pod ended: how the native came back)');
+    for (const h of handbacks) {
+      const bits = [
+        `ct=${h.ct ?? '?'}`,
+        `buf=${h.buf ?? '?'}`,
+        `resume=${h.resumeAfter == null ? 'NEVER' : fmt(h.resumeAfter)}`,
+        `rs=${h.rs ?? '?'}`,
+        h.behind == null ? 'behind=NOT-MEASURABLE(sentinel edge)' : `behind=${h.behind}s`,
+        h.reloaded ? 'native RELOADED to a new timeline' : null,
+        h.seeked != null ? `seeked to ${h.seeked}s` : null,
+        h.skipped ? 'seek refused: no data in hand' : null,
+        h.recovered ? `recovery after ${fmt(h.recovered.after)} nudged=${h.recovered.nudged} rs=${h.recovered.rs}` : 'recovery NEVER RAN',
+      ].filter(Boolean);
+      lines.push(`    ${fmt(h.t - ep.start).padStart(7)}  ${bits.join('  ')}`);
+      if (h.rs != null && h.rs < 3) findings.push(`hand-back at ${fmt(h.t - ep.start)} resumed at rs=${h.rs} (parked)`);
+    }
+  }
   if (freezes.length) {
     lines.push('  FROZEN');
     for (const f of freezes)
@@ -331,7 +435,17 @@ function reportEpisode(ep, idx) {
   const ramps = collapsed.filter((c) => /RAMP/.test(c.text));
   if (ramps.length) findings.push(`${ramps.length} volume ramp(s) accepted as intent (${ramps[0].text})`);
   lines.push('  ANSWER');
+  const latRows = swaps.filter((s) => /lat=/.test(s.extra.join(' ')));
+  const lastLat = latRows.length ? latRows[latRows.length - 1].extra.find((x) => /^lat=/.test(x)) : null;
+  const worstAd = adWindows.reduce((w, x) => {
+    const ms = x.hold ? x.hold.t - x.at : Infinity;
+    return ms > (w == null ? -1 : w) ? ms : w;
+  }, null);
   lines.push(`    reveals=${reveals} screenChanges=${screenSwaps.length} frozen=${fmt(frozenMs)} jumps=${jumps.length}`);
+  lines.push(
+    `    realtime: last reveal ${lastLat || 'NO LATENCY LOGGED'}` +
+      (adWindows.length ? `  adPlayed=${worstAd === Infinity ? 'NEVER STOPPED' : fmt(worstAd)} (${adWindows.length} window(s))` : ''),
+  );
   lines.push(
     `    mute by USER=${mutedByUser.length}  by CODE=${mutedByCode.length}  unattributed=${unattributed.length}`,
   );

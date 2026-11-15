@@ -560,9 +560,48 @@
   const INPUT_EVENTS = ['pointerdown', 'mousedown', 'keydown', 'wheel', 'touchstart', 'click'];
   let lastInputAt = 0;
   let lastInputKind = '';
+  let lastInputVolumeCapable = false;
+  // WHICH input, not just WHEN. Freshness alone cannot tell a click on the
+  // player's volume button from a click anywhere else on the page followed by
+  // the machine muting its own element. Measured in the owner's ko.adlog
+  // 2026-11-15 (0.8.92, twitch.tv/buzzyi_):
+  //   audio-intent {origin:"user:pointer", ev:{input:"click", inputAgeMs:57},
+  //                 after:{muted:true, volume:0.81}, surface:"twitch"}
+  //   ... then the next live he opened started MUTED ("troquei de live e ela
+  //   começou mutada ... só desmuta se eu ligar e desligar o som").
+  // His click was on the picture (recovering a stall), Twitch muted its own
+  // element 57 ms later, and the freshest-input rule made that his decision for
+  // the rest of the tab. A MUTE is only his when the input could have changed a
+  // volume: our own bar, or a control inside the player's control bar. An
+  // UNMUTE stays his from any fresh input - refusing it would trap a silent tab.
+  const VOLUME_CONTROL_SEL = [
+    '#ko-wrap', '#ko-volwrap', '#ko-mute', '#ko-vol',
+    '[data-a-target="player-volume-slider"]',
+    '[data-a-target="player-mute-unmute-button"]',
+    '[data-a-target*="volume"]',
+    '[data-a-target*="mute"]',
+    '[aria-label*="olume"]', '[aria-label*="ute"]',
+  ].join(',');
+  function volumeCapableTarget(ev) {
+    try {
+      const t = ev && ev.target;
+      // An event with no target at all carries no evidence either way (a
+      // synthesised event, an engine that omits it). Only a KNOWN target that
+      // cannot change a volume refutes the mute; unknown is not a refutation.
+      if (!t) return true;
+      if (t.closest && t.closest(VOLUME_CONTROL_SEL)) return true;
+      // A keyboard shortcut ('m' is Twitch's mute) has no target control, and
+      // the owner does use it. Only pointer-like inputs are held to the target.
+      const kind = String((ev && ev.type) || '');
+      return kind === 'keydown';
+    } catch {
+      return false;
+    }
+  }
   function markInput(ev) {
     lastInputAt = Date.now();
     lastInputKind = String((ev && ev.type) || '');
+    lastInputVolumeCapable = volumeCapableTarget(ev);
   }
   function installInputClock() {
     const targets = [];
@@ -723,6 +762,26 @@
           el: { muted: !!el.muted, volume: +Number(el.volume || 0).toFixed(2) },
           intent: { muted: !!intentOf(owner).muted, volume: clamp(intentOf(owner).volume) },
           visible: visibleNow(),
+        });
+        apply();
+        return;
+      }
+      // A CLICK THAT COULD NOT HAVE CHANGED A VOLUME CANNOT HAVE MUTED. The
+      // freshness test above answers WHEN, not WHICH: the owner clicks the
+      // picture to unstick the player, Twitch mutes its own element 57 ms later
+      // (2026-11-15 ring, surface twitch, volume 0.81), and the freshest-input
+      // rule recorded that as his decision — which is why the NEXT live he
+      // opened started muted and "só desmuta se eu ligar e desligar o som".
+      // Only a mute arriving on a control that can carry a volume is his. An
+      // UNMUTE is never refused here: refusing it would trap a silent tab.
+      if (!!el.muted && !lastInputVolumeCapable) {
+        report('audio-refused', {
+          why: 'not-volume-control',
+          owner,
+          el: { muted: true, volume: +Number(el.volume || 0).toFixed(2) },
+          sinceInputMs: lastInputAt ? Date.now() - lastInputAt : null,
+          input: lastInputKind || null,
+          intent: { muted: !!intentOf(owner).muted, volume: clamp(intentOf(owner).volume) },
         });
         apply();
         return;

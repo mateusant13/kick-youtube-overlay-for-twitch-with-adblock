@@ -195,6 +195,10 @@
   // seeks to the live edge, which also skips the rest of the pod).
   const COLD_COVER_BOUND_MS = 3000;
   const RESUME_GAP_SEC = 1.5; // a smaller native/clean difference is not worth a seek
+  // How long a reveal waits for the frame to report the position its catch-up
+  // seek aimed at. One frame report is ~1 s; past this the picture is shown
+  // regardless, because a pod with no picture is worse than a late one.
+  const REVEAL_AWAIT_MS = 1600;
   // A revealed frame survives a degenerate player rect this long before it is
   // taken off screen: a hover preview, a quality switch and Twitch's own player
   // rebuild all produce one, and hiding on sight blanked a picture that was on
@@ -257,6 +261,7 @@
     // to:172}` on an element whose whole downloaded window was 42.4 s.
     timelineReset: false,
     pauseBeforeAd: false, // the native was PAUSED when the pod took over
+    selfPausedAt: 0, // when WE paused it (a hold is not the user parking it)
     coldPreroll: false, // ...and it had never played (page had just loaded)
     held: false,
     hiddenVideos: [],
@@ -633,11 +638,19 @@
   // Freeze what is on screen without erasing it. A paused <video> keeps its
   // last decoded frame, which is why this exists: the alternative (hide the
   // video and paint a panel) is the black screen the owner reported.
+  // Our own pause explains a paused element only while the hold that made it is
+  // still recent: a pod can run for minutes, so the stamp is bounded rather than
+  // alive forever.
+  const SELF_PAUSE_TRUST_MS = 10 * 60 * 1000;
+  function selfPausedRecently() {
+    return !!overlay.selfPausedAt && Date.now() - overlay.selfPausedAt < SELF_PAUSE_TRUST_MS;
+  }
   function pauseNativeForHold(v) {
     try {
       if (!v || v.paused) return false;
       if (resumeRefusedByUser(v)) return false; // a user-parked player stays parked
       v.pause();
+      overlay.selfPausedAt = Date.now();
       return true;
     } catch {
       return false;
@@ -653,7 +666,13 @@
     const pos = Number(st.pos);
     if (!(lat >= 0) || !(pos >= 0)) return false;
     if (!force && !(lat > CLEAN_LAT_MAX)) return false;
-    if (overlay.catchupAt && Date.now() - overlay.catchupAt < 2000) return false;
+    // The throttle exists to stop a stalling manifest turning into a seek storm,
+    // never to block the ONE seek that puts a revealed picture at real time.
+    // Measured in the owner's 2026-11-15 ring (0.8.92): the reveal asked for a
+    // forced catch-up 0.2 s after a periodic one, the 2 s window swallowed it,
+    // and `overlay-reveal` went up with `lat 6.4` on screen — his report "ao
+    // trocar pro outro player, não sei se tá em tempo real".
+    if (!force && overlay.catchupAt && Date.now() - overlay.catchupAt < 2000) return false;
     overlay.catchupAt = Date.now();
     const want = Math.max(0, pos + lat - cleanLatTarget());
     // Never aim past the data the element already holds. `lat` is the distance
@@ -1110,8 +1129,114 @@
   function adUiPresent() {
     return !!adUiDetail();
   }
+
+  // The earliest honest ad signal on the page. `ad-hold` arrives from the
+  // worker's playlist probe, which needs a segment refresh to see the ad
+  // segments; Twitch's own ad wrapper is in the DOM before that. Multiplying a
+  // measurement on the owner's live tab (2026-11-15, 0.8.92) put the wrapper up
+  // 1.5-3.5 s before `ad-hold`, and those are the seconds he reports as "ad toca
+  // por uns 4 segundos até finally ser defendido".
+  //
+  // It PAUSES and does not paint: the cover and the claim belong to the pod's own
+  // lifecycle (revealOverlay/stopAdOverlay), which knows when the clean picture
+  // is up. A frozen frame is what a hold is (measured 2026-11-08: hiding the
+  // native is the black screen he photographed), and resuming is the release.
+  let adUiHeldAt = 0;
+  let adUiReasserts = 0;
+  // A banner or a squeezeback is not a playing ad and must never cost the user
+  // his picture: the hold needs the ad surface to cover most of the player, or
+  // the countdown label (which only exists while one is running).
+  function adHoldWorthy(detail, v) {
+    if (!detail) return false;
+    if (detail.kind === 'aria') return true;
+    try {
+      const r = v && v.getBoundingClientRect ? v.getBoundingClientRect() : null;
+      if (!r || !r.width || !r.height) return true; // geometry unknown: trust the wrapper
+      return detail.w * detail.h >= 0.5 * r.width * r.height;
+    } catch {
+      return true;
+    }
+  }
+  const AD_UI_HOLD_MAX_MS = 12000; // the mint's own ceiling; past it the watchdog owns the screen
+  // Twitch's ad renderer calls play() again on its own element, so a single
+  // pause is undone in milliseconds. Re-asserting is not a fight with the page:
+  // it is the only way a pause survives the ad it is meant to stop.
+  function adUiHoldTick() {
+    if (!adUiHeldAt) return;
+    if (overlay.adActive || overlay.standby || overlay.frame) return; // the pod owns it now
+    if (overlayOwnsPlayback()) return;
+    if (Date.now() - adUiHeldAt > AD_UI_HOLD_MAX_MS) return;
+    const v = mainVideo();
+    if (!v || !v.isConnected || v.paused) return;
+    try { v.pause(); } catch { /* ignore */ }
+    overlay.selfPausedAt = Date.now();
+    adUiReasserts++;
+    // One line for the whole episode: the count is what answers "did the page
+    // take the pause back", and a row per tick would bury the chronology.
+    if (adUiReasserts === 1) {
+      adLogState('ad-ui-hold', { act: 'reassert', ct: +Number(v.currentTime || 0).toFixed(1), n: 1 });
+    }
+  }
+  function adUiHold(detail) {
+    if (adUiHeldAt) return; // already held by this signal
+    if (!AD_OVERLAY_ENABLED) return;
+    if (overlay.adActive || overlay.standby || overlay.frame) return; // the pod owns it now
+    if (overlayOwnsPlayback()) return; // the overlay player is the picture: no ad here
+    if (document.visibilityState && document.visibilityState !== 'visible') return;
+    const v = mainVideo();
+    if (!v || !v.isConnected) return;
+    if (!adHoldWorthy(detail, v)) return;
+    adUiReasserts = 0;
+    if (v.paused) {
+      adUiHeldAt = Date.now();
+      adLog('ad-ui-hold', { act: 'already-paused', ct: +Number(v.currentTime || 0).toFixed(1) });
+      return;
+    }
+    adUiHeldAt = Date.now();
+    try { v.pause(); } catch { /* ignore */ }
+    // The pod's take-over reads `v.paused` to decide whether the USER parked the
+    // player, and this pause is ours: stamp it or the hand-back refuses to
+    // resume its own hold (the 2026-11-15 freeze).
+    overlay.selfPausedAt = adUiHeldAt;
+    adLogState('ad-ui-hold', { act: 'paused', ct: +Number(v.currentTime || 0).toFixed(1), rs: v.readyState });
+  }
+  // Any play the extension did not issue means the user took the player back:
+  // the stamp that explains a pause must not outlive his own resume.
+  try {
+    document.addEventListener('play', (e) => {
+      const t = e && e.target;
+      if (!t || t.tagName !== 'VIDEO') return;
+      if (overlay.selfPausedAt && Date.now() - overlay.selfPausedAt > 250) overlay.selfPausedAt = 0;
+    }, true);
+  } catch { /* ignore */ }
+
+  function adUiRelease() {
+    if (!adUiHeldAt) return;
+    const heldMs = Date.now() - adUiHeldAt;
+    adUiHeldAt = 0;
+    const reasserts = adUiReasserts;
+    adUiReasserts = 0;
+    // The pod's own hand-back owns the resume once it exists: two resumers on
+    // one element is the pause/resume churn the 2026-11-09 wave removed.
+    if (overlay.adActive || overlay.standby || overlay.frame) {
+      adLog('ad-ui-release', { heldMs, act: 'pod-owns', reasserts });
+      return;
+    }
+    if (document.visibilityState && document.visibilityState !== 'visible') return;
+    const v = mainVideo();
+    if (!v || !v.isConnected) return;
+    adLog('ad-ui-release', { heldMs, act: v.paused ? 'resume' : 'playing', reasserts });
+    if (v.paused) resumeNative(v, 'ad-ui-release');
+  }
   // Exposed for diagnostics/tests only; not used by the ad path.
   stats.adUiDetail = adUiDetail;
+  // Test seam: the DOM walk is not available in the harness world, so the two
+  // halves are driven directly - the decision (`adHoldWorthy`) and the effect.
+  stats.adUiHold = adUiHold;
+  stats.adUiRelease = adUiRelease;
+  stats.adUiHoldTick = adUiHoldTick;
+  stats.adHoldWorthy = adHoldWorthy;
+  stats.adUiHeldAt = () => adUiHeldAt;
 
   function finishAdOverlay() {
     if (!overlay.frame) {
@@ -1152,28 +1277,150 @@
   // when the element is occluded, and on a cold preroll the native was never
   // playing at all. If it is parked at the live edge with readyState < 3, seek
   // back two seconds first so play() has data to work with.
+  // The element's own distance to the media it already holds, 0 when the
+  // playhead is not inside a range (nothing to measure is nothing to trust).
+  function forwardRunway(v) {
+    try {
+      const ct = Number(v.currentTime || 0);
+      const b = v.buffered;
+      let ahead = 0;
+      for (let i = 0; i < (b ? b.length : 0); i++) {
+        if (ct >= b.start(i) - 0.1 && ct <= b.end(i) + 0.1) ahead = Math.max(ahead, b.end(i) - ct);
+      }
+      return ahead;
+    } catch {
+      return 0;
+    }
+  }
+
+  // A live element reports `duration = Infinity` (Twitch) or a duration that
+  // grows; a DVR replay does not. The nudge must never move a user's rewind.
+  function isLiveElement(v) {
+    try {
+      const d = Number(v && v.duration);
+      return !isFinite(d) || d <= 0;
+    } catch {
+      return false;
+    }
+  }
+
   function nudgeNativeToBuffer(v) {
-    if (!v) return;
+    if (!v) return false;
     try {
       let ahead = 0;
       let target = null;
+      const ct = Number(v.currentTime || 0);
       const b = v.buffered;
       for (let i = 0; i < (b ? b.length : 0); i++) {
-        if (v.currentTime >= b.start(i) - 0.1 && v.currentTime <= b.end(i) + 0.1) {
-          ahead = Math.max(ahead, b.end(i) - v.currentTime);
+        if (ct >= b.start(i) - 0.1 && ct <= b.end(i) + 0.1) {
+          ahead = Math.max(ahead, b.end(i) - ct);
+          // THE RANGE THAT CONTAINS THE PLAYHEAD IS THE ONE THAT MATTERS. The
+          // old test only looked for ranges ENDING BEFORE the playhead, so an
+          // element parked at the head of a range it already holds (the exact
+          // hand-back state) was left with no data in front and no nudge: it
+          // sat at readyState 2 until Twitch refilled it on its own schedule.
+          // Measured in the owner's ko.adlog 2026-11-15: `native-resume {ct:19.1,
+          // rs:2}` then eight seconds of nothing ("travou. e pra destravar eu q
+          // tenho q clicar em pause despause"). Rewinding INSIDE the range costs
+          // no network: it gives play() media to start on, and Twitch's own
+          // live-sync pulls the picture back to the edge right after.
+          // THE RUNWAY IS THE HEALTH GATE'S, NOT HALF A SECOND. A live element
+          // with 0.6 s in front is exactly the state that reports `rs:2` and
+          // refuses to start: `play()` needs `HAVE_FUTURE_DATA`, and Twitch's own
+          // refill is what the user ends up waiting for. Measured in his 0.8.92
+          // ring 2026-11-15, the hand-back parked at `{ct:19.1, rs:2}` for 8.7 s
+          // ("pra destravar eu q tenho q clicar em pause despause").
+          if (b.end(i) - b.start(i) >= HEALTH_BUFFER_SEC + 0.5 && b.end(i) - ct < HEALTH_BUFFER_SEC) {
+            target = Math.max(target === null ? -Infinity : target, Math.max(b.start(i), b.end(i) - HEALTH_BUFFER_SEC));
+          }
         }
-        if (b.end(i) < v.currentTime && b.end(i) - b.start(i) >= 1) {
+        if (b.end(i) < ct && b.end(i) - b.start(i) >= 1) {
           target = Math.max(target === null ? -Infinity : target, b.end(i) - 1);
         }
       }
-      if (ahead >= 0.5 || target === null) return;
+      if (ahead >= HEALTH_BUFFER_SEC || target === null) return false;
       // Move back only into a range the element already has. Seeking to an
       // arbitrary seekable point can land in an unbuffered ad-only part and
       // leave readyState 1 (measured on kimkataguiri).
-      if (target < v.currentTime - 0.25) v.currentTime = target;
+      if (target < ct - 0.25) {
+        v.currentTime = target;
+        // EVERY MOVE OF THE CLOCK IS IN THE RING (owner order 2026-11-13: the
+        // logs are the answer, not a hint). This one is invisible by design - it
+        // rewinds inside media the element already holds - and it is exactly the
+        // kind of write that used to be impossible to find after the fact.
+        adLog('native-nudge', {
+          from: +ct.toFixed(1),
+          to: +target.toFixed(1),
+          ahead: +ahead.toFixed(1),
+          runway: +(v.buffered && v.buffered.length ? v.buffered.end(v.buffered.length - 1) - target : 0).toFixed(1),
+          rs: v.readyState,
+        });
+        return true;
+      }
+      return false;
     } catch {
-      /* ignore */
+      return false;
     }
+  }
+
+  // THE HAND-BACK MUST UNSTICK ITSELF. Every wave that ended with "and I have to
+  // click pause/unpause to unstick it" (owner 2026-11-13, 2026-11-15 twice) was
+  // the same shape: the element is handed back at readyState < 3 with nothing in
+  // front of the playhead, the four retries call play() on it, play() is refused,
+  // and the picture only returns when the user's own click forces Twitch to
+  // rebuild. One bounded watcher replaces that click: nudge into the buffer we
+  // already hold, and if the element still has not advanced, reload the source
+  // ONCE - a live element that reloads lands at the live edge, which is where a
+  // hand-back belongs. Both halves are logged, so "it recovered by itself" and
+  // "it recovered because a timer reloaded it" are told apart by the log.
+  function armNativeRecovery(v, tag) {
+    if (!v) return;
+    try { clearTimeout(overlay.nativeRecoverTimer); } catch { /* ignore */ }
+    const ct0 = Number(v.currentTime || 0);
+    // THE FIRST CHECK IS TIMED BY THE STATE, NOT BY A CONSTANT. 2500 ms is a
+    // reasonable ceiling for "did it start playing on its own", but an element
+    // handed back at readyState < 3 is ALREADY known-bad, and waiting 2.5 s to
+    // notice is 2.5 s of frozen picture the user reports as "travou". Measured
+    // in the owner's own 0.8.92 ring 2026-11-15: hand-back at `rs:4` with
+    // `buf:4774.1`, then `rs:2` and `rs:1` 1.5 s later, recovered only by
+    // Twitch reloading its own source 1.3 s after that. `play()` needs
+    // HAVE_FUTURE_DATA, so the nudge below has to happen while the element
+    // still has data in hand.
+    const firstDelay = Number(v.readyState || 0) < 3 ? 700 : 2500;
+    overlay.nativeRecoverTimer = setTimeout(() => {
+      overlay.nativeRecoverTimer = 0;
+      if (!v.isConnected || overlay.adActive) return;
+      if (document.visibilityState && document.visibilityState !== 'visible') return;
+      if (resumeRefusedByUser(v)) return;
+      const ct = Number(v.currentTime || 0);
+      const advanced = ct - ct0;
+      if (!v.paused && v.readyState >= 3 && advanced > 0.2) return; // healthy
+      const nudged = nudgeNativeToBuffer(v);
+      adLogState('native-recover', {
+        tag,
+        nudged,
+        advanced: +advanced.toFixed(2),
+        ct: +ct.toFixed(1),
+        rs: v.readyState,
+        paused: !!v.paused,
+      });
+      if (nudged || v.paused) {
+        try {
+          const p = v.play();
+          if (p && p.catch) p.catch(() => {});
+        } catch { /* ignore */ }
+        return;
+      }
+      // Still frozen with data in hand: the element itself is wedged. Reloading
+      // the source is the only recovery left, and on a live stream it lands at
+      // the edge - the same thing his manual pause/unpause produced.
+      try {
+        v.load();
+        adLog('native-reload', { tag, ct: +ct.toFixed(1) });
+        const p = v.play();
+        if (p && p.catch) p.catch(() => {});
+      } catch { /* ignore */ }
+    }, firstDelay);
   }
 
   // `seek` is only for the hand-back itself. The 300/1200/2500/4000 ms retries
@@ -1183,6 +1430,7 @@
   // ("flicked/glitched ... then advanced and returned").
   function resumeNative(v, tag, { seek = true } = {}) {
     if (!v || !v.isConnected) return;
+    let seekedNow = false;
     try {
       // Hand the native back AT THE SAME OFFSET the clean player was showing.
       // The old code seeked to `buffered end - 0.5`, which is the newest frame
@@ -1333,6 +1581,7 @@
           });
         } else if (want > from + RESUME_GAP_SEC) {
           v.currentTime = want;
+          seekedNow = true;
           const payload = {
             from: +from.toFixed(1),
             to: +want.toFixed(1),
@@ -1349,7 +1598,20 @@
       }
       // readyState 2 with paused=false is still a frozen frame. Nudge behind
       // live and call play() even when the element claims it is not paused.
-      if (v.readyState < 3) nudgeNativeToBuffer(v);
+      //
+      // AND A LIVE ELEMENT HANDED BACK WITH LESS RUNWAY THAN THE HEALTH GATE IS
+      // THE FREEZE ITSELF, however healthy it looks for the first second. The
+      // hand-back lands on the newest frame Twitch has downloaded, which on a
+      // live stream is the edge: measured in the owner's own 0.8.92 ring
+      // 2026-11-15, `native-handoff {ct:4771.9, buf:4774.1}` — 2.2 s in front of
+      // the playhead — then `rs:2` and `rs:1` inside 1.5 s ("travou, e pra
+      // destravar eu tenho q clicar em pause despause"). Rewinding inside the
+      // range costs no network and gives play() the 3 s it needs; Twitch's own
+      // live-sync pulls the picture back to the edge afterwards.
+      // A seek we just issued IS the position; rewinding it in the same tick
+      // would undo the landing (`seekedNow`). Everything else is the state the
+      // element came back in, which is what this repairs.
+      if (!seekedNow && (v.readyState < 3 || (isLiveElement(v) && forwardRunway(v) < HEALTH_BUFFER_SEC))) nudgeNativeToBuffer(v);
       if (v.paused || v.readyState < 3) {
         const p = v.play();
         if (p && p.catch) p.catch(() => {});
@@ -1357,11 +1619,21 @@
     } catch {
       /* ignore */
     }
+    // The hand-back has to answer, in one line: was it paused, did we dare move
+    // it, and HOW FAR FROM THE EDGE is the picture the user is now looking at.
+    // His 2026-11-15 question ("ao trocar pro outro player, não sei se tá em
+    // tempo real") is the `behind` field below; without it every report needed
+    // the code to be re-read instead of the log being read.
+    const edgeNow = nativeEdge(v);
+    const ctNow = Number(v.currentTime || 0);
     adLogState('native-resume', {
       tag,
       paused: v.paused,
-      ct: +v.currentTime.toFixed(1),
+      ct: +ctNow.toFixed(1),
       rs: v.readyState,
+      behind: edgeNow > 0 ? +(edgeNow - ctNow).toFixed(1) : null,
+      selfPaused: selfPausedRecently() ? Math.round((Date.now() - overlay.selfPausedAt) / 100) / 10 : 0,
+      userParked: !!overlay.pauseBeforeAd && !overlay.coldPreroll,
     });
   }
 
@@ -1530,6 +1802,10 @@
       overlay.nudgeTries = 0;
       overlay.lastSt = null;
       overlay.catchupAt = 0;
+    overlay.catchupWaitAt = 0;
+    overlay.catchupAsked = false;
+    try { clearTimeout(overlay.revealTimer); } catch { /* ignore */ }
+    overlay.revealTimer = 0;
       overlay.unmuteTried = false; overlay.unmuteTries = 0;
       try { clearTimeout(overlay.unmuteCheck); } catch { /* ignore */ }
       overlay.unmuteCheck = 0;
@@ -1543,6 +1819,18 @@
       overlay.nativeHidden = false;
       overlay.standby = false;
       overlay.adActive = false;
+      // A HOLD THAT NEVER GOT A FRAME STILL PAUSED THE PLAYER. Since the hold no
+      // longer waits for the frame, this exit is now reachable WITH the native
+      // paused by it — and leaving it paused is the owner's "a live pausou e
+      // tive que despausar" (2026-11-15). Nothing to hand back to: the picture
+      // never left, so the only work is to start it again.
+      try {
+        const nv = mainVideo();
+        if (nv && nv.isConnected && nv.paused && !resumeRefusedByUser(nv)) {
+          resumeNative(nv, 'no-frame-exit');
+          armNativeRecovery(nv, 'no-frame-exit');
+        }
+      } catch { /* ignore */ }
       return;
     }
     try { clearInterval(overlay.positionTimer); } catch { /* ignore */ }
@@ -1600,6 +1888,10 @@
         // the user-intent guard applies here.
         if (!resumeRefusedByUser(v)) resumeNative(v, 'ad-end');
         else if (!(overlay.pauseBeforeAd && !overlay.coldPreroll)) armResumeWhenVisible(v, 'ad-end');
+        // A hand-back that lands on an element with nothing in front of its
+        // playhead stays frozen until something unsticks it. That something used
+        // to be the owner's own pause/unpause click; this watcher replaces it.
+        if (!resumeRefusedByUser(v)) armNativeRecovery(v, 'ad-end');
         // Retries resume, they do not seek: `seek: false`. Each seek after the
         // hand-back was a visible jump (measured 2026-11-11: three catchups of
         // 13, 17 and 17 s in the five seconds after ad-end).
@@ -1727,8 +2019,49 @@
     // that is only 4-8s behind is still a visible delay against the native
     // edge, so pull it in before it is shown.
     if (wasStandby && overlay.lastSt && Number(overlay.lastSt.lat) > cleanLatTarget() + 1.5) {
-      catchUpClean(overlay.lastSt, true);
+      // A SEEK AND A REVEAL IN THE SAME TICK IS A REVEAL AT THE OLD POSITION.
+      // The frame applies the seek asynchronously, so raising it here puts a
+      // picture on screen that is still the distance the seek was meant to
+      // close. Measured in the owner's own 0.8.92 ring 2026-11-15:
+      // `overlay-reveal {clean:{lat:6.3, hold:4.34}}` — six seconds behind live
+      // on the first picture he saw, his report "ao trocar pro outro player,
+      // não sei se tá em tempo real".
+      const lat = Number(overlay.lastSt.lat);
+      if (!overlay.catchupAsked) {
+        // Ask once. A second ask would re-seek a frame that is already moving.
+        // Nothing to seek (no buffer in hand, or it is already at the ceiling)
+        // falls through: waiting would delay the picture for a move that cannot
+        // happen.
+        if (catchUpClean(overlay.lastSt, true)) {
+          overlay.catchupAsked = true;
+          overlay.catchupWaitAt = Date.now();
+          try { clearTimeout(overlay.revealTimer); } catch { /* ignore */ }
+          overlay.revealTimer = setTimeout(() => {
+            overlay.revealTimer = 0;
+            if (!overlay.frame || overlay.revealed) return;
+            adLog('reveal-behind', {
+              ms: Date.now() - (overlay.catchupWaitAt || Date.now()),
+              lat: overlay.lastSt && Number.isFinite(Number(overlay.lastSt.lat)) ? +Number(overlay.lastSt.lat).toFixed(1) : null,
+              target: cleanLatTarget(),
+            });
+            revealOverlay('reveal-timeout');
+          }, REVEAL_AWAIT_MS);
+          return;
+        }
+      }
+      if (lat > cleanLatTarget() + 1.5 && Date.now() - overlay.catchupWaitAt < REVEAL_AWAIT_MS) {
+        return; // the seek has not been reported back yet
+      }
+      // The frame reported the new position once it moved: raise it now.
+      adLog('reveal-caught-up', {
+        ms: Date.now() - (overlay.catchupWaitAt || Date.now()),
+        lat: +lat.toFixed(1),
+        target: cleanLatTarget(),
+      });
     }
+    overlay.catchupAsked = false;
+    try { clearTimeout(overlay.revealTimer); } catch { /* ignore */ }
+    overlay.revealTimer = 0;
     if (wasStandby || reason === 'standby') bypassStats.standbyHits++;
     if (!overlay.revealed) {
       overlay.revealed = true;
@@ -1742,6 +2075,15 @@
       // switched, and its muted").
       audioClaim(true);
       overlay.audioAssertUntil = Date.now() + AUDIO_ASSERT_MS;
+      // ...and the frame is COMMANDED in that same tick, unconditionally. The
+      // command is diffed against what this frame was last told, and a standby
+      // was told `mute:true` when it was created, so the unmute that follows the
+      // claim could be swallowed as "no change" while the arbiter had just
+      // silenced the page — measured: `audio-state {audible:0, el:"1|1.00",
+      // vis:"ad", wt:"1"}` = the page muted and the frame still muted, i.e. the
+      // owner's "trocou pro player de 360p, MUTADO. antes eu tava DESMUTADO".
+      // The claim and the command belong to the same synchronous task.
+      overlay.audioSent = null;
     try { clearTimeout(overlay.coldTimer); } catch { /* ignore */ }
     overlay.coldTimer = 0;
       // The clean picture is up: drop the notice panel in the same tick as the
@@ -1754,12 +2096,27 @@
         /* frame gone */
       }
       overlay.reveals = (overlay.reveals || 0) + 1;
+      // "IS IT REAL TIME?" is the owner's own question (2026-11-15), and it is
+      // answered by the LATENCY OF THE PICTURE THAT JUST WENT UP, not by the
+      // reveal having happened. `lat`/`latSrc`/`hold` say how far behind the edge
+      // the clean player is and which instrument measured it; `edgeBehind` says
+      // the same for the native it is replacing, so the two surfaces can be
+      // compared in one row instead of across a dozen.
+      const stR = overlay.lastSt || null;
+      const natR = mainVideo();
+      const natEdge = natR ? nativeEdge(natR) : 0;
       adLogState('overlay-reveal', {
         n: overlay.reveals, // 2, 3, 4 ...: a re-reveal is now countable at a glance
         reason,
         rewound: overlay.rewound,
         playing: overlay.playing,
         sinceMs: overlay.revealedAt ? Date.now() - overlay.revealedAt : null,
+        lat: stR && Number.isFinite(Number(stR.lat)) ? +Number(stR.lat).toFixed(1) : null,
+        latSrc: (stR && stR.latSrc) || null,
+        hold: stR && Number.isFinite(Number(stR.buffered)) ? +Number(stR.buffered).toFixed(2) : null,
+        q: (stR && stR.q && stR.q.name) || null,
+        target: cleanLatTarget(),
+        edgeBehind: natEdge > 0 && natR ? +(natEdge - Number(natR.currentTime || 0)).toFixed(1) : null,
         advanced:
           overlay.lastRevealPos != null && overlay.lastSt && typeof overlay.lastSt.pos === 'number'
             ? +(Number(overlay.lastSt.pos) - Number(overlay.lastRevealPos)).toFixed(1)
@@ -2562,7 +2919,13 @@
         // player at the same offset so the swap is invisible, and (b) refuse to
         // start a player the user had parked (a paused tab in the background).
         overlay.nativeLat = nativeLatency(v);
-        overlay.pauseBeforeAd = !!v.paused;
+        // A PAUSE WE CAUSED IS NOT A PAUSE HE CAUSED. `ad-ui-hold` pauses the
+        // native seconds before this line runs, so `!!v.paused` was reading our
+        // own hold back as "the user parked this player" - and that single
+        // misread is the freeze: `resumeRefusedByUser()` then refused every
+        // resume, and the picture stayed stopped until he clicked pause/unpause
+        // (owner report 2026-11-15). The self-pause stamp is the difference.
+        overlay.pauseBeforeAd = !!v.paused && !selfPausedRecently() && !overlay.coldPreroll;
         // The pod's cost, measured rather than assumed. Every pod freezes the
         // native (0.8.51 hold) and the clean picture is ~9 s behind the edge
         // while it is up (measured 2026-11-11 on buzzyi_: `overlay-catchup
@@ -2603,7 +2966,15 @@
         // it), the badge says what is happening, and revealOverlay() only raises
         // the frame once the clean player is actually playing. If it never gets
         // there, the bound below restores the native and nothing was ever black.
-        if (overlay.frame && !overlay.revealed && !overlay.playing) {
+        // THE HOLD DOES NOT WAIT FOR THE FRAME. It used to, and `ad-hold` is
+        // posted by the worker BEFORE the clean source is minted (`ad-start`
+        // carries the url), so the branch never ran: nothing paused the ad and
+        // nothing covered it until the mint finished. Measured in the owner's
+        // own report 2026-11-15: "ad toca por uns 4 segundos até finalmente ser
+        // defendido", and in his ring the paint lands on `ad-start`, one to
+        // three seconds of ad later. The hold's job is to stop the ad NOW; the
+        // frame's job is to replace it.
+        if (!overlay.revealed && !overlay.playing) {
           overlay.coldCover = true;
           // Cover the ad, not the screen: hide the native videos and raise the
           // notice panel. An iframe with no decoded picture is a black
@@ -2662,7 +3033,7 @@
             adoptNativeMute(nv);
             if (nv) {
               overlay.nativeLat = nativeLatency(nv);
-              overlay.pauseBeforeAd = !!nv.paused;
+              overlay.pauseBeforeAd = !!nv.paused && !selfPausedRecently();
               overlay.coldPreroll = !!nv.paused && Number(nv.currentTime || 0) < 1;
             }
           }
@@ -2870,6 +3241,13 @@
           adSec: ad ? 0 : since ? Number(((Date.now() - since) / 1000).toFixed(1)) : null,
           match: adDetail,
         });
+        // THE AD UI IS THE AD, and it appears one segment-refresh before the
+        // worker's playlist probe can prove it. Owner report 2026-11-15: "ad
+        // toca por uns 4 segundos até finalmente ser defendido". Pausing here
+        // costs nothing when the pod arrives a moment later (it pauses the
+        // same element) and covers the window where nothing else knew.
+        if (ad) adUiHold(adDetail);
+        else adUiRelease();
         if (!ad) rec.adSince = 0;
       }
       const v = sampleVideo();
@@ -2880,6 +3258,7 @@
         // content. Label it separately so content->ad is unambiguous.
         recLog(playing ? (ad ? 'ad-video-play' : 'content-play') : 'content-stop', { ad });
       }
+      if (ad) adUiHoldTick();
       if (ad && Date.now() - rec.lastTick > 1000) {
         rec.lastTick = Date.now();
         recLog('ad-tick', { adSec: Number(((Date.now() - rec.adSince) / 1000).toFixed(1)) });

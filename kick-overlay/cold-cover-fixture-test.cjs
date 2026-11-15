@@ -40,8 +40,11 @@ const { makePage, settle, healthySt } = require('./mute-decision-test.cjs');
 
 const SOURCE = fs.readFileSync(path.join(__dirname, 'twitch-adblock.js'), 'utf8');
 const FIXTURES = path.join(__dirname, 'fixtures', 'cold-preroll');
+// The hold no longer waits for the frame (0.8.93: `ad-hold` is posted BEFORE the
+// clean source is minted, and waiting for the frame is what let the ad play for
+// four seconds), so the pre-fix mutation targets the branch that still exists.
 const PRE_FIX_MUTATION = [
-  'if (overlay.frame && !overlay.revealed && !overlay.playing) {',
+  'if (!overlay.revealed && !overlay.playing) {',
   'if (false) { // pre-fix: no cold cover',
 ];
 // The black-screen defect the owner photographed on 2026-11-08: the hold hid
