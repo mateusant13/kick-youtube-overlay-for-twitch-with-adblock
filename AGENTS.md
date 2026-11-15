@@ -1575,3 +1575,58 @@ Verification (units): `node _tools/ko-verify.mjs` → `RESULT PASS`; `mute-decis
 arm + duplication detector), `ad-time-continuity` 43 checks (two ownership arms + `PRE_FIX_OWNER`
 negative arm), `content-fix-test` `ALL CONTENT.JS FIX CHECKS PASSED` (`KO_VER` re-aligned to the
 manifest, 0.8.72).
+
+## Wave record — 2026-11-15, the extension saw no ad at all (0.8.93/0.8.94)
+
+Owner, verbatim: *"eu tomei anuncio INTEIRO"*, and the slate pasted from his own screen a minute later:
+*"Continue com FredTheFinch logo após esse anúncio comercial. Fique por aqui para apoiar a transmissão!
+… Anúncio (0:15)"*. The ring answered it in one line once the verdict could ask:
+
+    AD DEFENCE (did anything see the ad at all)
+      ad-ui-on=0  ad-hold=0  worker-playlist=0  worker-hooked=NONE
+      NOTHING SAW AN AD in this page load: no DOM signal, no playlist probe, no hold.
+
+Four independent blindnesses, each measured, none of them a fix that had failed — every prior arm for
+this class drove `adUiHold()` DIRECTLY, so a detector that could never return non-null still passed.
+
+**1. The DOM detector tested a class token that is permanent.** Twitch ships the squeezeback wrapper as
+`stream-display-ad__wrapper stream-display-ad__wrapper_squeezeback stream-display-ad__wrapper-hidden`
+and reveals the ad by painting an INNER container sized inline. `adUiDetail()` required
+`!/hidden/i.test(className)`, so the only wrapper on his page — 0x0 itself, containing a 1236x695
+container — was refused every tick. It now measures PAINT (`getComputedStyle` on the wrapper and on
+each descendant, largest rect wins) and the hold-worthy decision stays a separate question, so a
+permanent squeezeback shell can never pause a 1236x695 player. Live proof on a real guest page:
+injected the exact measured shape → `{kind:"wrapper",w:1236,h:695}`, `worthy:true`.
+
+**2. The countdown/slate text path did not exist.** With no wrapper at all (the shape his paste
+describes) nothing read the player's own text. `adUiDetail()` now walks text nodes inside the player
+subtree and returns `{kind:"countdown"}` for `Anúncio (0:15)` and `{kind:"slate"}` for the sentence he
+pasted. Live: `{"kind":"countdown","label":"Anúncio (0:15)"}`. Controls in the suite keep the promo
+button ("Teste 1 mês sem anúncios") and chat text out.
+
+**3. The media worker was never patched.** His page video reports `srcObject` of type
+`MediaSourceHandle`, i.e. the player runs in a worker — and `twitch-adblock.js` wrapped only
+`window.Worker`. The playlist swap was structurally unable to fire, which is why the ring had zero
+`worker-playlist` rows for a whole load. Both constructors now go through one `makePatchedWorker`, and
+the hook LOGS itself: `worker-hook {kind:"worker"|"shared"}` or `worker-hook-fail {err}`. Measured on
+0.8.94 in the guest: `hooks=2 shared=0 fails=0 playlists=16`, ring rows
+`worker-hook {"kind":"worker","ms":961}`. `shared=0` is honest: that channel's player used Workers,
+so the SharedWorker arm is armed but not yet exercised by a live page.
+
+**4. A detected ad paused and warmed nothing.** `adUiHold()` took the pause but never asked for a clean
+source, so the cover waited for the next segment refresh — that gap IS the seconds of ad. The hold now
+calls `requestStandby(0, true)` in the same tick.
+
+The instrument was the other half of the fix: `ko-adlog-verdict.mjs` prints **AD DEFENCE** per page
+load (ad-ui-on / ad-hold / worker-playlist / which constructors were hooked) and says in words
+`NOTHING SAW AN AD in this page load` when all four are zero, with `worker-hooked=NONE` naming the
+missing instrument instead of leaving it to be inferred from silence.
+
+Units: `kick-overlay/ad-detect-test.cjs`, gate check 23, **ARMS 25/25**, every fix paired with a
+mutation that restores the pre-fix line and turns its arm red (class token, SharedWorker hook removed,
+standby request removed). Gate `RESULT PASS checks=23 failed=0`.
+
+**Still owed, and it is the only thing that closes this:** a real preroll on a live channel showing
+`ad-ui-on` (wrapper or countdown/slate) before the first `ad-hold`, then `ad-ui-hold {act:"paused"}`
+inside one 500 ms tick. Ledger `KO-20261115-10/11/12` stay `fixed`; the older KO-20261115-03 moved to
+`recurrence-watch` because its arms assumed a detector that could never fire.
