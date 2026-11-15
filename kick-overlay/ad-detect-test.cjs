@@ -457,6 +457,10 @@ const expected = [
   'the SharedWorker mutation applied to the shipped file',
   'RED: without the SharedWorker hook the media fetcher is unpatched (raw blob, no prelude)',
   'the tick gates the log with adHoldWorthy, not with presence',
+  'a DOM-detected ad pauses the native player',
+  'a DOM-detected ad asks for a clean source in the SAME tick (immediate=true, no delay)',
+  'the standby-request mutation applied to the shipped file',
+  'RED: the pre-fix hold pauses the ad and warms nothing, which IS the 4 s of ad',
 ];
 const missing = expected.filter((l) => !arms.includes(l));
 if (missing.length) {
