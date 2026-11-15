@@ -204,6 +204,7 @@ function reportEpisode(ep, idx) {
   // Owner report 2026-11-15: "ad toca por uns 4 segundos até finalmente ser
   // defendido". `ad-ui-on` is when Twitch painted the ad, `ad-ui-hold` is when
   // we stopped it; the difference IS the number that report is about.
+  for (const e of evs) if (/^worker-hook/.test(e.ev)) seenHooks.push(e);
   const adWindows = [];
   let adSeen = null;
   for (const e of evs) {
@@ -436,6 +437,31 @@ function reportEpisode(ep, idx) {
       const at = s.t == null ? '        ' : fmt(s.t - ep.start).padStart(7);
       lines.push(`    ${at}  ${String(s.a.who).padEnd(19)} ${s.text}${s.a.note ? `  [${s.a.note}]` : ''}`);
     }
+  }
+  // Did anything SEE the ad? This is the exact question his 2026-11-15 report
+  // asks ("eu tomei anuncio INTEIRO") and the ring could not answer before: a
+  // missing `ad-ui-on` used to be indistinguishable from "there was no ad".
+  const hooks = [...seenHooks];
+  const defence = {
+    adUi: evs.filter((e) => e.ev === 'ad-ui-on').length,
+    adHold: evs.filter((e) => e.ev === 'ad-hold').length,
+    playlists: evs.filter((e) => e.ev === 'worker-playlist').length,
+    hooks: hooks.filter((h) => /^worker-hook$/.test(h.ev)),
+    hookFails: hooks.filter((h) => /^worker-hook-fail$/.test(h.ev)),
+  };
+  lines.push('  AD DEFENCE (did anything see the ad at all)');
+  lines.push(
+    `    ad-ui-on=${defence.adUi}  ad-hold=${defence.adHold}  worker-playlist=${defence.playlists}  worker-hooked=${defence.hooks.length ? defence.hooks.map((h) => (h.d && h.d.kind) || '?').join('+') : 'NONE'}`,
+  );
+  if (defence.hookFails.length) {
+    lines.push(`    worker-hook-fail: ${defence.hookFails.map((h) => (h.d && h.d.err) || '?').join(' | ').slice(0, 160)}`);
+  }
+  if (!defence.adUi && !defence.adHold && !defence.playlists) {
+    lines.push('    NOTHING SAW AN AD in this page load: no DOM signal, no playlist probe, no hold.');
+    findings.push('no ad signal at all in this page load (ad-ui-on=0 ad-hold=0 worker-playlist=0)');
+  }
+  if (!defence.hooks.length) {
+    lines.push('    worker-hooked=NONE: the media fetcher was never patched on this load, so a clean playlist could not be proven');
   }
   const ramps = collapsed.filter((c) => /RAMP/.test(c.text));
   if (ramps.length) findings.push(`${ramps.length} volume ramp(s) accepted as intent (${ramps[0].text})`);
