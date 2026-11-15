@@ -336,6 +336,44 @@ async function getState(s) {
   return { ...page, adblock, hlsVideo };
 }
 
+// ONE LINE for "which source is the picture coming from, and where is it".
+// This is the question behind every stall/go-live report, and answering it used
+// to need a join across `state`, the frame's target and the adlog. The three
+// facts that decide it: the source the frame was last told to load (live vs
+// replay), the position it reports, and whether that position is MOVING.
+const SOURCE_EXPR = `(async () => {
+  const out = { at: Date.now() };
+  if (typeof KO === 'undefined' || !KO) return { err: 'no KO' };
+  const st = KO.kickState || null;
+  out.ver = typeof KO_VER === 'string' ? KO_VER : null;
+  out.player = KO.player;
+  out.enabled = !!KO.enabled;
+  out.source = KO.kickOnDvr ? 'replay' : 'live';
+  out.url = KO.activeUrl ? String(KO.activeUrl).slice(-44) : null;
+  out.urlAgeMs = KO.kickUrlT ? Date.now() - KO.kickUrlT : null;
+  out.dvrUrl = KO.kickDvrUrl ? String(KO.kickDvrUrl).slice(-44) : null;
+  out.dvrTarget = KO.kickDvrTarget;
+  out.dvrDur = KO.kickDvrDur;
+  out.pos = st ? +Number(st.pos || 0).toFixed(2) : null;
+  out.state = st ? st.state : null;
+  out.dur = st ? +Number(st.dur || 0).toFixed(1) : null;
+  out.lat = st ? +Number(st.lat || 0).toFixed(2) : null;
+  out.paused = st ? !!st.paused : null;
+  out.reconnectCount = KO.reconnectCount;
+  out.stableSince = KO.stableSince;
+  // MOVING is the decisive field: a frozen element keeps reporting Playing, and
+  // that is the whole defect class this command exists for.
+  const p0 = out.pos;
+  await new Promise((r) => setTimeout(r, 1200));
+  const st2 = KO.kickState || null;
+  out.posAfter = st2 ? +Number(st2.pos || 0).toFixed(2) : null;
+  out.movedSec = out.posAfter !== null && p0 !== null ? +(out.posAfter - p0).toFixed(2) : null;
+  out.verdict = out.movedSec === null ? 'CANNOT-MEASURE'
+    : out.movedSec > 0.3 ? 'MOVING'
+    : (out.state === 'Playing' ? 'FROZEN (reports Playing, clock still)' : 'NOT PLAYING');
+  return out;
+})()`;
+
 async function setConfig(s, cfg) {
   const payload = JSON.stringify(cfg);
   const res = await s.page.evalIsolated(`new Promise((res) => {
@@ -368,6 +406,10 @@ function usage() {
   stop                           stop guest Chrome
   status                         guest up? + targets
   state                          KO + adblock + iframe snapshot
+  source                          WHICH source the picture comes from (live vs replay), its position,
+                                 and whether that position is MOVING — one line, no log join. Reads
+                                 the clock twice, 1.2 s apart, and prints MOVING / FROZEN / NOT PLAYING,
+                                 because a frozen element keeps reporting Playing (the 2026-11-13 class).
   check [--yt=URL] [--no-adblock] end-to-end PASS/FAIL suite
   set --player=kick|youtube|twitch [--yt=URL] [--enabled=1|0]
   eval "<expr>" [--world=isolated|main] [--target=page|sw|hls|ivs]
@@ -375,6 +417,8 @@ function usage() {
   key ArrowLeft|ArrowRight|f     real CDP key event (overlay handler test)
   scrolltest [--width=1600 --height=900 --y=600]   scroll-anchor regression
   tabmute [url]                  TWO tabs on one live channel: mute tab A, prove tab B keeps its sound
+  muteauthor                     who moved the sound: his pointer, our bar, or the machine (refused)
+                                 - reads the origin field the debug verdict also reads
   extreload                      reload the EXTENSION (chrome.runtime.reload) then the page, and print
                                  the version the tab is actually running (a page reload alone keeps
                                  the OLD content script: Chrome caches extension files until the
@@ -470,6 +514,13 @@ async function main() {
   const s = needsGuest ? await openSessions() : null;
 
   if (cmd === 'state') { printState(await getState(s)); s.cdp.close(); return; }
+
+  if (cmd === 'source') {
+    const o = await s.page.evalIsolated(SOURCE_EXPR);
+    console.log(JSON.stringify(o, null, 2));
+    s.cdp.close();
+    return;
+  }
 
   if (cmd === 'set') {
     const cfg = {
@@ -1784,6 +1835,148 @@ async function main() {
     console.log(JSON.stringify(table, null, 2));
     console.log(`[tabmute] ${fails.length ? 'FAIL' : 'PASS'} ${fails.length ? fails.join(' | ') : 'one tab gesture stays in that tab'}`);
     try { await s.cdp.send('Target.closeTarget', { targetId }); } catch { /* guest tab already gone */ }
+    s.cdp.close();
+    process.exitCode = fails.length ? 1 : 0;
+    return;
+  }
+
+  // ---- muteauthor: who moved the sound, on a real page -------------------
+  // Owner order 2026-11-12: "tu tem que entender se o mute vem do meu click do
+  // mouse e se vem de alguma decisao do codigo. (no caso, logga isso)". The
+  // verdict script reads the same field, so the two must agree: this arm proves
+  // the FIELD is written, by driving three cases on one live tab and reading
+  // `origin` back out of the extension's own adlog.
+  if (cmd === 'muteauthor') {
+    const url = flags.url || (await s.page.evalIsolated('location.href')) || DEFAULT_URL;
+    const rows = [];
+    // Read by the log's OWN monotonic counter, never by array index: the ring
+    // caps at LOG_MAX (1200) and then wraps, so `slice(mark)` returns NOTHING
+    // forever on a long-lived tab. That is exactly how this arm reported NONE
+    // for a gesture the adlog had recorded (measured 2026-11-13). `n` is
+    // stamped by adblock-bridge.js and survives the wrap.
+    const lastSeq = async () => {
+      const n = await s.page.evalIsolated(`new Promise((res) => chrome.storage.local.get('ko.adlog', (o) => {
+        const log = (o && o['ko.adlog']) || [];
+        let m = 0;
+        for (const r of log) if (r && typeof r.n === 'number' && r.n > m) m = r.n;
+        res(m);
+      }))`);
+      return Number(n) || 0;
+    };
+    const readSince = async (mark) => {
+      const log = await s.page.evalIsolated(`new Promise((res) => chrome.storage.local.get('ko.adlog', (o) => {
+        const all = (o && o['ko.adlog']) || [];
+        res(all.filter((r) => r && typeof r.n === 'number' ? r.n > ${mark} : false));
+      }))`);
+      return log || [];
+    };
+    const lastOrigin = (log) => {
+      const intents = log.filter((e) => e.ev === 'audio-intent');
+      return intents.length ? String((intents[intents.length - 1].d || {}).origin || 'MISSING') : 'NONE';
+    };
+    let mark = await lastSeq();
+
+    // (1) HIS POINTER: a real trusted click, then the element's own volume
+    //     changes — exactly what Twitch's volume button does.
+    try { await s.page.click('video', { real: true, settle: 120 }); } catch { await s.page.click('body', { real: true, settle: 120 }); }
+    // Write the OPPOSITE of what the ELEMENT currently holds, not the opposite
+    // of the intent. A held-muted element (kick mode keeps the native muted
+    // because it is not the visible surface) already equals `!intent.muted`, so
+    // writing that value is a no-op that fires NO volumechange and the arm then
+    // reports `origin=NONE` for a correct build — measured 2026-11-13. The
+    // gesture the reader must see is a real change on the element.
+    await s.page.evalMain(`(() => {
+      const v = [...document.querySelectorAll('video')].find((x) => x.isConnected && x.readyState > 0) || document.querySelector('video');
+      if (!v) return false;
+      v.muted = !v.muted;
+      if (v.volume === 0) v.volume = 0.5;
+      return v.muted;
+    })()`);
+    await delay(900);
+    rows.push({ step: 'pointer', origin: lastOrigin(await readSince(mark)), want: 'user:pointer' });
+    mark = await lastSeq();
+
+    // (2) THE CODE: the extension's own bar button, via a real click on it.
+    let hit = null;
+    for (let i = 0; i < 12 && !hit; i += 1) {
+      hit = await s.page.evalIsolated(`(() => {
+        const b = document.querySelector('#ko-mute');
+        if (!b) return null;
+        const r = b.getBoundingClientRect();
+        return r.width > 0 ? { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) } : null;
+      })()`);
+      if (!hit) await delay(500);
+    }
+    // THE BAR ONLY EXISTS WHERE THE EXTENSION OWNS THE PICTURE. In `player=twitch`
+    // the overlay is deliberately never mounted (`activeLayerLive`), so a missing
+    // `#ko-mute` is the product working, not an unproven author. Reporting it as
+    // FAIL made this arm red on a correct build (measured 2026-11-13), which is
+    // the same "the instrument blames the product" failure as the index reader.
+    const mode = String((await s.page.evalIsolated(`new Promise((res) => chrome.storage.local.get('ko.v2', (o) => res(((o && o['ko.v2']) || {}).player || 'kick')))`)) || 'kick');
+    if (hit) {
+      await s.page.cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: hit.x, y: hit.y, button: 'left', clickCount: 1 }, s.page.sessionId);
+      await s.page.cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: hit.x, y: hit.y, button: 'left', clickCount: 1 }, s.page.sessionId);
+      await delay(900);
+      rows.push({ step: 'bar', origin: lastOrigin(await readSince(mark)), want: 'user:ui:bar-*' });
+    } else rows.push({ step: 'bar', origin: mode === 'twitch' ? 'N/A' : 'MISSING', want: 'user:ui:bar-*', mode });
+
+    // (3) THE MACHINE: a sound change with NO input near it must be refused AND
+    //     logged, and the intent must not move. The direction is an UNMUTE on
+    //     purpose: `muted = true` on an element the arbiter is already holding
+    //     muted fires no volumechange at all (measured on the first run of this
+    //     arm), so it would prove a silence, not a refusal. An unmute against
+    //     the arbiter's derived state always fires one.
+    await delay(1600); // past INPUT_FRESH_MS: the next change is nobody's
+    mark = await lastSeq();
+    const beforeMute = await s.page.evalIsolated(`KOAudio.intent('twitch')`);
+    const elBefore = await s.page.evalMain(`(() => {
+      const v = [...document.querySelectorAll('video')].find((x) => x.isConnected && x.readyState > 0) || document.querySelector('video');
+      return v ? { muted: v.muted, volume: v.volume } : null;
+    })()`);
+    await s.page.evalMain(`(() => {
+      const v = [...document.querySelectorAll('video')].find((x) => x.isConnected && x.readyState > 0) || document.querySelector('video');
+      if (!v) return false;
+      if (v.volume === 0) v.volume = 0.5;
+      v.muted = false; // the machine trying to make the page audible
+      return true;
+    })()`);
+    await delay(900);
+    const refusedLog = await readSince(mark);
+    const refusedRows = refusedLog.filter((e) => e.ev === 'audio-refused');
+    const refused = refusedRows.length;
+    const why = refused ? String((refusedRows[refusedRows.length - 1].d || {}).why || '') : '';
+    const staleOrigin = lastOrigin(refusedLog);
+    const afterMute = await s.page.evalIsolated(`KOAudio.intent('twitch')`);
+    const elAfter = await s.page.evalMain(`(() => {
+      const v = [...document.querySelectorAll('video')].find((x) => x.isConnected && x.readyState > 0) || document.querySelector('video');
+      return v ? { muted: v.muted, volume: v.volume } : null;
+    })()`);
+    rows.push({
+      step: 'stale',
+      origin: staleOrigin,
+      want: 'NONE (refused)',
+      refused,
+      why,
+      intentMoved: afterMute.muted !== beforeMute.muted,
+      elementBefore: elBefore,
+      elementAfter: elAfter,
+    });
+
+    const stale = rows.find((r) => r.step === 'stale');
+    const fails = [];
+    if (!/^user:pointer/.test(rows[0].origin)) fails.push(`pointer step origin=${rows[0].origin}`);
+    if (hit && !/^user:ui:bar/.test(rows[1].origin)) fails.push(`bar step origin=${rows[1].origin}`);
+    if (stale.origin !== 'NONE') fails.push(`stale change was ACCEPTED as ${stale.origin}`);
+    if (!stale.refused) fails.push('stale change left no audio-refused line');
+    if (stale.why !== 'stale-input') fails.push(`refusal reason=${stale.why} (want stale-input)`);
+    if (stale.intentMoved) fails.push('stale change moved the intent');
+    if (stale.elementAfter && stale.elementAfter.muted === false) {
+      fails.push('the arbiter did not re-assert the machine element back to muted');
+    }
+    // Only a mode that is SUPPOSED to mount the bar can fail this step.
+    if (!hit && mode !== 'twitch') fails.push(`bar was never visible in player=${mode}: the ui author is UNPROVEN here`);
+    console.log(JSON.stringify({ url, rows }, null, 2));
+    console.log(`[muteauthor] ${fails.length ? 'FAIL' : 'PASS'} ${fails.length ? fails.join(' | ') : 'pointer/bar accepted with their author, machine mute refused'}`);
     s.cdp.close();
     process.exitCode = fails.length ? 1 : 0;
     return;

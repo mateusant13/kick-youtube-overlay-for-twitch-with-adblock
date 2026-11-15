@@ -195,6 +195,12 @@
   // seeks to the live edge, which also skips the rest of the pod).
   const COLD_COVER_BOUND_MS = 3000;
   const RESUME_GAP_SEC = 1.5; // a smaller native/clean difference is not worth a seek
+  // A revealed frame survives a degenerate player rect this long before it is
+  // taken off screen: a hover preview, a quality switch and Twitch's own player
+  // rebuild all produce one, and hiding on sight blanked a picture that was on
+  // screen the whole time (owner report 2026-11-13).
+  // Retained only for the comment trail: the rect hide is derived from the
+  // element's presence (`isConnected`), not from a timer. See positionOverlay.
   const bypassStats = {
     starts: 0,
     stops: 0,
@@ -240,12 +246,24 @@
     nativeLat: 0, // native latency (edge - currentTime) captured at take-over
     holdAt: 0, // wall clock at take-over: the timeline the live edge advanced on
     holdCt: 0, // native currentTime at take-over
+    // The native RESTARTED its timeline during the pod. Measured in the guest
+    // Chrome 2026-11-15 on a live element (twitch.tv/rodil, player=twitch): a
+    // paused live <video> is EMPTIED by Twitch after ~20 s and reloads from 0,
+    // i.e. at the live edge (`ct 211.8 buf 212.9` -> `ct 0 buf null rs 1`).
+    // When that happens `holdCt` names a timeline Deleted and the wall-clock
+    // deficit (`elapsed - advanced`) is not a deficit at all: it is the reload
+    // plus the pod. His own ko.adlog 2026-11-13 has the arithmetic:
+    // `native-handoff {ct:30.1, buf:42.4}` -> `native-edge-recover {behind:144.9,
+    // to:172}` on an element whose whole downloaded window was 42.4 s.
+    timelineReset: false,
     pauseBeforeAd: false, // the native was PAUSED when the pod took over
     coldPreroll: false, // ...and it had never played (page had just loaded)
     held: false,
     hiddenVideos: [],
     startedAt: 0,
     positionTimer: 0,
+    lastRect: null, // last REAL player rect, kept through a degenerate tick
+    smallRectSince: 0, // when the rect first went degenerate (0 = healthy)
     timeoutTimer: 0,
     extTimer: 0,
     adEndTimer: 0,
@@ -259,6 +277,7 @@
     lastStAt: 0,
     catchupAt: 0,
     unmuteTried: false,
+    unmuteTries: 0, // bounded audible-apply retries before a refusal is declared
     unmuteCheck: 0,
     switchTries: 0,
     watchdogTimer: 0,
@@ -415,6 +434,11 @@
     let best = null;
     let bestArea = 0;
     for (const v of document.querySelectorAll('video')) {
+      // A DETACHED NODE IS NOT A PLAYER. A real DOM never returns one from
+      // querySelectorAll, so this is a cheap invariant rather than a branch:
+      // it keeps `mainVideo()` honest for any surface that has been removed
+      // from the document but still answers a stale list.
+      if (v.isConnected === false) continue;
       try {
         const r = v.getBoundingClientRect();
         const area = Math.max(0, r.width) * Math.max(0, r.height);
@@ -534,7 +558,17 @@
     if (!v) return false;
     const from = Number(v.currentTime || 0);
     const end = nativeBufferedEnd(v);
-    if (end > 0 && want <= end + 0.5) return true; // downloaded there already
+    // LANDING ON THE LAST HALF SECOND OF DATA IS NOT LANDING. `want <= end`
+    // accepted a seek to `buffered.end - 0.5`, and that is exactly what the
+    // owner's ko.adlog 2026-11-12 shows three times in ONE second:
+    //   native-edge-recover {behind:2.5, gap:6.8, from:18.8, to:25.6} (buf 26.1)
+    //   native-resume {ct:25.6, rs:1}  video-pause {rs:1}
+    //   native-catchup {gap:2, from:25.6, to:27.6} (buf 28.1)  rs:1  pause
+    // The element parked at readyState 1 each time: half a second is not enough
+    // media to rebuild HAVE_FUTURE_DATA after a seek, so the picture froze and
+    // Twitch's own player paused — "travou ... depois destravou". The landing
+    // must leave the same runway the health gate demands of the clean player.
+    if (end > 0 && want <= end - HEALTH_BUFFER_SEC) return true; // room to play on
     const se = nativeEdge(v);
     if (se > 0 && want <= se - RESUME_GAP_SEC) return true; // a real edge ahead
     // The element holds NOTHING in front of the playhead and has not reached
@@ -551,7 +585,13 @@
     // "deixou a live com delay multiplas vezes" case gets its pod's duration
     // back — worth it even past the downloaded data.
     if (Number(v.readyState || 0) < 3) return false;
-    return true;
+    // ...and past the downloaded data only for a POD-SIZED recovery. The
+    // previous `return true` here accepted ANY forward seek at rs>=3, which is
+    // the shape his 2026-11-12 log punished: `native-edge-recover to 25.6` with
+    // `buffered.end` 26.1 (0.5 s of runway) parked the element at rs:1, then
+    // `native-catchup to 27.6` with 28.1 parked it again — twice in one second
+    // under a picture that had already stalled.
+    return want - from >= POD_RECOVER_MIN;
   }
   stats.seekCovered = seekCovered;
   function nativeLatency(v) {
@@ -646,7 +686,19 @@
     // reported seconds never closed, and the user saw "avançou pra uma parte da
     // live que eu não sei se é tempo real". Only skip when the distance to the
     // edge EXCEEDS what is already in hand.
-    const ceiling = pos + hold - 1;
+    // THE CEILING MUST LEAVE THE RUNWAY THE HEALTH GATE DEMANDS. It used to be
+    // `pos + hold - 1`, so a standby holding 6 s that was 18.8 s behind the edge
+    // seeked to `pos + 5` and had ONE second of media left. That is the same
+    // starvation the ceiling was introduced to prevent (measured 2026-11-08:
+    // aiming past the buffer starved the player and `overlay-stall-stop` fired
+    // four for four), and it is repeated every 2 s window because `lat` never
+    // closes: the owner's own 0.8.91 ko.adlog 2026-11-15 has the row
+    // `overlay-catchup {hold:6, lat:18.8, pos:160, source:"standby"}` with a
+    // 1 s landing. Landing `HEALTH_BUFFER_SEC` short of the frontier hands the
+    // player the same 3 s of runway the reveal gate asks for, and repeating it
+    // every 2 s window walks the picture to the edge (6 s of buffer, 3 s of
+    // travel, 3 s in hand) instead of jumping into an empty one.
+    const ceiling = pos + hold - HEALTH_BUFFER_SEC;
     const target = Math.min(want, ceiling);
     // A seek that leaves under 1.5s of buffer is worse than the drift it fixes.
     if (!(target - pos >= RESUME_GAP_SEC)) return false;
@@ -680,9 +732,11 @@
     //      the edge (`lat - hold` >= 2 s, i.e. a delay the viewer can feel).
     //      Both are honest catch-ups: 2026-11-08 measured that aiming PAST the
     //      buffer starves the player, which is why the ceiling exists.
-    const runway = hold - (target - pos);
-    const frontierGap = lat - hold;
-    if (!(runway >= HEALTH_BUFFER_SEC || frontierGap >= 2)) return false;
+    // (The runway is guaranteed by the ceiling above: `target <= pos + hold -
+    // HEALTH_BUFFER_SEC`, so a landing always keeps the health gate's runway.
+    // The old `runway >= HEALTH_BUFFER_SEC || frontierGap >= 2` let a 12.8 s
+    // frontier gap override a 1 s landing, which is how the owner's 0.8.91 row
+    // fired: `{hold:6, lat:18.8, pos:160}`.)
     overlaySend({ t: 'seek', s: target });
     overlaySend({ t: 'play' });
     adLogState('overlay-catchup', {
@@ -755,6 +809,8 @@
     const last = overlay.audioSent;
     if (last && last.muted === muted && Math.abs(last.volume - volume) < 0.02) return;
     overlay.audioSent = { muted, volume };
+    overlay.audioSentAt = Date.now();
+    overlay.audioSends = (overlay.audioSends || 0) + 1;
     adLogState('overlay-audio', { muted, volume: +Number(volume).toFixed(2), refused: !!overlay.audioRefused });
     overlaySend({ t: 'mute', m: muted });
     overlaySend({ t: 'volume', v: volume });
@@ -841,14 +897,80 @@
     syncCover();
     if (!overlay.frame) return;
     const v = overlay.video && overlay.video.isConnected ? overlay.video : mainVideo();
-    if (!v) return;
+    if (!v) {
+      // NO PLAYER ANYWHERE is the one case that really ends the frame: this
+      // layer positions itself over Twitch's player, so with that element gone
+      // there is nothing to cover and the picture must not float over the rest
+      // of the page. (While ANY player exists — including a rebuilt one, or the
+      // hover preview — the branch below keeps the last real geometry, because
+      // a timer on a degenerate rect is what hid the picture under a hovering
+      // mouse. Owner reports 2026-11-13.)
+      if (overlay.revealed || overlay.coldCover) {
+        overlay.frame.style.display = 'none';
+        if (overlay.badge) overlay.badge.style.display = 'none';
+      }
+      return;
+    }
     let r;
     try {
       r = v.getBoundingClientRect();
     } catch {
       return;
     }
-    if (!r || r.width < 40 || r.height < 40) {
+    // A DEGENERATE RECT IS NOT THE END OF THE FRAME. This used to hide the
+    // frame the first tick `width < 40`, and Twitch produces that tick for
+    // reasons that have nothing to do with the ad path being over: hovering the
+    // player opens the floating preview (a second, tiny <video> that mainVideo()
+    // happily picks as "largest" while the real player is mid-swap), a quality
+    // switch re-creates the element, and the player itself is briefly 0×0 when
+    // it rebuilds. Measured owner report 2026-11-13: "ele da hide mesmo dando
+    // hover" — the clean picture vanished from a player that was on screen the
+    // whole time. While the frame is REVEALED the geometry may only improve:
+    // keep the last rect that was real, and only hide when the small rect
+    // is really gone (see the branch below).
+    const areaOk = !!(r && r.width >= 40 && r.height >= 40);
+    if (areaOk) {
+      overlay.lastRect = { left: r.left, top: r.top, width: r.width, height: r.height };
+      overlay.smallRectSince = 0;
+    } else if (overlay.revealed && overlay.lastRect) {
+      // A DEGENERATE RECT IS NOT A DEPARTURE, AND A TIMER CANNOT TELL THE
+      // DIFFERENCE. Hovering the player opens Twitch's floating preview for as
+      // long as the user keeps pointing at it, so ANY fixed grace still hid the
+      // clean picture under a mouse that never left the player (owner
+      // 2026-11-13: "ele da hide mesmo dando hover"). The question is not "how
+      // long has this rect been small" but "is the element we revealed still on
+      // screen at all": a player that really left is REMOVED (or the document
+      // is being navigated), which is observable in one tick and needs no timer.
+      // Resolve the element FRESH: `overlay.video` is the one this path latched
+      // at take-over, and its presence says nothing about whether TWITCH's
+      // current element is still on the page (a swap replaces the node, which
+      // is exactly what a quality switch or the hover preview causes). A cached
+      // reference answering "still here" is how the frame outlives its player.
+      let live = null;
+      try {
+        if (overlay.video && overlay.video.isConnected) {
+          live = overlay.video;
+        } else {
+          // The latched element is gone: follow whichever player is on the page
+          // now. `mainVideo()` only sees attached nodes, so a candidate here is
+          // by definition still on screen.
+          live = mainVideo();
+        }
+      } catch { live = null; }
+      if (!live) {
+        // No player anywhere: the player really went away.
+        overlay.frame.style.display = 'none';
+        if (overlay.badge) overlay.badge.style.display = 'none';
+        overlay.smallRectSince = 0;
+        return;
+      }
+      overlay.video = live; // follow the player across a swap
+      // Still in the tree with a degenerate rect: a swap, a rebuild, or the
+      // preview. Keep the last real geometry; the picture never blinks.
+      r = overlay.lastRect;
+      overlay.smallRectSince = overlay.smallRectSince || Date.now();
+    } else {
+      // Never revealed: the native is the surface anyway.
       overlay.frame.style.display = 'none';
       if (overlay.badge) overlay.badge.style.display = 'none';
       return;
@@ -1072,11 +1194,19 @@
       // continuous. Failure paths still land in real time.
       const from = Number(v.currentTime || 0);
       const se = nativeEdge(v);
+      const cleanLat = cleanHandoffLat();
       // No usable live edge (Twitch's 2^30 sentinel, or a timeline that is not
-      // seekable yet): fall back to the newest frame the element HOLDS, never to
-      // a computed position. That is the pre-2026-11-07 behaviour and it can
-      // only seek inside buffered data.
-      const target = se > 0 ? Math.max(0, se - cleanHandoffLat()) : Math.max(0, nativeBufferedEnd(v) - 0.5);
+      // seekable yet): DO NOTHING. This used to be `buffered.end - 0.5`, and
+      // `buffered.end` on a live stream is the newest frame DOWNLOADED, not the
+      // live edge: the element is routinely 8-300 s ahead of its own playhead
+      // (his ko.adlog: `buf 305.1 ct 302.4`, `buf 80 ct 77.5`). Landing there is
+      // a forward jump of the whole downloaded window, i.e. exactly the "it
+      // skipped and cut the sentence the streamer was saying" report (owner
+      // 2026-11-13), measured as `native-handoff {ct:18.8} ->
+      // native-edge-recover {to:25.6, edge:"buffered"}` = +6.8 s past the frame
+      // he was watching. The hand-back now lands on the offset he was watching
+      // and lets the recovery below (which knows the watched latency) decide.
+      const target = se > 0 ? Math.max(0, se - cleanLat) : from;
       // Say WHICH edge source the hand-back used: a sentinel that silently
       // became "buffered" is indistinguishable from a healthy timeline, and
       // that ambiguity is what hid the 1e9 seek for a whole pod.
@@ -1110,10 +1240,42 @@
           const elapsed = (Date.now() - at) / 1000;
           const advanced = from - ct0;
           const behind = elapsed - advanced;
-          if (behind > RESUME_GAP_SEC && behind < 3600) {
-            want = from + behind;
+          // A NATIVE THAT WENT BACKWARDS RELOADED, and a reload lands AT THE
+          // LIVE EDGE. Measured 2026-11-15 in the guest on a live element:
+          // pausing a Twitch <video> for 22 s EMPTIES it (`ct 211.8 buf 212.9`
+          // -> `ct 0 buf null rs 1`) and it resumes at the edge, not at the
+          // position it held. So when `from < ct0` the deficit is not the pod's
+          // cost: it is the pod plus the position the element LOST. His own
+          // ko.adlog 2026-11-13 measured the arithmetic (`behind:144.9` from a
+          // 42.4 s downloaded window) and the seek it justified (`to:172`, on a
+          // timeline whose newest frame was 42.4) - the browser refused, the
+          // element parked at rs:1, and the delay he reported ("volta com MAIOR
+          // delay ainda") was never removed. A reset timeline needs NO seek:
+          // the element is already where the live edge is, and nudging it is
+          // what hurts.
+          if (advanced < -RESUME_GAP_SEC) {
+            overlay.timelineReset = true;
+            adLogState('native-timeline-reset', {
+              from: +from.toFixed(1),
+              holdCt: +ct0.toFixed(1),
+              elapsed: +elapsed.toFixed(1),
+              rs: v.readyState,
+            });
+          } else if (behind > RESUME_GAP_SEC && behind < 3600) {
+            // Land on the offset the CLEAN PLAYER was showing, not on the live
+            // edge. The clean picture the owner sat watching for the whole pod
+            // is `cleanLat` behind the edge (measured 2.4 s in his 2026-11-12
+            // hand-off, 6-9 s in the 2026-11-11 pods). Seeking to
+            // `from + behind` lands `cleanLat` PAST that picture: the last
+            // frames of the pod, which he did watch, are skipped, and the frame
+            // he was reading continues from a later sentence. That is the
+            // reported cut. The continuous target is therefore
+            // `from + behind - cleanLat`: the same wall-clock second his eyes
+            // were on, which is what "the swap is invisible" means.
+            want = Math.max(0, from + behind - cleanLat);
             why = 'edge-recover';
             overlay.recoverBehind = +behind.toFixed(1);
+            overlay.recoverLat = +cleanLat.toFixed(1);
           }
         }
         if (target > want) {
@@ -1140,7 +1302,27 @@
         // seek that the buffer cannot cover, doing nothing is the recovery: the
         // element keeps its position, Twitch refills from its live edge, and
         // the play() retries then succeed on their own.
-        const covered = seekCovered(v, want);
+        let covered = seekCovered(v, want);
+        // The deficit (the pod's own cost) is what justifies a seek past the
+        // downloaded data, not the landing distance: the landing is
+        // `behind - cleanLat`, which on a short pod sits below the pod-sized
+        // floor even though the deficit is a whole pod (measured 2026-11-13:
+        // behind 12.2 s, cleanLat 3 s -> 9.2 s of travel, refused by a 10 s
+        // floor that was meant to test the DEFICIT).
+        // ...but NEVER as an override of the readiness guard. The escape hatch
+        // existed to justify a LONG seek, not to justify seeking an element that
+        // holds nothing: it read `covered = true` with no reference to
+        // `readyState`, so the one case `seekCovered` refuses for a stated
+        // reason was overridden by the very pod it was protecting. Measured in
+        // the owner's own ko.adlog 2026-11-13 (0.8.90, twitch.tv/buzzyi_):
+        //   native-edge-unusable {from:30.1, rs:2}
+        //   native-edge-recover  {behind:144.9, from:30.1, to:172, buf:42.4}
+        //   native-resume        {ct:41.4, rs:1}
+        // = a seek 130 s past the last buffered frame on an element at
+        // HAVE_METADATA; the browser rejected it and left the picture at rs:1.
+        // Readiness is a precondition of length, never a competitor to it.
+        const readyForPodSeek = Number(v.readyState || 0) >= 3;
+        if (!covered && readyForPodSeek && why === 'edge-recover' && overlay.recoverBehind >= POD_RECOVER_MIN) covered = true;
         if (!covered) {
           adLogState('native-seek-skipped', {
             why: 'no-data',
@@ -1291,6 +1473,12 @@
         revealed: overlay.revealed,
         playing: overlay.playing,
         switchPrev: !!overlay.switchPrev,
+        // The samples that led here. Without them the verdict ("the clean
+        // player stalled") cannot be checked against what the source was
+        // actually doing, and his 2026-11-12 episode needed a join across
+        // nine `playing-not-healthy` lines to see it was starved throughout.
+        hist: (overlay.healthLog || []).slice(-6),
+        reveals: overlay.reveals || 0,
       });
       stopAdOverlay('clean-stall');
       if (wasStandby) requestStandby(600, true);
@@ -1342,7 +1530,7 @@
       overlay.nudgeTries = 0;
       overlay.lastSt = null;
       overlay.catchupAt = 0;
-      overlay.unmuteTried = false;
+      overlay.unmuteTried = false; overlay.unmuteTries = 0;
       try { clearTimeout(overlay.unmuteCheck); } catch { /* ignore */ }
       overlay.unmuteCheck = 0;
       overlay.lastStAt = 0;
@@ -1464,7 +1652,7 @@
     overlay.nudgeTries = 0;
     overlay.lastSt = null;
     overlay.catchupAt = 0;
-    overlay.unmuteTried = false;
+    overlay.unmuteTried = false; overlay.unmuteTries = 0;
     try { clearTimeout(overlay.unmuteCheck); } catch { /* ignore */ }
     overlay.unmuteCheck = 0;
     overlay.lastStAt = 0;
@@ -1565,11 +1753,20 @@
       } catch {
         /* frame gone */
       }
+      overlay.reveals = (overlay.reveals || 0) + 1;
       adLogState('overlay-reveal', {
+        n: overlay.reveals, // 2, 3, 4 ...: a re-reveal is now countable at a glance
         reason,
         rewound: overlay.rewound,
         playing: overlay.playing,
+        sinceMs: overlay.revealedAt ? Date.now() - overlay.revealedAt : null,
+        advanced:
+          overlay.lastRevealPos != null && overlay.lastSt && typeof overlay.lastSt.pos === 'number'
+            ? +(Number(overlay.lastSt.pos) - Number(overlay.lastRevealPos)).toFixed(1)
+            : null,
       });
+      overlay.revealedAt = Date.now();
+      overlay.lastRevealPos = overlay.lastSt && typeof overlay.lastSt.pos === 'number' ? Number(overlay.lastSt.pos) : null;
       if (overlay.switchPrev) {
         try { clearTimeout(overlay.switchPrev.timer); } catch { /* ignore */ }
         try {
@@ -1589,25 +1786,44 @@
     overlaySend({ t: 'play' });
     applyOverlayAudio();
     // Chrome can refuse audible playback on a fresh frame even though the
-    // gesture existed. That refusal is POLICY, not the user's decision: mute
-    // once, remember why, and let the badge / first click clear it.
+    // gesture existed. That refusal is POLICY, not the user's decision — and it
+    // must not be decided while it can still resolve. The old check declared
+    // `audioRefused` at 1.5 s whenever the frame reported muted, INCLUDING a
+    // frame that was already PLAYING (a muted start that simply had not been
+    // told to unmute yet, or a command still in the queue). Once declared, only
+    // a click on the page cleared it, which is the owner's 2026-11-13 report:
+    // "tive que desmutar na mão". Now: retry the audible apply while the element
+    // is playing, bounded, and declare policy only when the retries fail.
     if (!overlay.audioRefused && !overlay.unmuteTried) {
       overlay.unmuteTried = true;
-      try { clearTimeout(overlay.unmuteCheck); } catch { /* ignore */ }
-      overlay.unmuteCheck = setTimeout(() => {
+      const attempt = () => {
         const st = overlay.lastSt;
         if (!overlay.frame || !st) return;
-        if (!st.muted || overlay.audioSent === null) return; // audible: nothing to do
-        if (st.muted || st.paused) {
-          overlay.audioRefused = true;
-          overlay.audioSent = null; // force the next apply to re-send muted
-          applyOverlayAudio();
-          adLog('unmute-blocked', { muted: !!st.muted, paused: !!st.paused });
-        } else {
+        if (!st.muted) {
           if (overlay.badge) overlay.badge.style.display = 'none';
-          adLog('unmute-ok');
+          adLog('unmute-ok', { tries: overlay.unmuteTries || 0 });
+          return;
         }
-      }, 1500);
+        const tries = (overlay.unmuteTries || 0) + 1;
+        overlay.unmuteTries = tries;
+        // A frame that is PLAYING but muted is not a policy refusal: the clean
+        // player started muted by design (`if (TWITCH_HLS) V.muted = true`), and
+        // the unmute is ours to send. Re-assert and look again.
+        if (!st.paused && tries <= 3) {
+          overlay.audioSent = null; // force re-send
+          applyOverlayAudio();
+          adLog('unmute-retry', { tries, muted: true, paused: false, rs: st.rs });
+          try { clearTimeout(overlay.unmuteCheck); } catch { /* ignore */ }
+          overlay.unmuteCheck = setTimeout(attempt, 900);
+          return;
+        }
+        overlay.audioRefused = true;
+        overlay.audioSent = null; // force the next apply to re-send muted
+        applyOverlayAudio();
+        adLog('unmute-blocked', { muted: !!st.muted, paused: !!st.paused, tries });
+      };
+      try { clearTimeout(overlay.unmuteCheck); } catch { /* ignore */ }
+      overlay.unmuteCheck = setTimeout(attempt, 1500);
     }
     if (overlay.hideTimer) {
       try { clearTimeout(overlay.hideTimer); } catch { /* ignore */ }
@@ -1741,7 +1957,7 @@
         overlay.nudgeTries = 0;
         overlay.lastSt = null;
         overlay.catchupAt = 0;
-        overlay.unmuteTried = false;
+        overlay.unmuteTried = false; overlay.unmuteTries = 0;
         try { clearTimeout(overlay.unmuteCheck); } catch { /* ignore */ }
         overlay.unmuteCheck = 0;
         overlay.lastStAt = 0;
@@ -1818,7 +2034,7 @@
     overlay.nudgeTries = 0;
     overlay.lastSt = null;
     overlay.catchupAt = 0;
-    overlay.unmuteTried = false;
+    overlay.unmuteTried = false; overlay.unmuteTries = 0;
     // A fresh frame starts unmuted (autoplay is muted by the 'ready' handler),
     // so the cache must be cleared: an unmute the user asked for has to be able
     // to re-assert itself on the new frame.
@@ -2024,6 +2240,10 @@
         const nowSt = Date.now();
         const gap = overlay.lastStAt ? nowSt - overlay.lastStAt : 0;
         if (gap > 0) overlay.stGapMs = gap;
+        // Keep the PREVIOUS report beside the current one: the frozen-position
+        // test below compares two samples, and `lastSt` is overwritten here.
+        overlay.prevSt = overlay.lastSt;
+        overlay.prevStAt = overlay.lastStAt;
         overlay.lastSt = m.st;
         overlay.lastStAt = nowSt;
         // The frame reports what its OWN element is doing. If it disagrees with
@@ -2039,15 +2259,44 @@
         // policy, and re-sending would be the mute fight the 0.8.50 wave ended.
         if (overlay.revealed && overlay.audioSent && typeof m.st.muted === 'boolean') {
           const cmd = overlay.audioSent;
+          // Agreement clears the memory, so a disagreement that RETURNS after
+          // being fixed is logged again. Without this, a cleared-then-broken
+          // state would be silent for the rest of the page load.
+          if (m.st.muted === cmd.muted && !(typeof m.st.volume === 'number' && Math.abs(Number(m.st.volume) - cmd.volume) > 0.02)) overlay.audioMismatchSig = null;
           const volDiff = typeof m.st.volume === 'number' && Math.abs(Number(m.st.volume) - cmd.volume) > 0.02;
           if (m.st.muted !== cmd.muted || volDiff) {
             const inSwap = Date.now() < (overlay.audioAssertUntil || 0);
-            adLog('audio-mismatch', {
+            // ONE LINE PER DISTINCT DISAGREEMENT, never one per heartbeat. The
+            // owner's rule for this log is transition-only ("teus logs nao e pra
+            // ter dump inutil"), and this site broke it: his own 2026-11-13 ring
+            // held 77 `audio-mismatch` rows of which 70 were the SAME `late`
+            // signature ({wantMuted:true, frameMuted:false, both 0.76}) repeated
+            // on every 1 Hz `st`. A repeated late disagreement is stable state,
+            // not news, and 70 copies of it evicted the pod chronology he needed.
+            // Recorded once, and logged again only after it CLEARS (a real change
+            // of mind by the frame or by us).
+            const sig = [inSwap ? 'swap' : 'late', !!cmd.muted, !!m.st.muted,
+              +Number(cmd.volume).toFixed(2),
+              typeof m.st.volume === 'number' ? +Number(m.st.volume).toFixed(2) : 'n'].join('|');
+            // NOT a `return`: this block sits inside the `st` handler, and
+            // returning would skip the health gate, the drift check and the
+            // reveal that follow. Only the LOG is deduped; the reconciliation
+            // below still runs.
+            const firstOfKind = sig !== overlay.audioMismatchSig;
+            overlay.audioMismatchSig = sig;
+            if (firstOfKind) adLog('audio-mismatch', {
               phase: inSwap ? 'swap' : 'late',
               wantMuted: !!cmd.muted,
               frameMuted: !!m.st.muted,
               wantVol: +Number(cmd.volume).toFixed(2),
               frameVol: typeof m.st.volume === 'number' ? +Number(m.st.volume).toFixed(2) : null,
+              // Our last write to the frame and its age: a value that moved with
+              // NO write from us in between is the frame's own doing, and that
+              // is the only way the owner's 0.93 -> 0.80 -> 0.65 -> 0.63 ramp in
+              // 500 ms can be attributed.
+              sentAgeMs: overlay.audioSentAt ? Date.now() - overlay.audioSentAt : null,
+              sends: overlay.audioSends || 0,
+              asserted: inSwap,
             });
             if (inSwap) {
               overlay.audioSent = null; // force the next apply to re-send
@@ -2075,13 +2324,31 @@
             || m.st.lat <= CLEAN_LAT_REVEAL_MAX;
           const buffered = typeof m.st.buffered === 'number' ? m.st.buffered : undefined;
           const rsOk = typeof m.st.rs !== 'number' || m.st.rs >= 3;
-          const healthy = latOk && rsOk && (buffered === undefined || buffered >= HEALTH_BUFFER_SEC);
+          // A FRAME THAT REPEATS ITS POSITION IS NOT DECODING. Measured in the
+          // owner's ko.adlog 2026-11-12 (tab visible): `overlay-reveal {pos:30.2,
+          // hold:5.75}` at 11.5 s and `overlay-reveal {pos:30.2, hold:7.83}` at
+          // 35.8 s — the same picture position 24 s later, reported as healthy
+          // both times, and the second reveal put that stale frame on screen.
+          // Only when the report is fresh and the tab is visible: a throttled
+          // background frame legitimately does not advance.
+          // Two seconds, not one sample: the measured case was 24 s of the same
+          // position reported as Playing, and a genuine sample pair 1-2 s apart
+          // legitimately repeats a position on a sparse heartbeat (the
+          // cold-cover fixture drives exactly that and must not be refused).
+          const posFrozen = overlay.prevSt
+            && overlay.prevStAt
+            && Date.now() - overlay.prevStAt > 2000
+            && Number(m.st.pos) > 0
+            && typeof overlay.prevSt.pos === 'number'
+            && Math.abs(Number(m.st.pos) - Number(overlay.prevSt.pos)) < 0.05
+            && !(document.visibilityState && document.visibilityState !== 'visible');
+          const healthy = !posFrozen && latOk && rsOk && (buffered === undefined || buffered >= HEALTH_BUFFER_SEC);
           // A player that is ALREADY on screen and still decoding is not torn
           // down for a jitter dip: that cycle (unhealthy -> nudge 2s back ->
           // still thin -> stall-stop -> native returns behind) is the owner's
           // "voltou vários segundos" (ko.adlog 2026-11-08). Only a real drain
           // below REVEALED_MIN_BUFFER_SEC or a loss of future data stops it.
-          const alive = overlay.playing && rsOk
+          const alive = overlay.playing && rsOk && !posFrozen
             && (buffered === undefined || buffered >= REVEALED_MIN_BUFFER_SEC);
           if (!healthy && !alive) {
             // A single healthy heartbeat is not enough. The 2026-10-23 run
@@ -2092,7 +2359,15 @@
             overlay.playing = false;
             if (!overlay.lastUnhealthyLogAt || Date.now() - overlay.lastUnhealthyLogAt > 2000) {
               overlay.lastUnhealthyLogAt = Date.now();
-              adLog('playing-not-healthy', { rs: m.st.rs, buffered: m.st.buffered, pos: m.st.pos });
+              overlay.healthLog = (overlay.healthLog || []).concat([{
+                ms: Math.round(performance.now()),
+                rs: m.st.rs,
+                buf: typeof m.st.buffered === 'number' ? +Number(m.st.buffered).toFixed(2) : null,
+                pos: typeof m.st.pos === 'number' ? +Number(m.st.pos).toFixed(1) : null,
+                lat: typeof m.st.lat === 'number' ? +Number(m.st.lat).toFixed(1) : null,
+                why: posFrozen ? 'pos-frozen' : null,
+              }]).slice(-8);
+              adLog('playing-not-healthy', { rs: m.st.rs, buffered: m.st.buffered, pos: m.st.pos, why: posFrozen ? 'pos-frozen' : null });
             }
             if (!overlay.standby || m.st.pos > 2) scheduleOverlayStall('rs' + m.st.rs);
             return;
@@ -2298,6 +2573,7 @@
         // position at take-over and the wall clock that owns the edge.
         overlay.holdAt = Date.now();
         overlay.holdCt = Number(v.currentTime || 0);
+        overlay.timelineReset = false;
         // A cold preroll is the ONLY case where a paused native is ours to
         // start: it has never played at all, so it sits at the very beginning.
         // A user-parked player is at some real position — never < 1s — and must

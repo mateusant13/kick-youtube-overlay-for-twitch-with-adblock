@@ -627,6 +627,46 @@ async function main() {
     });
   }
 
+  // ---- 2b4: every accepted change names its AUTHOR. -----------------------
+  // Owner order 2026-11-12: "tu tem que entender se o mute vem do meu click do
+  // mouse e se vem de alguma decisao do codigo. (no caso, logga isso)". A line
+  // that says the intent moved but not who moved it is the defect this arm
+  // exists to catch, so the assertion is on the FIELD, at both writers.
+  {
+    const page = makeWorld();
+    await runPod(page, { mutedBeforeAd: false });
+    page.bypass({ type: 'ad-end' });
+    // Past BOTH windows: the machine one (CLAIM_RELEASE_MS after the release) and
+    // the gesture one (INPUT_FRESH_MS). A write inside either is correctly not
+    // his, and an arm that writes there measures the guard, not the label.
+    await new Promise((r) => setTimeout(r, 2800));
+    // (a) his pointer. The write must FLIP the state, or the arbiter correctly
+    //     logs nothing and the arm measures its own no-op.
+    page.clickDocument();
+    page.machineMutesNative(); // a volumechange the arbiter did not write, right after a real input
+    const userLine = page.logs().filter((l) => l.ev === 'audio-intent').pop();
+    check('an accepted gesture says a pointer caused it', () => {
+      assert(!!userLine, 'no audio-intent line for the gesture');
+      assert(/^user:pointer/.test(String(userLine.d.origin || '')),
+        `origin=${JSON.stringify(userLine.d.origin)} on a pointer-driven change`);
+      assert(userLine.d.ev && userLine.d.ev.input === 'pointerdown',
+        `ev=${JSON.stringify(userLine.d.ev)} does not name the input that justified it`);
+      assert(typeof userLine.d.ev.inputAgeMs === 'number' && userLine.d.ev.inputAgeMs <= 1200,
+        `ev.inputAgeMs=${JSON.stringify(userLine.d.ev && userLine.d.ev.inputAgeMs)} is outside INPUT_FRESH_MS`);
+    });
+    // (b) the machine: refused, and the refusal carries its reason.
+    await new Promise((r) => setTimeout(r, 1600));
+    const before = page.audio.intent('twitch').muted;
+    page.machineMutesNative();
+    const refused = page.logs().filter((l) => l.ev === 'audio-refused').pop();
+    check('a machine change is refused with the reason, and no intent line is written', () => {
+      assert(page.audio.intent('twitch').muted === before || page.logs().every((l) => l.ev !== 'audio-intent' || !/^code:UNLABELLED/.test(String(l.d.origin))),
+        'an unlabelled intent line was written');
+      assert(!!refused, 'the machine change wrote no audio-refused line');
+      assert(typeof refused.d.why === 'string' && refused.d.why.length > 0, `why=${JSON.stringify(refused.d.why)}`);
+    });
+  }
+
   // ---- 2c: positive control — the SAME event well after the window IS his. -
   {
     const page = makeWorld();

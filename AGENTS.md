@@ -78,7 +78,9 @@ Cap: one visible pane per canonical project across workspaces/worktrees. Create 
 - Install/update: `_tools\ko-auto-install.cmd` (debug profile `C:\ChromeDebugProfile`).
 - Stage files and reload without a window: `node _tools\ko-reload-persistent.mjs --port=9222`. It prints `loaded`, `expected` and `after`; `after` must equal the manifest version. It compares VERSIONS only, so a rebuilt folder that keeps its version reads as current: for the byte-level answer use the shared `chrome-unpacked-extension-deploy` skill (`node <skill>/scripts/deploy.mjs status|reload --port 9222 --dir "<installed copy>"`), which reports `changed-since-last-load` and the loaded path.
 - Reload the content script of an open tab with `_tools\ko-cdp.mjs` + `Page.reload`. A page reload can trigger a Twitch preroll.
-- Read `ko.adlog` without the worker noise: `node _tools\ko-adlog-window.mjs [port] [rows] [--keep a,b,c]` (opens a hidden extension page, because the service worker sleeps and cannot be asked directly).
+- **Debug the log with the verdict, not with a dump**: `node _tools/ko-adlog-verdict.mjs [--port=9222|--file=dump.json] [--episodes=N] [--span=MINUTES]` prints `ON SCREEN` / `FROZEN` / `JUMPS` / `SOUND` / `ANSWER` per page load and exits 1 when a defect class is present (a swap that is not one pod, a freeze past a hand-back, a forward jump he would see, a sound change with no author). Every `audio-intent` line it prints names the AUTHOR: `user:pointer`, `user:ui:bar-*`, `user:frame-slider`, `code:adpath`, or `code:UNLABELLED` (which is the defect, not a missing field).
+- Prove the mute author live: `node _tools/ko-harness.mjs muteauthor` (pointer -> `user:pointer->visible`, our bar -> `user:ui:bar-mute`, a machine write with no input -> refused `stale-input`, element re-asserted, intent unmoved).
+- Read `ko.adlog` raw, without the worker noise: `node _tools\ko-adlog-window.mjs [port] [rows] [--keep a,b,c]` (opens a hidden extension page, because the service worker sleeps and cannot be asked directly). Use it only when the verdict script does not answer.
 - Inspect the owner tab and the extension service worker (`ko.adlog`): `G:\Temp\opencode\ko-adlog-dump.mjs`, `ko-stats-poll.mjs` (both present). `ko-owner-probe.mjs` and `ko-one-soak.mjs` were cited here and no longer exist — the single-channel harness is `_tools\ko-harness.mjs`.
 - Gate: `node _tools\ko-verify.mjs`; require `RESULT PASS` and `failed=0` (19 checks as of 0.8.48; the count grows with the suite, so pin the verdict, not the number).
 - `kick-overlay/content-fix-test.cjs` is NOT wired into the gate and its H4 arm ('the re-pick re-mints exactly once') FAILS at HEAD; measured 2026-11-08 by running it against `git show HEAD:kick-overlay/content.js`, so it is drift from the 0.8.47 frame-ready gate, not a live defect. Run it from `kick-overlay/` (it reads `manifest.json` from the cwd). Do not read its red as a regression you caused.
@@ -136,6 +138,13 @@ reached `Playing q=1080p60`. It stays because the block it covers is real and me
 own origins get their origin echoed. The frame's IVS wasm worker is a CORS-checking context and cannot be
 inspected from outside. Any earlier "the layer never mounts" reading came from a guest whose profile
 still served an older build: `--fresh` (or `stop`+`start`) is required, a page reload is not.
+
+**0.8.91 ships the two defects his own live ring named** (KO-20261114-01/02): the pod-recovery escape now
+requires `readyState >= 3`, so a 144.9 s deficit can no longer be seeked into a 42.4 s buffer, and
+`audio-mismatch` is one line per distinct signature instead of one per heartbeat (70 of his 77 rows were
+the same `late` state). Gate `RESULT PASS checks=22 failed=0`; `ad-time-continuity` 56 checks with both
+new arms and their REDs; `muteauthor` PASS on 0.8.91 in the guest; `kickparity rows=9 failed=0`
+(`go-live liveClock=true`, `latency 1.05s`); installed copy `loaded=0.8.91`.
 
 **Shipped: 0.8.76** (`KO_VER` and `manifest.json` agree), installed copy redeployed
 (`deploy.mjs reload` -> `loaded=0.8.76 staged=0.8.76 changed-since-last-load=no`), gate
@@ -246,6 +255,181 @@ Not measurable on 2026-11-11: a cold open on a channel live on kick - `titiltei`
 `scriptingkata` were all OFFLINE on Twitch (`node _tools/ko-harness.mjs live --channel=...`), so no kick
 layer existed to measure and the hold correctly released the native instead.
 
+## Wave record - 2026-11-13, the freeze that a green suite could not see (0.8.88)
+
+Owner report, verbatim: *"a live ta congelando as vezes. e fica mostrando que ta passando"* — the picture
+stops, the bar keeps showing a running clock.
+
+Read from his own `ko.adlog` and two kickparity runs, all the same shape:
+
+|ms|event|what it shows|
+|---|---|---|
+|583184|`stall {"ct":10529}` + `reconnect {"n":1}`|the element is frozen at one broadcast position|
+|590781|`stall {"ct":10529}` + `reconnect {"n":2}`|the reconnect did nothing: same position|
+|599981|`stall {"ct":10529}` + `reconnect {"n":3}`|a third attempt, still nothing|
+|652227|`owner-regress {"from":10529.4,"to":46.2}`|then it teleported to the live edge|
+
+Three defects, each measured, each with an arm:
+
+1. **`ensureKick()` early-returned on `activeUrl === url && kickState.state === 'Playing'`.** A frozen
+   element reports `Playing` forever, so every reconnect re-attached the SAME dead element and sent
+   nothing at all. `ensureKick(url, {force:true})` is the stall door: the media is reloaded in place,
+   same frame, same token. Arm `W1` (forced attach reloads; a healthy same-url attach stays a no-op).
+2. **The reconnect budget refilled on `Playing` alone**, so a frozen element counted as a stable 15 s
+   run and the budget reset itself. The stretch now requires the CLOCK to advance
+   (`stablePos + 0.1`). Arm `W2`, driven through the real `st` message the bridge sends.
+3. **The forced reload used the LIVE url while the element was on the REPLAY url.** That is the
+   teleport: a user watching an offset in the DVR got the live edge instead, losing what he was
+   watching. `kickStallRecover()` reloads the source the dead element was on, at the offset it last
+   reported. Arm `W3` (replay reloads the replay at `seekTo: pos`; live reloads live with no seek).
+
+**And `go-live` was the same defect from the other side.** `kickBackToLive()` reloaded `KO.activeUrl`,
+the token this page minted at mount — expired by the time the user had sat in the DVR for minutes. The
+element loaded it, reported `Playing` over a dead picture, and the stall watchdog then fired the whole
+chain above. `kickGoLive()` MINTS a fresh `playback_url` (the same call the reconnect uses) and loads
+that; an offline channel tears down honestly instead of loading a dead token. Arm `W4` (one load, the
+FRESH url, no replay clock carried over). `kickBackToLive()` is now the same intent by its other name.
+
+**The tools were the real gap, and the owner said so** (*"improve your harness/tools/enviroment"*):
+
+- `content-fix-test.cjs` no longer asserts against SOURCE TEXT for these behaviours. It drives the real
+  `st` message listener, the real `reconnect()`/`kickStallRecover()`/`kickGoLive()`, and the real
+  `visibilitychange` handler (the document stub now RECORDS listeners instead of dropping them). A
+  source-text assertion cannot notice a handler that is never called — which is why three of these
+  defects sat behind a green suite.
+- **Anti-vacuity guard**: the suite lists every expected arm label and fails when one never prints its
+  `- OK` line. Deleting an arm now produces `arms that never printed their OK line: W3`, not a quieter
+  green. Proven by deleting W3 and watching it fire.
+- `node _tools/ko-harness.mjs source` answers "which source is the picture, and is it MOVING" in one
+  command: `{source:'live'|'replay', url, pos, state, movedSec, verdict:'MOVING'|'FROZEN'|'NOT PLAYING'}`.
+  It reads the clock twice, 1.2 s apart, because `state:'Playing'` is exactly the field that lies.
+  Measured on the guest: `{"ver":"0.8.87","source":"live","pos":1227.18,"movedSec":1,"verdict":"MOVING"}`.
+
+Every fix above has a mutation that restores the pre-fix behaviour and turns its arm red, and all four
+were run: force door removed, budget refilled on `Playing`, stall reload pointed at the live url, go-live
+reloading `activeUrl`. The visibility arm's mutation was run too.
+
+**The watchdog and the load grace disagreed, and that cost the switch.** 0.8.88's own live run shows the
+next defect in the same chain: `go-live {dur:23560,onDvr:true,from:11597}` then `go-live {minted:true}` at
++460 ms, and the stall watchdog fired at **+9.8 s** (`stall {ct:11597}` ×3, `reconnect n:1..3`) because it
+judged the OLD state while the frame was still applying the new url. A DVR->live switch needs ~10 s to
+first frames; `probe()` already honoured that with a 25 s `kickUrlT` grace, and the 400 ms loop did not.
+One constant now, `KICK_GRACE_MS = 25000`, read by `probe()`'s two grace tests AND by the stall watchdog
+(`urlFresh`). Arm `W5` drives `rectTick()` 26 times with a fresh `kickUrlT` (zero reconnects) and then 26
+times past it (recovery fires), red when `urlFresh` is forced false — and the arm sits BEFORE the
+anti-vacuity guard, which is where the guard itself had to move to (it was above `W5` and reported it
+missing).
+
+**Hover: the timer was the defect, and a cached element hid the second one.** The owner's earlier report
+*"ele da hide mesmo dando hover"* had been answered with a 4000 ms grace on a degenerate rect, which is
+a bound on a symptom: Twitch's floating preview stays up for as long as the mouse points at the player,
+so ANY timer eventually hides the clean picture under a mouse that never left. The branch now asks the
+only question that matters — is the revealed player still on the page — and answers it from
+`isConnected`/`mainVideo()`, with no clock. Two arms were added (`a hover past the old grace window
+keeps the revealed frame on its last geometry`, driven 6 s past the old constant, and `a removed player
+hides the frame without waiting for a timer`). The second arm immediately caught the real remaining
+defect: `overlay.video` is latched at take-over, so its `isConnected` stays true after Twitch replaces
+the node; the branch now re-resolves and FOLLOWS the player across the swap, and `mainVideo()` skips a
+`isConnected === false` node instead of measuring it.
+
+**A CRLF rewrite is a harness failure that looks like a product failure.** Editing these files with a
+script that does not preserve line endings turned `twitch-adblock.js` from LF to CRLF, and
+`cold-cover-fixture` then failed with *"the enforcement mutation did not apply"* — because that suite
+mutates the source by exact LF text. Nothing behavioural had changed and the gate was reporting a
+regression that did not exist. The gate now checks it (`check('line-endings')`, LF-only in every
+product file), because several suites depend on that shape.
+
+**`content-fix-test.cjs` was not in the gate at all.** It is the only suite that executes the real
+`content.js`, and `ko-verify.mjs` ran `mute-decision`, `ad-time-continuity`, `route-gate`, `yt-route`
+and the fixtures but never this one — its existence was a COMMENT. That single omission is why three
+freeze defects could sit behind `RESULT PASS checks=20 failed=0`. It is now check 21, with two extra
+guards: the suite must print `ALL CONTENT.JS FIX CHECKS PASSED` and its `ARMS n/n present` line must
+be equal-sided. Proven by mutating the budget test out of content.js: `FAIL content-fix ... checks=21
+failed=1`, and green again on restore.
+
+Status: units green (`ALL CONTENT.JS FIX CHECKS PASSED`, `ARMS 22/22 present`, gate `RESULT PASS
+checks=21 failed=0` on 0.8.89). **The live half is still owed** — this section is `fixed`, not
+`verified`, until a pod/freeze on his own Chrome with 0.8.88 recovers: `node _tools/ko-harness.mjs
+source` shows `MOVING` after a `stall` instead of a repeated frozen position.
+
+## Wave record - 2026-11-13, the arm was red because the READER was broken (0.8.90)
+
+Owner question this answers, verbatim: *"tu tem que entender se o mute vem do meu click do mouse e se vem de
+alguma decisao do codigo. (no caso, logga isso)"*.
+
+**The answer, measured in this wave on guest Chrome `twitch.tv/rodil`, 0.8.90, BOTH modes:**
+`node _tools/ko-harness.mjs muteauthor` -> `[muteauthor] PASS pointer/bar accepted with their author, machine
+mute refused`. The log lines it reads, from the ring itself:
+
+```
+audio-intent  {"surface":"twitch","origin":"user:pointer","silent":true,
+               "ev":{"input":"click","inputAgeMs":125,"userActive":true,"ownWrite":false},
+               "after":{"muted":false,"volume":1},"before":{"muted":true,"volume":1}}
+audio-refused {"owner":"twitch","why":"stale-input","sinceInputMs":8887,
+               "el":{"muted":false,"volume":0.5},"intent":{"muted":true,"volume":0}}
+```
+
+So his click is `user:pointer` with the input kind, its age and the activation state beside it; the bar is
+`user:ui:bar-*`; and a machine write with no input near it is refused and NAMED instead of becoming intent.
+
+**The instrument was the defect, twice, and both were the same shape: a reader that could not see a correct log.**
+
+- **The ring wraps.** `muteauthor` counted `log.length`, then re-read `slice(mark)` — correct while the log grows,
+  **always empty once it reached `LOG_MAX` (1200)**. On a long-lived tab the arm reported `origin=NONE` for the
+  pointer step while `ko.adlog` held the `user:pointer` line. `adblock-bridge.js` now stamps a **monotonic `n`**
+  on every record (seeded from the stored ring on load, so it survives a re-inject), and the arm reads
+  `n > mark`. `ko-adlog-window.mjs` reads `slice(-rows)` and was never affected.
+- **A missing bar is not an unproven author.** In `player=twitch` the overlay is deliberately never mounted
+  (`activeLayerLive`), so `#ko-mute` does not exist and the arm failed a correct build. It now reads the mode
+  and reports `N/A` there; only a mode that is supposed to mount the bar can fail.
+
+### The same hour, in the owner's own live log (0.8.90, twitch.tv/buzzyi_)
+
+Two defects the ring answered immediately, both reported as "veja se os logs sao uteis":
+
+**1. A POD-SIZED DEFICIT IS NOT A LICENCE TO SEEK AN ELEMENT THAT CANNOT PLAY FORWARD.**
+
+```
+native-resume-visible {"ct":30.1, "tag":"ad-end"}
+native-edge-unusable  {"from":30.1, "rs":2}
+native-edge-recover   {"behind":144.9, "edge":"buffered", "from":30.1, "to":172}
+native-resume        {"ct":41.4, "rs":1}
+```
+
+`seekCovered()` had correctly refused (`readyState < 3` -> "doing nothing IS the recovery"), and the next
+line overrode it: `if (!covered && why === 'edge-recover' && overlay.recoverBehind >= POD_RECOVER_MIN)
+covered = true;` never consulted readiness. A 130 s jump past `buffered.end` 42.4 on a HAVE_METADATA
+element — the browser clamped it, left `rs:1`, and the picture had to be refilled from nothing. The
+escape hatch existed to justify a LONG seek, not an unseekable element: `readyForPodSeek` is now a
+precondition of length. Arms: "a pod-sized deficit does not licence a seek on an element that cannot play
+forward" (16 s pod, `rs:2`, asserts zero clock writes and one `native-seek-skipped`) plus its RED
+restoring the override (`the mutant seeked to 172, past the buffered end 42.4`).
+
+**2. A TRANSITION EMITTED AS A SAMPLE EVICTED THE CHRONOLOGY.**
+
+77 `audio-mismatch` rows in one ring, 70 of them the SAME `late` signature
+(`{wantMuted:true, frameMuted:false, both vol 0.76}`) re-emitted on every 1 Hz `st`. A repeated late
+disagreement is stable state, not news, and those 70 copies pushed the pod rows out. The line is now
+keyed by its signature: logged once, cleared when the frame agrees again (so a returning disagreement is
+news), and **not** a `return` — it sits inside the `st` handler and returning would skip the health gate,
+the drift check and the reveal that follow it.
+
+**The rule this earns:** a log whose rows are per-heartbeat cannot answer "what happened", because the
+answer is the transition and the samples bury it. Every `adLog` site carries a transition; a site that
+can fire on unchanged state is a dump with extra steps.
+
+**Three questions his ring answered in one read (2026-11-14, 0.8.90, `buzzyi_`, "assistindo agora"):**
+the mouse trace is `audio-intent {origin:"user:pointer", ev:{input:"click", inputAgeMs:247}}` beside
+`audio-refused {why:"stale-input"}` for the machine; the pod chronology named the 141.9 s forward jump
+into a 42.4 s buffer (`native-edge-recover {behind:144.9, to:172}` then `native-resume {ct:41.4, rs:1}`),
+which is KO-20261114-01; and 70 of 77 `audio-mismatch` rows were one repeated signature, which is
+KO-20261114-02. The 261 `kick_probe` + 95 `kick_offline` rows are that channel not existing on kick
+(`v1/v2 404`), logged once per poll and correctly not acted on.
+
+**Rule earned, and it generalises past this arm:** a red arm whose evidence contradicts the artifact is the
+instrument's defect until proven otherwise. Read the ring by the counter the writer stamps, never by array
+index, and let an absent control be absent for a stated reason instead of a failure.
+
 ## Wave record - 2026-11-12, the swap lost the sound; the log now answers the question (0.8.79)
 
 Owner, verbatim: *"essa merda trocou de player, O PLAYER TAVA MUTADO, SAIU DO PLAYER, FOI PRO PLAYER
@@ -280,6 +464,57 @@ itself is now proven by a line: `mute-decision` "swap carries the mute, and the 
 (`audio-inherit {from:"kick",to:"twitch",now:{muted:true}}`).
 
 Gate `RESULT PASS checks=20 failed=0`; suites `mute-decision` 39, `content-fix` all green.
+
+## Wave record - 2026-11-12, the ad came and went: land where the element can play, and name every author (0.8.85)
+
+Owner, verbatim: *"é pra verbalizar coisas que EU notaria com meus olhos"*, then *"primeiro, teus logs
+nao e pra ter dump inutil. entao faz um script que te diz exatamente o que tu precisa pra debug. depois,
+tu tem que entender se o mute vem do meu click do mouse e se vem de alguma decisao do codigo. (no caso,
+logga isso)"*.
+
+**What he saw, from his own 0.8.84 adlog (tab `gatoxica`, 63 s from page load).** 11.5 s: our picture
+replaces Twitch's, 6 s behind live. 13.8 s: the SAME picture raised a second time. 16.7-22.9 s: buffer
+1.4-1.9 s, two nudges, one 4 s jump. 23.4-25.2 s: the sound fades 0.93 -> 0.63 with the target at 1.00.
+25.3 s: our picture dies, Twitch's returns **frozen** — seeked 6.8 s and paused three times inside one
+second. 27.2 s it unbreaks itself. 35.8 s: our picture returns at the SAME position it showed at 11.5 s.
+51.9 s and 63.3 s: two more hand-backs, on a clean player reporting nothing.
+
+Two product defects, each with its line:
+
+- **A landing on the last half second of data is not a landing.** `seekCovered()` accepted
+  `want <= buffered.end + 0.5`, so `native-edge-recover {to:25.6}` with `buffered.end` 26.1 was treated
+  as covered; the element went to `rs:1` and the picture froze, then `native-catchup {to:27.6}` with
+  28.1 parked it again. A seek now needs `HEALTH_BUFFER_SEC` of runway, or a whole pod's worth of delay
+  (`POD_RECOVER_MIN`) to justify the risk.
+- **A frame that repeats its position is not decoding.** `overlay-reveal {pos:30.2}` at 11.5 s and again
+  at 35.8 s, healthy both times, put a 24 s-old picture on screen. The health gate now refuses a frame
+  whose position has not moved for >2 s between fresh samples in a visible tab (`why:'pos-frozen'`),
+  which the cold-cover fixture's sparse arm keeps honest.
+
+Three log gaps, closed at their source: `overlay-reveal` carries `n` and `advanced`, `overlay-stall-stop`
+carries `hist` (the samples that produced the verdict), and `audio-mismatch` carries `sends`/`sentAgeMs`.
+
+**Every accepted sound change now names its author.** `audio-intent` carries
+`origin` (`user:pointer`, `user:pointer->visible`, `user:ui:bar-mute`, `user:ui:bar-slider`,
+`user:frame-slider`, `code:adpath`, or `code:UNLABELLED` — which is itself the bug) plus `ev`
+(`input`, `inputAgeMs`, `userActive`, `ownWrite`). An unlabelled write is the defect, not a missing field.
+
+**The debug answer is a script, not a dump.** `node _tools/ko-adlog-verdict.mjs` prints, per page load,
+`ON SCREEN` / `FROZEN` / `JUMPS` / `SOUND` / `ANSWER` and exits 1 when a defect class is present. Run
+against his 0.8.84 episode it named what needed a manual join: right-to-left reconstruction of the
+`native-edge-recover` -> `rs:1` -> pause chain, the reveal count, and the volume ramps collapsed to one
+line each. `--file` reads a saved dump, `--episodes N` walks page loads, `--port` a guest.
+
+Live proof on guest Chrome, `twitch.tv/rodil`, 0.8.85:
+`node _tools/ko-harness.mjs muteauthor` -> `[muteauthor] PASS pointer/bar accepted with their author,
+machine mute refused` — rows `pointer: user:pointer->visible`, `bar: user:ui:bar-mute`,
+`stale: NONE (refused, why=stale-input)` with the element re-asserted `muted` and the intent unmoved.
+Gate `RESULT PASS checks=20 failed=0`; `ad-time-continuity` 49 checks, `cold-cover-fixture` 18,
+`mute-decision` 48 (two new arms: an accepted gesture must name its pointer and the freshness that
+justified it, and a machine change must write a reason and no intent).
+
+Not verified, and it stays `fixed` until it is: a LIVE POD on 0.8.85 must show no `native-resume
+{rs:1}` pair and no second `native-catchup` within 1 s of a hand-back. Unit arms only prove the rule.
 
 ## Wave record - 2026-11-12, alt-tab: a hidden tab decided nothing and the return rebuilt the player (0.8.80)
 
@@ -1097,6 +1332,48 @@ guest on twitch.tv/rodil with 0.8.84 (`chrome.runtime.getManifest().version` = `
 catch-up were measured in the harness, and the live run above only proves the pieces around them. The four rows stay
 `fixed` until a live stream with 0.8.84 installed shows one hand-back audible at his intent, one freeze that either
 does not happen or produces `native-seek-skipped`, and no `overlay-catchup` line from a revealed player.
+
+## Wave record — 2026-11-15, the recovery aimed at a timeline that no longer existed (0.8.92)
+
+Two owner reports, verbatim: *"dei um seek e a live veio com delay MAIOR do que antes"* and, on the same
+session, the catch-up row that produced it. Both are closed from measurement, not from re-reading the code.
+
+**A native that RELOADED is not a native that froze.** The wall-clock recovery (0.8.59-0.8.61) assumed the
+element's timeline is the one it held at take-over: `behind = elapsed - advanced`, seek forward by the
+deficit. Measured in the guest Chrome 2026-11-15 on a live Twitch element (`twitch.tv/rodil`): pausing the
+`<video>` for 22 s **empties it and it reloads from 0**, i.e. AT the live edge — `ct 211.8 buf 212.9` ->
+`ct 0 buf null rs 1`. `holdCt` then names a timeline that no longer exists, so the deficit reads as
+reload-plus-pod and the hand-back seeks forward by tens of seconds. His own ko.adlog 2026-11-13 has the
+arithmetic: `to:172` on a 42.4 s window. The hand-back now compares the element's position with the one
+captured at take-over; a native that went BACKWARDS by more than `RESUME_GAP_SEC` did not freeze, it
+reloaded, and it is reported as `native-timeline-reset {holdCt, ct, elapsed}` with **no seek at all** —
+moving an element that is already at the edge is the harm.
+
+**A catch-up that lands with a second of buffer is the starvation it was written to prevent.** The owner's
+own 0.8.91 ring: `overlay-catchup {hold:6, lat:18.8, pos:160, source:"standby"}`. The ceiling was
+`pos + hold - 1`, so the seek landed with ONE second of media in hand, and the guard
+`runway >= HEALTH_BUFFER_SEC || frontierGap >= 2` let a 12.8 s frontier gap override exactly that — the same
+class 2026-11-08 measured four-for-four as `overlay-stall-stop`. The ceiling is now
+`pos + hold - HEALTH_BUFFER_SEC`; the frontier-gap disjunct is deleted (with that ceiling in place it could
+only admit a starving seek), and the `runway` re-check went with it rather than being left as a condition
+that can no longer fail.
+
+Both arms carry a RED mutant that restores the pre-fix line, and both were proven red before green.
+`ad-time-continuity` 49 -> 60 checks, `RESULT PASS`; gate `RESULT PASS checks=22 failed=0`. Installed copy
+redeployed: `loaded=0.8.92 staged=0.8.92 changed-since-last-load=no`.
+
+**The mute report has no mute in his own log.** `node _tools/ko-adlog-verdict.mjs --episodes=12` on his
+0.8.91 ring: `mute by USER=0 by CODE=0 unattributed=0`, one episode, `VERDICT build=0.8.92 clean`. What the
+ring does contain is a volume fight: `audio-refused {why:'stale-input', el:{muted:false, volume:0.93},
+intent:{volume:0.76}}` repeating, i.e. Twitch re-writing its own element volume a few seconds after his click
+and the arbiter re-asserting his 0.76 each time. That is the arbiter doing its job, and it is bounded per
+direction by design. A real mute (a code-driven silence he did not ask for) would appear as
+`mute by CODE=N` — it does not.
+
+Not measured, and it stays owed: the two rows above need a live pod on 0.8.92 in his Chrome
+(`native-timeline-reset` present and no `native-edge-recover` in the same hand-back; `overlay-catchup` rows
+with `to - pos <= hold - 3`). No Twitch tab was open in his browser when the log was read, and the guest
+cannot serve a free channel on demand.
 
 ## Wave record — 2026-11-12, the log said the tabs were three waves behind (0.8.82)
 

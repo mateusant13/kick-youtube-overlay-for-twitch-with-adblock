@@ -49,7 +49,7 @@ const PRE_FIX_CATCHUP = [[
 ]];
 // 2. hand-off seeked to the buffered end - 0.5 (a free jump, never aligned).
 const PRE_FIX_HANDOFF = [[
-  'const target = se > 0 ? Math.max(0, se - cleanHandoffLat()) : Math.max(0, nativeBufferedEnd(v) - 0.5);',
+  'const target = se > 0 ? Math.max(0, se - cleanLat) : from;',
   'const be = v.buffered && v.buffered.length ? v.buffered.end(v.buffered.length - 1) : 0;\n      const target = be - 0.5;',
 ]];
 // 6. no sentinel guard: `seekable.end` is trusted as a position. Twitch reports
@@ -149,13 +149,14 @@ function setNative(page, { ct, edge, bufferedEnd, paused = false, muted = false 
 }
 
 // Warm standby: minted hidden, healthy, at `lat` seconds behind the edge.
-async function warmStandby(page, { pos, lat }) {
+async function warmStandby(page, { pos, lat, buffered } = {}) {
+  const st = buffered == null ? { pos, lat } : { pos, lat, buffered };
   page.bypass({ type: 'standby-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
   await settle(20);
   page.frameMsg({ t: 'ready' });
-  page.frameMsg(healthySt({ pos, lat }));
-  page.frameMsg(healthySt({ pos, lat }));
-  page.frameMsg(healthySt({ pos, lat }));
+  page.frameMsg(healthySt(st));
+  page.frameMsg(healthySt(st));
+  page.frameMsg(healthySt(st));
   await settle(10);
 }
 
@@ -226,10 +227,14 @@ async function main() {
   // every pod added its own duration to the delay and nothing ever closed it.
   {
     const page = makeWorld();
+    // A POD-SIZED deficit on purpose: the 2026-11-12 rule refuses a forward seek
+    // past the downloaded data for a couple of seconds (measured: landing 0.5 s
+    // before `buffered.end` parks the element at rs:1), and only pays that price
+    // for the delay a whole pod costs. `POD_RECOVER_MIN` is 10 s.
     setNative(page, { ct: 100, edge: 1073741824, bufferedEnd: 101 });
     await pod(page);
     // the native is frozen for the pod: real time passes, currentTime does not
-    await new Promise((r) => setTimeout(r, 2100));
+    await new Promise((r) => setTimeout(r, 12200));
     page.bypass({ type: 'ad-end' });
     await settle(30);
     check('a frozen native with an unusable edge is seeked forward by the time it missed', () => {
@@ -239,7 +244,13 @@ async function main() {
       const behind = rec[0].d.behind;
       assert(behind > 1.5, `logged deficit ${behind} is below the seek threshold`);
       assert(v.currentTime > 101, `currentTime ${v.currentTime} was not moved forward`);
-      assert(Math.abs(v.currentTime - (100 + behind)) < 0.6, `currentTime ${v.currentTime} != ${100 + behind}`);
+      // The landing is the offset the CLEAN player was showing, not the edge:
+      // `pod()` announces lat 3, so the continuous target is 100 + behind - 3.
+      // Landing on `100 + behind` would skip the last 3 s of pictures he
+      // actually watched (owner report 2026-11-13, "cortou a fala").
+      assert(Math.abs(v.currentTime - (100 + behind - 3)) < 0.6,
+        `currentTime ${v.currentTime} != ${100 + behind - 3} (watched offset, cleanLat 3)`);
+      assert(v.currentTime < 100 + behind, 'the hand-back landed on the live edge, past what was on screen');
     });
   }
   {
@@ -251,11 +262,11 @@ async function main() {
     const page = makeWorld(mutated);
     setNative(page, { ct: 100, edge: 1073741824, bufferedEnd: 101 });
     await pod(page);
-    await new Promise((r) => setTimeout(r, 2100));
+    await new Promise((r) => setTimeout(r, 12200));
     page.bypass({ type: 'ad-end' });
     await settle(30);
     check('RED: without the wall-clock recovery the delayed native stays delayed', () => {
-      assert(page.video.currentTime < 102,
+      assert(page.video.currentTime < 106,
         `the mutated hand-back recovered to ${page.video.currentTime}, so the arm above measures nothing`);
     });
   }
@@ -321,8 +332,10 @@ async function main() {
   }
   {
     const page = makeWorld();
-    // The same element, but the pod parked it far behind: the fallback must be
-    // the newest BUFFERED frame, never a computed position.
+    // The same element, but the pod left it far behind a big downloaded window.
+    // `buffered.end` is the newest frame DOWNLOADED, not the live edge: on his
+    // own log the buffer sits 8-300 s ahead of the playhead (`buf 305.1 ct
+    // 302.4`). Landing there is a forward jump over content nobody watched.
     setNative(page, { ct: 100, edge: 40, bufferedEnd: 400 });
     page.video.seekable = { length: 1, start: () => 0, end: () => 1073741824 };
     page.video.duration = Infinity;
@@ -330,12 +343,29 @@ async function main() {
     page.video.currentTime = 100;
     page.bypass({ type: 'ad-end' });
     await settle(30);
-    check('with no usable edge the hand-back lands inside buffered data', () => {
+    check('with no usable edge the hand-back never jumps into the downloaded window', () => {
       const v = page.video;
-      const logs = page.logsOf('native-catchup');
-      assert(logs.length === 1, `expected one catch-up seek, got ${logs.length}`);
-      assert(logs[0].d.edge === 'buffered', `edge source=${logs[0].d.edge}`);
-      assert(v.currentTime === 399.5, `currentTime ${v.currentTime} != bufferedEnd-0.5`);
+      assert(v.currentTime === 100, `the hand-back moved the picture to ${v.currentTime} with no edge to aim at`);
+      assert(page.logsOf('native-catchup').length === 0, `a catch-up ran on a sentinel edge: ${page.logsOf('native-catchup').length}`);
+    });
+  }
+  {
+    // RED: the pre-fix `buffered.end - 0.5` target, which lands ~300 s ahead of
+    // the frame he was watching (the reported skip).
+    const page = makeWorld({
+      adSource: mutate([['      const target = se > 0 ? Math.max(0, se - cleanLat) : from;',
+        '      const target = se > 0 ? Math.max(0, se - cleanLat) : Math.max(0, nativeBufferedEnd(v) - 0.5);']]),
+    });
+    setNative(page, { ct: 100, edge: 40, bufferedEnd: 400 });
+    page.video.seekable = { length: 1, start: () => 0, end: () => 1073741824 };
+    page.video.duration = Infinity;
+    await pod(page);
+    page.video.currentTime = 100;
+    page.bypass({ type: 'ad-end' });
+    await settle(30);
+    check('RED: a buffered-end landing jumps the picture past everything he watched', () => {
+      assert(page.video.currentTime > 300,
+        `the mutant did not jump (currentTime ${page.video.currentTime}), so the arm above measures nothing`);
     });
   }
 
@@ -633,8 +663,11 @@ async function main() {
     page.video.readyState = 1; // HAVE_METADATA, no future data
     await pod(page);
     // The pod must have COST wall-clock time for a recovery to be proposed at
-    // all: `behind = elapsed - advanced`, and his log shows `gap:2.6`.
-    await new Promise((r) => setTimeout(r, 2100));
+    // all: `behind = elapsed - advanced`, and his log shows `gap:2.6`. The pod
+    // here is long enough that the WATCHED-OFFSET landing (`behind - cleanLat`)
+    // is still a forward seek, and short enough that the pod-sized escape
+    // (`POD_RECOVER_MIN`) does not apply: only the readiness guard can save it.
+    await new Promise((r) => setTimeout(r, 5200));
     const writes = [];
     let clock = page.video.currentTime;
     Object.defineProperty(page.video, 'currentTime', {
@@ -657,12 +690,12 @@ async function main() {
   {
     // RED: without the guard the same hand-back seeks into nothing.
     const page = makeWorld({
-      adSource: mutate([['        const covered = seekCovered(v, want);', '        const covered = true;']]),
+      adSource: mutate([['        let covered = seekCovered(v, want);', '        let covered = true;']]),
     });
     setNative(page, { ct: 468, edge: 1073741824, bufferedEnd: 468 });
     page.video.readyState = 1;
     await pod(page);
-    await new Promise((r) => setTimeout(r, 2100));
+    await new Promise((r) => setTimeout(r, 5200));
     const writes = [];
     let clock = page.video.currentTime;
     Object.defineProperty(page.video, 'currentTime', {
@@ -681,6 +714,79 @@ async function main() {
     });
   }
 
+  // ---- 10a4. a POD-SIZED deficit is not a licence to seek an element that
+  // ---- holds nothing (the 141.9 s jump, owner 2026-11-13) -----------------
+  // His own ko.adlog, 0.8.90, twitch.tv/buzzyi_ (n 275628-275635):
+  //   native-edge-unusable {from:30.1, rs:2}
+  //   native-edge-recover  {behind:144.9, from:30.1, to:172, buf:42.4}
+  //   native-resume        {ct:41.4, rs:1}
+  // The pod cost 144.9 s of wall clock, so `overlay.recoverBehind >=
+  // POD_RECOVER_MIN` held and the escape hatch set `covered = true` WITHOUT
+  // consulting the readiness guard that had just refused the same seek — a
+  // 130 s jump past the last buffered frame on a HAVE_METADATA element. The
+  // browser clamped it, left rs:1, and the picture had to be refilled from
+  // nothing. A long deficit is no more seekable than a short one on an element
+  // that cannot play forward.
+  {
+    const page = makeWorld();
+    setNative(page, { ct: 30.1, edge: 1073741824, bufferedEnd: 42.4 });
+    page.video.readyState = 2; // HAVE_CURRENT_DATA: the state his element was in
+    await pod(page);
+    // A pod long enough that the escape hatch WOULD fire: `behind` grows with
+    // the wall clock, so the whole wait is the defect's own precondition.
+    await new Promise((r) => setTimeout(r, 16000));
+    const writes = [];
+    let clock = page.video.currentTime;
+    Object.defineProperty(page.video, 'currentTime', {
+      configurable: true,
+      get: () => clock,
+      set: (x) => {
+        writes.push(+Number(x).toFixed(1));
+        clock = x;
+      },
+    });
+    page.bypass({ type: 'ad-end' });
+    await settle(150);
+    check('a pod-sized deficit does not licence a seek on an element that cannot play forward', () => {
+      const rec = page.logsOf('native-edge-recover');
+      assert(rec.length === 0, `the hand-back seeked anyway: ${JSON.stringify(rec.map((r) => r.d))}`);
+      assert(writes.length === 0, `the native clock was written at rs=2: ${JSON.stringify(writes)}`);
+      const skipped = page.logsOf('native-seek-skipped');
+      assert(skipped.length === 1, `the skip was not reported (rows ${skipped.length})`);
+    });
+  }
+
+  {
+    // RED: the pre-fix escape hatch, which ignored readiness. This is the
+    // defect itself, rebuilt from his own log line.
+    const page = makeWorld({
+      adSource: mutate([[
+        '        const readyForPodSeek = Number(v.readyState || 0) >= 3;\n        if (!covered && readyForPodSeek && why === \'edge-recover\' && overlay.recoverBehind >= POD_RECOVER_MIN) covered = true;',
+        '        if (!covered && why === \'edge-recover\' && overlay.recoverBehind >= POD_RECOVER_MIN) covered = true;',
+      ]]),
+    });
+    setNative(page, { ct: 30.1, edge: 1073741824, bufferedEnd: 42.4 });
+    page.video.readyState = 2;
+    await pod(page);
+    await new Promise((r) => setTimeout(r, 16000));
+    const writes = [];
+    let clock = page.video.currentTime;
+    Object.defineProperty(page.video, 'currentTime', {
+      configurable: true,
+      get: () => clock,
+      set: (x) => {
+        writes.push(+Number(x).toFixed(1));
+        clock = x;
+      },
+    });
+    page.bypass({ type: 'ad-end' });
+    await settle(150);
+    check('RED: without the readiness gate the pod-sized deficit jumps past everything held', () => {
+      assert(writes.length === 1, `the mutant wrote the clock ${writes.length}x: ${JSON.stringify(writes)}`);
+      assert(writes[0] > 42.4, `the mutant seeked to ${writes[0]}, not past the buffered end 42.4`);
+    });
+  }
+
   // ---- 10b. the hand-back is ONE seek, and the retries never seek --------
   // Owner report 2026-11-11, right after the pod: "it then came back to the
   // twitch player and flicked/glitched. showed a part of the livestream, then
@@ -689,10 +795,14 @@ async function main() {
   // in opposite directions — then three more catchups of 13, 17 and 17 s from
   // the 300/1200/2500 ms retries.
   {
+    // A POD-SIZED deficit on purpose: the 2026-11-12 rule refuses a forward seek
+    // past the downloaded data for a couple of seconds (measured: landing 0.5 s
+    // before `buffered.end` parks the element at rs:1), and only pays that price
+    // for the delay a whole pod costs. `POD_RECOVER_MIN` is 10 s.
     const page = makeWorld();
     setNative(page, { ct: 100, edge: 1073741824, bufferedEnd: 101 });
     await pod(page);
-    await new Promise((r) => setTimeout(r, 2100));
+    await new Promise((r) => setTimeout(r, 12200));
     // Count every write to the native clock from here on.
     const writes = [];
     let clock = page.video.currentTime;
@@ -719,12 +829,20 @@ async function main() {
     });
   }
   {
-    // Mutation: the retries seek again (`if (seek)` -> `if (true)`), which is
-    // the pre-fix shape of the hand-back.
-    const page = makeWorld({ adSource: mutate([['      if (seek) {', '      if (true) {']]) });
+    // Mutation: the retries seek again (`if (seek)` -> `if (true)`) AND the
+    // hand-back aims at `buffered.end - 0.5`. That PAIR is the pre-fix shape:
+    // the target is what made every retry a forward jump, so restoring only the
+    // retry guard leaves nothing to seek to.
+    const page = makeWorld({
+      adSource: mutate([
+        ['      if (seek) {', '      if (true) {'],
+        ['      const target = se > 0 ? Math.max(0, se - cleanLat) : from;',
+          '      const target = se > 0 ? Math.max(0, se - cleanLat) : Math.max(0, nativeBufferedEnd(v) - 0.5);'],
+      ]),
+    });
     setNative(page, { ct: 100, edge: 1073741824, bufferedEnd: 101 });
     await pod(page);
-    await new Promise((r) => setTimeout(r, 2100));
+    await new Promise((r) => setTimeout(r, 12200));
     let writes = 0;
     let clock = page.video.currentTime;
     Object.defineProperty(page.video, 'currentTime', {
@@ -1035,6 +1153,172 @@ async function main() {
     check('switching to the overlay player mid-pod releases the cover in the same tick', () => {
       assert(before, 'precondition: the pod never built its player');
       assert(!page.frame || page.frame.removed, 'the clean player outlived the owner switch');
+    });
+  }
+
+  // ---- 10d. a degenerate rect is not the frame's death (the hover guard) --
+  // Owner report 2026-11-13: "ele da hide mesmo dando hover". Hovering the
+  // player opens Twitch's floating preview (a second, tiny <video> that
+  // `mainVideo()` picks as "largest" during a swap), a quality switch
+  // re-creates the element, and a rebuilt player is briefly 0x0. The old tick
+  // hid the frame on the FIRST `width < 40`, so the clean picture vanished from
+  // a player that was on screen the whole time.
+  {
+    const page = makeWorld();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    await pod(page);
+    await settle(600); // one position tick with a real rect
+    page.video.getBoundingClientRect = () => ({ left: 0, top: 0, width: 0, height: 0 });
+    await settle(1200); // two degenerate ticks, well inside the grace
+    check('a degenerate rect keeps the revealed frame on its last real geometry', () => {
+      const f = page.frame;
+      assert(f && !f.removed, 'the frame was torn down instead of kept');
+      assert(f.style.display === 'block', `the frame was hidden on a degenerate rect (display=${f.style.display})`);
+      assert(f.style.width === '1280px', `the frame lost its geometry: width=${f.style.width}`);
+    });
+    // A HOVER THAT LASTS is the report that was not covered: Twitch's floating
+    // preview is up for as long as the user keeps pointing at the player, so a
+    // fixed grace (4000 ms) still hid the picture from a mouse that never left.
+    // Measured window here is 6000 ms, past the old constant.
+    await settle(6000);
+    check('a hover past the old grace window keeps the revealed frame on its last geometry', () => {
+      const f = page.frame;
+      assert(f && !f.removed, 'the frame was torn down during a long hover');
+      assert(f.style.display === 'block', `the frame was hidden during a long hover (display=${f.style.display})`);
+      assert(f.style.width === '1280px', `the frame lost its geometry during a long hover: width=${f.style.width}`);
+    });
+    // ...and a player that really left IS hidden, in one tick, with no timer.
+    page.video.isConnected = false;
+    await settle(700);
+    check('a removed player hides the frame without waiting for a timer', () => {
+      const f = page.frame;
+      assert(f && f.style.display === 'none', `a removed player left the clean picture up (display=${f && f.style.display})`);
+    });
+    // RED: without the kept rect, the first degenerate tick hides the picture.
+    const page2 = makeWorld({
+      adSource: mutate([['    } else if (overlay.revealed && overlay.lastRect) {', '    } else if (false) {']]),
+    });
+    setNative(page2, { ct: 397, edge: 400, bufferedEnd: 400 });
+    await pod(page2);
+    await settle(600);
+    page2.video.getBoundingClientRect = () => ({ left: 0, top: 0, width: 0, height: 0 });
+    await settle(1200);
+    check('RED: a reveal that trusts every rect hides the picture at the first 0x0 tick', () => {
+      const f = page2.frame;
+      assert(f && f.style.display === 'none', `the mutant kept the frame (display=${f && f.style.display}), so the arm above measures nothing`);
+    });
+  }
+
+  // ---- 11b. a native that RELOADED during the pod needs no seek -----------
+  // Measured in the guest Chrome 2026-11-15 on a live element (twitch.tv/rodil,
+  // player=twitch): pausing a Twitch <video> for 22 s EMPTIES it and it reloads
+  // from 0, i.e. at the live edge (`ct 211.8 buf 212.9` -> `ct 0 buf null rs 1`).
+  // `holdCt` then names a timeline that no longer exists, so `behind` measures
+  // the reload plus the pod - and his own ko.adlog 2026-11-13 shows the target
+  // that arithmetic produced (`to:172` on a 42.4 s window) and the refusal it
+  // earned. The hand-back must recognise the reset and NOT seek: the element is
+  // already at the edge, and moving it is what hurt.
+  {
+    const page = makeWorld();
+    setNative(page, { ct: 211.8, edge: 1073741824, bufferedEnd: 212.9 });
+    await pod(page);
+    // The reload: the element empties and comes back at the edge, well BEHIND
+    // the position it held when the pod took over.
+    page.video.currentTime = 0;
+    // The reload finishes: measured in the guest, the element is back at rs 4 a
+    // second after it reloads. A rs:1 element would be refused by the readiness
+    // guard BEFORE the reset test, and both arms would measure nothing.
+    page.video.buffered = { length: 1, start: () => 0, end: () => 12 };
+    page.video.readyState = 4;
+    await new Promise((r) => setTimeout(r, 3200));
+    const writes = [];
+    let clock = page.video.currentTime;
+    Object.defineProperty(page.video, 'currentTime', {
+      configurable: true,
+      get: () => clock,
+      set: (x) => {
+        writes.push(+Number(x).toFixed(1));
+        clock = x;
+      },
+    });
+    page.bypass({ type: 'ad-end' });
+    await settle(150);
+    check('a native that reloaded during the pod is reported and never seeked', () => {
+      const rows = page.logsOf('native-timeline-reset');
+      assert(rows.length === 1, `native-timeline-reset rows: ${rows.length} (the reset was not recognised)`);
+      assert(rows[0].d.holdCt === 211.8, `the row does not name the dead timeline: holdCt=${rows[0].d.holdCt}`);
+      assert(writes.length === 0, `the reloaded native was seeked anyway: ${JSON.stringify(writes)}`);
+      assert(page.logsOf('native-edge-recover').length === 0,
+        'a recovery seek ran on a timeline that had already reset');
+    });
+  }
+  {
+    // RED: the pre-fix arithmetic, which reads the reset as a pod-sized deficit.
+    const page = makeWorld({
+      adSource: mutate([[
+        '          if (advanced < -RESUME_GAP_SEC) {',
+        '          if (false) {',
+      ]]),
+    });
+    setNative(page, { ct: 211.8, edge: 1073741824, bufferedEnd: 212.9 });
+    await pod(page);
+    page.video.currentTime = 0;
+    // The reload finishes: measured in the guest, the element is back at rs 4 a
+    // second after it reloads. A rs:1 element would be refused by the readiness
+    // guard BEFORE the reset test, and both arms would measure nothing.
+    page.video.buffered = { length: 1, start: () => 0, end: () => 12 };
+    page.video.readyState = 4;
+    await new Promise((r) => setTimeout(r, 3200));
+    page.bypass({ type: 'ad-end' });
+    await settle(150);
+    check('RED: without the reset guard the reload is read as a pod-sized deficit', () => {
+      const rows = page.logsOf('native-timeline-reset');
+      assert(rows.length === 0, 'the mutant still reported a reset, so the arm above measures nothing');
+      const rec = page.logsOf('native-edge-recover');
+      assert(rec.length === 1, `the mutant did not seek (${rec.length} rows), so the arm above measures nothing`);
+      assert(rec[0].d.behind > 200,
+        `the mutant's deficit ${rec[0].d.behind} does not describe the reload-plus-pod the defect reports`);
+    });
+  }
+
+  // ---- 11c. a catch-up must never land on an empty buffer ----------------
+  // The owner's own 0.8.91 ko.adlog 2026-11-15: `overlay-catchup {hold:6,
+  // lat:18.8, pos:160, source:"standby"}`. The ceiling was `pos + hold - 1`, so
+  // the seek landed with ONE second of media in hand, and the `|| frontierGap
+  // >= 2` branch let a 12.8 s gap override exactly that starvation - the same
+  // class the ceiling was introduced to prevent (2026-11-08, four for four
+  // `overlay-stall-stop`).
+  {
+    const page = makeWorld();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    await warmStandby(page, { pos: 160, lat: 18.8, buffered: 6 });
+    await settle(2200);
+    const seeks = page.seeks();
+    check('a catch-up lands with the health gate\'s runway, not on the buffer frontier', () => {
+      assert(seeks.length >= 1, 'no catch-up seek was issued at all');
+      const landed = seeks[seeks.length - 1];
+      const moved = landed - 160;
+      // 6 s held, 3 s must remain: the deepest legal landing is pos + 3.
+      assert(moved <= 3.05, `the seek moved ${moved.toFixed(2)}s into a 6 s buffer, leaving ${(6 - moved).toFixed(2)}s`);
+      assert(moved >= 1.5, `the seek moved only ${moved.toFixed(2)}s, below the seek threshold`);
+    });
+  }
+  {
+    // RED: the pre-fix ceiling, which left 1 s of runway.
+    const page = makeWorld({
+      adSource: mutate([[
+        '    const ceiling = pos + hold - HEALTH_BUFFER_SEC;',
+        '    const ceiling = pos + hold - 1;',
+      ]]),
+    });
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    await warmStandby(page, { pos: 160, lat: 18.8, buffered: 6 });
+    await settle(2200);
+    const seeks = page.seeks();
+    check('RED: the pre-fix ceiling lands with a second of runway', () => {
+      assert(seeks.length >= 1, 'the mutant issued no seek, so the arm above measures nothing');
+      const moved = seeks[seeks.length - 1] - 160;
+      assert(moved > 3.05, `the mutant moved only ${moved.toFixed(2)}s, so the arm above measures nothing`);
     });
   }
 

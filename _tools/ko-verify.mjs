@@ -71,6 +71,24 @@ check('syntax', () => {
   return `${PRODUCT_JS.length} files`;
 });
 
+// ---- 1b. line endings ------------------------------------------------------
+// MEASURED 2026-11-13: a Python edit rewrote every file it touched with CRLF, and
+// `cold-cover-fixture` then failed with "the enforcement mutation did not apply"
+// — its mutations are written LF-only. That is a HARNESS defect wearing a
+// product failure's clothes: the gate reported a behavioural regression while
+// nothing behavioural had changed. Every source suite reads these files and
+// several mutate them by exact text, so the checkout's shape is a contract.
+check('line-endings', () => {
+  const files = ['kick-overlay/twitch-adblock.js', 'kick-overlay/content.js', 'kick-overlay/player-bridge.js',
+    'kick-overlay/adblock-bridge.js', 'kick-overlay/background.js', 'kick-overlay/popup.js'];
+  const bad = files.filter((rel) => {
+    const d = readFileSync(path.join(ROOT, rel));
+    return d.includes('\r\n');
+  });
+  assert(bad.length === 0, `CRLF in ${bad.join(', ')} — an editing tool rewrote these; suites mutate them by exact LF text`);
+  return `${files.length} files LF`;
+});
+
 // ---- 2. manifest and packaged files --------------------------------------
 let manifest = null;
 check('manifest', () => {
@@ -265,6 +283,28 @@ check('mute-decision', () => {
   });
   assert(r.status === 0, `${rel}: ${String(r.stderr || r.stdout || '').trim().slice(-320)}`);
   return 'muted reveal + generic click + badge + ad-end, with the pre-fix negative arm';
+});
+
+// content-fix-test.cjs — the ONLY suite that runs the real content.js: the `st`
+// message listener, the rect loop's watchdogs, ownership, the visibility
+// boundary, the kick seek/load commands. It was referred to by comments here and
+// NEVER executed by this gate, which is how three freeze defects (0.8.87) sat
+// behind a green receipt. It carries its own anti-vacuity guard: every expected
+// arm label must print, so an arm that silently stops running fails the gate.
+check('content-fix', () => {
+  const rel = 'kick-overlay/content-fix-test.cjs';
+  assert(existsSync(path.join(ROOT, rel)), `missing ${rel}`);
+  const r = spawnSync(process.execPath, [path.join(ROOT, rel)], {
+    cwd: path.join(ROOT, 'kick-overlay'),
+    encoding: 'utf8',
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  const out = String(r.stdout || '') + String(r.stderr || '');
+  assert(r.status === 0, `${rel}: ${out.trim().slice(-400)}`);
+  assert(/ALL CONTENT\.JS FIX CHECKS PASSED/.test(out), `${rel}: suite did not print its verdict`);
+  const arms = (out.match(/ARMS (\d+)\/(\d+) present/) || []);
+  assert(arms.length && arms[1] === arms[2], `${rel}: an arm is missing (${arms[0] || 'no ARMS line'})`);
+  return `real content.js behaviour; ${arms[0]}`;
 });
 
 // ---- 6b. bridge handshake (KO-20261026-02) -------------------------------

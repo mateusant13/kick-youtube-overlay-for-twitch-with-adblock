@@ -308,7 +308,7 @@ const NOT_CHANNEL = new Set([
 
 // Build marker for the diag stream — lets us tell which code a tab runs
 // (content scripts of pre-reload tabs survive extension reloads).
-const KO_VER = '0.8.84';
+const KO_VER = '0.8.92';
 // How long a lost picture may last before the native player is allowed to
 // reclaim the screen (owner 2026-11-11: an ad and the player fighting).
 const OWNER_GRACE_MS = 6000;
@@ -385,6 +385,7 @@ const KO = {
   seeking: false,
   reconnectCount: 0,
   stableSince: null, // epoch ms of the current uninterrupted Playing run (budget reset)
+  stablePos: null, // the position that run was last seen at (a frozen clock is not progress)
   pollTimer: null,
   rectTimer: null,
   spaTimer: null,
@@ -657,6 +658,12 @@ function updateTwLiveSticky(v) {
 // else is not a channel, so probing kick.com for it only burns a blocked
 // cross-origin request.
 const KICK_SLUG_RE = /^[a-z0-9][a-z0-9_-]{2,24}$/i;
+// How long a freshly loaded playback_url is treated as LOADING rather than
+// broken. Measured: a DVR->live switch needs ~10 s to first frames, and the
+// stall watchdog firing on the OLD state mid-switch cost three reconnects and a
+// teardown for a load that was working (2026-11-13). Every "is it dead yet"
+// question reads this one number.
+const KICK_GRACE_MS = 25000;
 function plausibleKickSlug(slug) {
   const s = String(slug || '').trim();
   return KICK_SLUG_RE.test(s) && !/^uc[0-9a-z_-]{22}$/i.test(s);
@@ -1010,7 +1017,7 @@ window.addEventListener('message', (ev) => {
       const audio = window.KOAudio;
       const want = audio ? audio.wanted('yt') : null;
       if (audio && want && Math.abs(want.volume - st.volume) > 0.02) {
-        audio.setIntent('yt', { volume: st.volume }, { persist: true });
+        audio.setIntent('yt', { volume: st.volume }, { persist: true, origin: 'user:frame-slider', ev: { ownWrite: false, input: 'in-frame', inputAgeMs: null, userActive: true } });
       }
     }
     if (KO.player === 'youtube') throttledYtProbe();
@@ -1253,11 +1260,22 @@ window.addEventListener('message', (ev) => {
     // Reconnect budget replenishes only after a stable Playing stretch —
     // a fresh url that plays 2s then errors must NOT reset the budget
     // (that was the endless reconnect loop: ensureKick reset it per try).
+    // AND "Playing" is not progress: a frozen element reports Playing forever
+    // (measured 2026-11-13, `stall {ct:10262}` five times over 80 s while the
+    // state never left Playing), so the stretch only counts while the clock
+    // actually advances.
     if (m.st && m.st.state === 'Playing') {
-      if (!KO.stableSince) KO.stableSince = Date.now();
-      else if (Date.now() - KO.stableSince > 15000) KO.reconnectCount = 0;
+      const nowPos = Number(m.st.pos) || 0;
+      if (!KO.stableSince || !(nowPos > (KO.stablePos || 0) + 0.1)) {
+        KO.stableSince = Date.now();
+        KO.stablePos = nowPos;
+      } else {
+        KO.stablePos = nowPos;
+        if (Date.now() - KO.stableSince > 15000) KO.reconnectCount = 0;
+      }
     } else {
       KO.stableSince = null;
+      KO.stablePos = null;
     }
     if (KO.kickOnDvr && m.st && typeof m.st.dur === 'number' && m.st.dur > 12) {
       KO.kickDvrDur = m.st.dur;
@@ -1307,10 +1325,33 @@ window.addEventListener('message', (ev) => {
 // Attach the current playback_url to the IVS frame. Same-url loads are
 // no-ops (switching players never re-attaches). The frame is created once
 // and the player is re-created only when the url actually changes.
-function ensureKick(url) {
+// `opts.force` is the stall recovery's door: a player that reports `Playing`
+// over a FROZEN clock is dead in every way that matters, and the same-url
+// no-op below is exactly why the reconnect never repaired it (measured
+// 2026-11-13: `stall {ct:10262}` -> `reconnect n:1..3` four times over 80 s
+// with the picture never moving, because `ensureKick` saw `Playing` and
+// returned).
+function ensureKick(url, opts) {
   if (!KO.wrap) mount();
-  if (KO.activeUrl === url && KO.kickFrame && KO.kickReady) {
+  const force = !!(opts && opts.force);
+  if (!force && KO.activeUrl === url && KO.kickFrame && KO.kickReady) {
     if (KO.kickState && KO.kickState.state !== 'Playing') kickSend({ t: 'play' });
+    return;
+  }
+  if (force) {
+    // Same url, dead element: reload it in place. The frame, the token and the
+    // DVR source all stay; only the media is re-fetched.
+    KO.kickUrlT = Date.now();
+    KO.kickEverPlayed = false;
+    KO.stableSince = null;
+    KO.stablePos = null;
+    const seekTo = opts && Number.isFinite(opts.seekTo) ? opts.seekTo : null;
+    if (KO.kickReady) {
+      kickSend(seekTo !== null ? { t: 'load', url, seekTo } : { t: 'load', url });
+      KO.pendingUrl = null;
+    } else {
+      KO.pendingUrl = url;
+    }
     return;
   }
   KO.activeUrl = url;
@@ -1471,26 +1512,59 @@ function kickStartDvr(target) {
   updateKickBar();
 }
 
-function kickBackToLive() {
+// Go live = MINT a fresh url, never reload the old one. An IVS playback_url is a
+// signed token with its own lifetime; the one this page minted at mount expires
+// while the user sits on the DVR, and reloading it is a dead element that
+// reports `state:"Playing"` over a frozen clock — measured 2026-11-13 in two
+// kickparity runs (`go-live` -> `stall {ct:10529}` x3, `owner-regress
+// {from:10529.4, to:46.2}`), and the reconnect repaired it only because THAT
+// path mints. `kickBackToLive` now takes the same route.
+async function kickGoLive() {
   KO.kickDvrClamped = false;
-  if (KO.kickOnDvr && KO.activeUrl) {
-    KO.kickOnDvr = false;
-    // A fresh load of the live url starts AT the live edge (kick.com's
-    // goBackToLive does exactly this: switch to the live url, no seek).
-    // Reset the url timer so the transition grace covers this reload, and
-    // clear the DVR position so the full-broadcast bar never renders the
-    // replay URL's playhead against the live URL's duration during the swap.
-    if (KO.kickState) {
-      KO.kickState.pos = 0;
-      KO.kickState.lat = 0;
-      KO.kickState.state = 'Buffering';
-    }
-    KO.kickUrlT = Date.now();
-    kickSend({ t: 'load', url: KO.activeUrl });
-  } else {
+  diag('go-live', {
+    onDvr: !!KO.kickOnDvr,
+    from: Math.round(Number(KO.kickState && KO.kickState.pos) || 0),
+    st: (KO.kickState && KO.kickState.state) || null,
+    dur: Math.round(Number(KO.kickState && KO.kickState.dur) || 0),
+    live: !!KO.activeUrl,
+  });
+  if (!KO.kickOnDvr) {
+    // Already on the live url: the element owns the cross, so the player's own
+    // seek-to-edge is the right tool (a reload would blink for no reason).
     kickSend({ t: 'seekToLive' });
+    updateKickBar();
+    return;
+  }
+  // Leaving the DVR: the replay's flag, position and duration all stop being
+  // true, and the bar must not render the replay's clock against the live url.
+  KO.kickOnDvr = false;
+  if (KO.kickState) {
+    KO.kickState.pos = 0;
+    KO.kickState.lat = 0;
+    KO.kickState.dur = 0;
+    KO.kickState.state = 'Buffering';
+  }
+  KO.kickUrlT = Date.now();
+  const k = await kickPlaybackUrl(KO.kickSlug);
+  if (!KO.kickOnDvr && KO.enabled && KO.player === 'kick' && k && k.live && k.url) {
+    KO.activeUrl = k.url;
+    kickSend({ t: 'load', url: k.url });
+    diag('go-live', { minted: true, at: Math.round(Number(KO.kickState && KO.kickState.pos) || 0) });
+  } else if (!k || !k.live) {
+    // The channel went offline while he was in the DVR: honest stop, not a
+    // dead element pretending to be live.
+    diag('go-live', { err: 'offline' });
+    teardown();
+    setBadge('KICK', '#6b7280');
   }
   updateKickBar();
+}
+
+// One name for the intent ("be at the live edge"). `kickGoLive` owns the mint
+// and the DVR exit; `kickBackToLive` is the in-page callers' name for it, kept
+// because the recovery paths read better with it.
+function kickBackToLive() {
+  return kickGoLive();
 }
 
 // ---- playback ownership -----------------------------------------------------
@@ -2151,7 +2225,7 @@ function mount() {
     const surface = KO.player === 'youtube' ? 'yt' : 'kick';
     const cur = audio ? audio.intent(surface) : { muted: KO.player === 'youtube' ? KO.ytMuted : KO.kickMuted, volume: KO.player === 'youtube' ? KO.ytVol : KO.kickVol };
     const muted = !cur.muted;
-    if (audio) audio.setIntent(surface, { muted, volume: !muted && cur.volume === 0 ? 1 : cur.volume }, { persist: true });
+    if (audio) audio.setIntent(surface, { muted, volume: !muted && cur.volume === 0 ? 1 : cur.volume }, { persist: true, origin: 'user:ui:bar-mute' });
     updateKickVolUI();
   });
   const volwrap = bar.querySelector('#ko-volwrap');
@@ -2165,7 +2239,7 @@ function mount() {
     const v = volFrac(e);
     const audio = window.KOAudio;
     const surface = KO.player === 'youtube' ? 'yt' : 'kick';
-    if (audio) audio.setIntent(surface, { volume: v, muted: v === 0 });
+    if (audio) audio.setIntent(surface, { volume: v, muted: v === 0 }, { origin: 'user:ui:bar-slider' });
     updateKickVolUI();
   };
   volwrap.addEventListener('pointerdown', (e) => {
@@ -2377,7 +2451,7 @@ function kickLayerLive() {
   const st = KO.kickState;
   if (st && st.state === 'Playing') return true;
   if (KO.kickProbeAt && Date.now() - KO.kickProbeAt < 3 * POLL_MS) return true;
-  return !!(KO.kickUrlT && Date.now() - KO.kickUrlT < 25000);
+  return !!(KO.kickUrlT && Date.now() - KO.kickUrlT < KICK_GRACE_MS);
 }
 
 // The yt leg's ONE liveness answer: the frame's transient 'st' state counts
@@ -2442,8 +2516,34 @@ function showYtLayer() {
 // kick fatal — reconnect IN PLACE: the wrap keeps covering Twitch (muted +
 // paused) the whole time, so the user never sees the underlying player or
 // an ad. Each attempt fetches a FRESH playback_url (IVS tokens rotate).
+// The freeze recovery's SOURCE choice, isolated from the reconnect's backoff:
+// a forced reload is in-place, so it must reload the source the dead element
+// was actually on. On the replay url that is the replay, at the offset he was
+// watching; on the live url it is the fresh mint. Named and reachable because
+// it is the half a test has to prove, and the reconnect's 2 s backoff lets the
+// page's own poll write over any state a test sets up around it.
+function kickStallRecover(liveUrl) {
+  if (KO.kickOnDvr && KO.kickDvrUrl) {
+    const at = Number(KO.kickState && KO.kickState.pos) || Number(KO.kickDvrTarget) || 0;
+    ensureKick(KO.kickDvrUrl, { force: true, seekTo: at > 0 ? at : undefined });
+    KO.kickDvrLoadedAt = Date.now();
+    KO.kickDvrTarget = at;
+    return 'dvr';
+  }
+  ensureKick(liveUrl, { force: true });
+  return 'live';
+}
+
 async function reconnect() {
   if (KO.reconnectCount >= MAX_RECONNECT) {
+    // A REPLAY that keeps stalling is not a dead stream: the live edge is still
+    // there, and kick.com's own player returns to it when a replay fails. Only
+    // the live case is a teardown.
+    if (KO.kickOnDvr && KO.activeUrl) {
+      diag('dvr_stall_go_live', { n: KO.reconnectCount });
+      kickBackToLive();
+      return;
+    }
     teardown();
     setBadge('KICK', '#6b7280');
     return;
@@ -2464,7 +2564,18 @@ async function reconnect() {
   }
   await new Promise((r) => setTimeout(r, 2000)); // back off, then re-attach
   if (!KO.enabled || KO.player !== 'kick') return;
-  ensureKick(k.url);
+  // FORCE: the stall that asked for this reconnect was a frozen picture, and
+  // the url is the same one the dead element already has. A no-op here is the
+  // whole defect (`stall {ct:10262}` repeating while the picture never moved).
+  //
+  // AND RELOAD WHAT HE IS WATCHING. A freeze on the replay url must come back
+  // on the replay url at the SAME offset: measured 2026-11-13, the forced
+  // reload used the LIVE url, so a stall in DVR teleported him to the edge
+  // (`owner-regress {from:10529.4, to:46.2}` after three stalls) — the exact
+  // "advancei e perdi a parte que eu estava vendo" class he reported. The DVR
+  // source is the one the dead element was on, and its position is the last
+  // one it reported.
+  kickStallRecover(k.url);
   if (KO.wrap) {
     const rc = KO.wrap.querySelector('#ko-reconnecting');
     if (rc) rc.style.display = 'none';
@@ -2767,7 +2878,7 @@ async function probeKickLayer() {
   // and restarted the load). Failure recovery is the watchdogs' job:
   // never-played (>15s) tears down, stuck-not-playing (>25s, below)
   // reconnects on budget, frozen-while-playing (>8s) reconnects on budget.
-  if (KO.activeUrl && KO.kickUrlT && Date.now() - KO.kickUrlT < 25000) {
+  if (KO.activeUrl && KO.kickUrlT && Date.now() - KO.kickUrlT < KICK_GRACE_MS) {
     showKickLayer();
     setBadge('KICK', '#d97706'); // url still loading — connecting phase
     return;
@@ -3292,7 +3403,13 @@ function rectTick() {
       // a fresh playback_url via the normal reconnect budget. Hidden tabs
       // throttle the frame's 1s state timer, so frozen pos there is NOT a
       // stall (the stream keeps playing under the muted-audio exemption).
-      if (!document.hidden && KO.player === 'kick' && KO.kickState && KO.kickState.state === 'Playing') {
+      // A SOURCE SWITCH IN FLIGHT IS NOT A STALL. Measured 2026-11-13 (0.8.88):
+      // the go-live mint landed 460 ms after the click, the frame took ~10 s to
+      // apply it, and this watchdog fired at 9.8 s on the OLD state (pos frozen
+      // at the replay offset) — three reconnects and a teardown for a load that
+      // was already working. The same grace probe() honours (`kickUrlT`, 25 s).
+      const urlFresh = !!(KO.kickUrlT && Date.now() - KO.kickUrlT < KICK_GRACE_MS);
+      if (!document.hidden && !urlFresh && KO.player === 'kick' && KO.kickState && KO.kickState.state === 'Playing') {
         const t = KO.kickState.pos || 0;
         if (Math.abs(t - KO.lastTickT) < 0.05) {
           KO.stallTicks++;

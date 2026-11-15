@@ -153,9 +153,18 @@ const doc = {
   getElementById: (id) => (id === 'ko-yt' && fakeFrame ? fakeFrame : byId.get(id) || null),
   querySelector: (sel) => pageSel.get(sel) || null,
   querySelectorAll: (sel) => (sel === 'video' ? fakeVideos : []),
-  addEventListener() {},
-  removeEventListener() {},
+  // Document listeners are RECORDED, not dropped: an arm that must prove a
+  // boundary (visibilitychange, keydown) has to dispatch the real event into
+  // the real handler, or it can only assert against source text — the shape
+  // that let the 2026-11-13 freeze pass a green suite.
+  addEventListener(t, fn) { (docListeners[t] = docListeners[t] || []).push(fn); },
+  removeEventListener(t, fn) {
+    const l = docListeners[t];
+    if (l) { const i = l.indexOf(fn); if (i >= 0) l.splice(i, 1); }
+  },
 };
+const docListeners = Object.create(null);
+const fireDoc = (t, ev) => (docListeners[t] || []).forEach((fn) => fn(ev || { type: t, target: doc }));
 
 let manifestVersion = require('./manifest.json').version;
 const reloads = [];
@@ -234,6 +243,11 @@ const api = fn(global, doc, global.location, global.navigator);
 const KO = api.KO;
 
 const settle = (ms) => new Promise((r) => setTimeout(r, ms));
+// Every console.log is recorded: the anti-vacuity check at the end of the run
+// proves each expected arm actually executed.
+const armLog = [];
+const realLog = console.log.bind(console);
+console.log = (...a) => { armLog.push(a.join(' ')); realLog(...a); };
 // The last badge emission. setBadge() ALWAYS sets the colour first, so the
 // pair is the exact call (0.8.2 carries the phase in the colour, not in text).
 const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
@@ -980,10 +994,25 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   assert.ok(goliveP3.classList.contains('ko-show'), 'kick leg: pill shows while lat ≥ ARROW_SEEK_SEC (and on DVR)');
   assert.ok(goliveP3.textContent.match(/LIVE\s*−\s*18s/), 'kick leg: pill labelled with the live throttle (LIVE −18s at lat=18)');
   p3posts.length = 0;
+  // Go live MINTS a fresh token instead of reloading the one this page minted at
+  // mount: measured 2026-11-13 in two live runs, the stale url loaded as a dead
+  // element that reported `Playing` over a frozen clock (`stall {ct:10529}` x3,
+  // then `owner-regress {from:10529, to:46}`).
+  mKO.kickSlug = 'p3channel'; // the mint needs a plausible slug, exactly like a real page
+  mKO.enabled = true; // and the overlay has to be the enabled layer
+  const realFetchP3 = global.fetch;
+  global.fetch = () => Promise.resolve({
+    ok: true,
+    json: () => Promise.resolve({ livestream: { playback_url: 'https://ivs.example/live-p3-fresh', id: 'p3' } }),
+  });
   goliveP3._ev.click();
+  await settle(40);
+  global.fetch = realFetchP3;
   const p3kickPosts = p3posts.filter((m) => m && m.__koKick && m.__koKick.t === 'load');
-  assert.strictEqual(p3kickPosts.length, 1, 'kick leg DVR: pill click loads the live url to go live (kickBackToLive)');
-  assert.strictEqual(p3kickPosts[0].__koKick.url, 'https://ivs.example/live-p3', 'kick leg: reload targets activeUrl');
+  assert.strictEqual(p3kickPosts.length, 1, 'kick leg DVR: pill click loads a live url to go live (kickGoLive)');
+  assert.strictEqual(p3kickPosts[0].__koKick.url, 'https://ivs.example/live-p3-fresh', 'kick leg: go live targets a FRESH mint, never the stale activeUrl');
+  assert.strictEqual(mKO.kickOnDvr, false, 'kick leg: leaving the DVR clears the flag');
+  assert.strictEqual(mKO.activeUrl, 'https://ivs.example/live-p3-fresh', 'kick leg: the fresh url becomes the live source');
   // kick leg at edge (not DVR, lat 0) hides the pill
   mKO.kickOnDvr = false;
   mKO.kickState = { state: 'Playing', pos: 100, lat: 0, dur: 3600, qualities: [] , ts: Date.now() };
@@ -2151,10 +2180,24 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     assert.strictEqual(hid.paused, true, 'a visible tab no longer pauses the native (the ownership path broke)');
     assert.strictEqual(doc.documentElement.attrs['data-ko-owner'], 'kick', 'ownership is not published when visible again');
     // The alt-tab boundary restarts the watchdog clocks: a gap spent hidden is
-    // not evidence that the bridge died.
-    const visSrc = src.slice(src.indexOf("'visibilitychange'"), src.indexOf("'visibilitychange'") + 1600);
-    assert.ok(/lastKickSt = 0/.test(visSrc) && /lastYtSt = 0/.test(visSrc), 'the visibility boundary does not reset the frame watchdogs');
-    assert.ok(/picSeenAt = Date.now\(\)/.test(visSrc), 'the visibility boundary does not preserve the pre-hide ownership');
+    // not evidence that the bridge died. Driven through the REAL listener the
+    // page installed (source-text matching cannot notice a handler that is
+    // never called at all).
+    const vK = KO;
+    vK.lastKickSt = Date.now() - 120000;
+    vK.lastYtSt = Date.now() - 120000;
+    vK.stallTicks = 40;
+    vK.ownerAttr = 'kick';
+    vK.picSeenAt = 0;
+    vK.picLostAt = 0;
+    doc.hidden = false;
+    assert.ok((docListeners.visibilitychange || []).length > 0, 'the page never installed a visibilitychange listener');
+    fireDoc('visibilitychange');
+    assert.strictEqual(vK.lastKickSt, 0, 'the visibility boundary must reset the kick watchdog clock');
+    assert.strictEqual(vK.lastYtSt, 0, 'the visibility boundary must reset the yt watchdog clock');
+    assert.strictEqual(vK.stallTicks, 0, 'the visibility boundary must reset the stall counter');
+    assert.ok(vK.picSeenAt > 0, 'the visibility boundary must preserve the pre-hide ownership');
+    vK.ownerAttr = '';
     console.log('P2k alt-tab: a hidden tab changes nothing, and the boundary resets the clocks - OK');
   }
   // P2f: HYSTERESIS. A re-buffer reports Buffering/Ready between segments; a raw
@@ -2178,6 +2221,244 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   console.log('P2f ownership hysteresis: a re-buffer does not hand the screen back - OK');
   console.log('P2e ownership: the PICTURE owns the native (Idle/absent -> keeps playing, attr empty; Playing -> paused + attr) - OK');
 
+  // Stall recovery: a frozen picture that still reports `Playing` must be
+  // reloaded, not skipped. Owner report 2026-11-13 (two live runs): after a DVR
+  // seek the go-live click left the player at `state:"Playing"` over a FROZEN
+  // broadcast clock, and `stall {ct:10262}` fired five times over 80 s while the
+  // picture never moved. `ensureKick()` saw the same url + `Playing` and
+  // returned, so the reconnect repaired nothing; and the budget refilled because
+  // "Playing" was read as a stable run.
+  {
+    const S = new Function('window', 'document', 'location', 'navigator', src + '\n;return {KO, ensureKick};')(
+      global,
+      doc,
+      global.location,
+      global.navigator,
+    );
+    const sent = [];
+    S.KO.wrap = el('div');
+    S.KO.kickFrame = el('iframe');
+    S.KO.kickReady = true;
+    S.KO.player = 'kick';
+    S.KO.activeUrl = 'https://ivs.example/frozen';
+    S.KO.kickState = { state: 'Playing', pos: 10262.7, lat: 1.3, dur: 0 };
+    S.KO.kickSend = (m) => sent.push(m);
+    const realKickSend = S.KO.kickSend;
+    // The module's own kickSend is the only writer we care about; patch the
+    // channel it uses (`postMessage` on the frame's window) instead of guessing.
+    // kickSend refuses without a frame token, so the frame carries one exactly
+    // like a mounted overlay's does.
+    S.KO.kickFrame.dataset = { koToken: 'tok-stall' };
+    S.KO.kickFrame.contentWindow = { postMessage: (p) => sent.push(p && p.__koKick) };
+    S.KO.kickWin = S.KO.kickFrame.contentWindow;
+    void realKickSend;
+
+    // 1. the OLD contract: same url + Playing -> nothing is sent.
+    S.ensureKick('https://ivs.example/frozen');
+    assert.strictEqual(sent.length, 0, 'a healthy same-url attach must stay a no-op');
+
+    // 2. the stall door: the same url is RELOADED.
+    S.ensureKick('https://ivs.example/frozen', { force: true });
+    const loads = sent.filter((m) => m && m.t === 'load');
+    assert.strictEqual(loads.length, 1, `a forced attach must reload the url once (sent ${JSON.stringify(sent.map((m) => m && m.t))})`);
+    assert.strictEqual(loads[0].url, 'https://ivs.example/frozen', 'the forced reload must target the same url');
+    console.log('W1 stall recovery: a frozen Playing player is reloaded, a healthy one is not - OK');
+  }
+  // The reconnect BUDGET and the DVR source, driven through the REAL handlers.
+  // Both were source-text assertions before (matching a regex against
+  // content.js), which cannot fail when the handler stops being called at all —
+  // exactly how the 2026-11-13 freeze survived a green suite.
+  {
+    const S = new Function('window', 'document', 'location', 'navigator', src
+      + '\n;return {KO, ensureKick, reconnect, kickGoLive, updateKickBar};')(
+      global, doc, global.location, global.navigator,
+    );
+    const K = S.KO;
+    const posted = [];
+    const frame = { ...el('iframe'), dataset: { koToken: 'tok-w2' }, contentWindow: { postMessage: (p) => posted.push(p && p.__koKick) } };
+    doc.getElementById = () => null;
+    K.wrap = el('div');
+    K.wrap.style.display = 'block';
+    K.kickFrame = frame;
+    K.kickWin = frame.contentWindow;
+    K.kickReady = true;
+    K.enabled = true;
+    K.player = 'kick';
+    K.kickSlug = 'w2channel';
+    K.activeUrl = 'https://ivs.example/live-w2';
+    K.kickOnDvr = false;
+    K.reconnectCount = 3;
+    K.stableSince = Date.now() - 60000;
+    K.stablePos = 10262.7;
+    // The bridge's own message shape, delivered to the listener the page
+    // installed (identical envelope to the frame's `sendSt`).
+    const sendSt = (st) => {
+      const before = msgListeners.length;
+      void before;
+      msgListeners.forEach((listener) => listener({
+        source: frame.contentWindow,
+        origin: new URL(chromeStub.runtime.getURL('player.html')).origin,
+        data: { __koKick: { t: 'st', st, _koToken: 'tok-w2' } },
+      }));
+    };
+    // A FROZEN clock: same pos, repeated. The budget must not refill.
+    sendSt({ state: 'Playing', pos: 10262.7, lat: 1.3, dur: 0 });
+    // Prime the run: the first sample always starts a stretch, so one more
+    // frozen sample is needed before the "advancing" test can be judged.
+    K.stableSince = Date.now() - 60000;
+    sendSt({ state: 'Playing', pos: 10262.7, lat: 1.3, dur: 0 });
+    assert.strictEqual(K.reconnectCount, 3, 'a frozen clock must NOT replenish the reconnect budget');
+    // An ADVANCING clock is progress.
+    sendSt({ state: 'Playing', pos: 10262.7 + 0.5, lat: 1.3, dur: 0 });
+    K.stableSince = Date.now() - 60000;
+    sendSt({ state: 'Playing', pos: 10262.7 + 1.0, lat: 1.3, dur: 0 });
+    assert.strictEqual(K.reconnectCount, 0, 'an advancing clock past 15 s must replenish the budget');
+    console.log('W2 stall budget: a frozen clock never replenishes the reconnect budget, an advancing one does - OK');
+  }
+  {
+    // A stall ON THE REPLAY must reload the REPLAY at the same offset. Measured
+    // 2026-11-13: the forced reload used the live url, so a DVR freeze
+    // teleported him to the edge (`owner-regress {from:10529.4, to:46.2}`).
+    const S = new Function('window', 'document', 'location', 'navigator', src
+      + '\n;return {KO, ensureKick, kickStallRecover};')(
+      global, doc, global.location, global.navigator,
+    );
+    const K = S.KO;
+    const posted = [];
+    const frame = { ...el('iframe'), dataset: { koToken: 'tok-w3' }, contentWindow: { postMessage: (p) => posted.push(p && p.__koKick) } };
+    doc.getElementById = () => null;
+    K.wrap = el('div');
+    K.kickFrame = frame;
+    K.kickWin = frame.contentWindow;
+    K.kickReady = true;
+    K.enabled = true;
+    K.player = 'kick';
+    K.kickSlug = 'w3channel';
+    K.activeUrl = 'https://ivs.example/live-w3';
+    K.kickDvrUrl = 'https://ivs.example/replay-w3';
+    K.kickOnDvr = true;
+    K.kickDvrTarget = 900;
+    K.kickState = { state: 'Playing', pos: 10529.42, lat: 1.5, dur: 21523 };
+    const which = S.kickStallRecover('https://ivs.example/live-w3-FRESH');
+    const loads = posted.filter((m) => m && m.t === 'load');
+    assert.strictEqual(which, 'dvr', 'a DVR stall is a DVR recovery');
+    assert.strictEqual(loads.length, 1, `a DVR stall reloads exactly once (posted ${JSON.stringify(posted.map((m) => m && m.t))})`);
+    assert.strictEqual(loads[0].url, 'https://ivs.example/replay-w3', 'a DVR stall reloads the REPLAY source, never the live one');
+    assert.strictEqual(loads[0].seekTo, 10529.42, 'a DVR stall resumes at the offset he was watching');
+    assert.strictEqual(K.kickOnDvr, true, 'a DVR stall stays on the DVR');
+    // The live half: the same door reloads the LIVE source.
+    posted.length = 0;
+    K.kickOnDvr = false;
+    K.activeUrl = 'https://ivs.example/live-w3-FRESH';
+    assert.strictEqual(S.kickStallRecover('https://ivs.example/live-w3-FRESH'), 'live', 'a live stall is a live recovery');
+    assert.strictEqual(posted.filter((m) => m && m.t === 'load').length, 1, 'a live stall reloads once');
+    assert.strictEqual(posted.find((m) => m && m.t === 'load').url, 'https://ivs.example/live-w3-FRESH', 'a live stall reloads the LIVE source');
+    assert.strictEqual(posted.find((m) => m && m.t === 'load').seekTo, undefined, 'a live stall seeks nowhere: the live url starts at the edge');
+    console.log('W3 stall source: the replay reloads itself at the same offset, the live reloads live - OK');
+  }
+  {
+    // An EXHAUSTED DVR budget goes to the live edge instead of tearing the
+    // layer down: a replay that will not reload is not a dead channel. The
+    // reconnect's own 2 s backoff races the page's poll timer, so this arm
+    // drives the DECISION (`kickGoLive` mints through `kickPlaybackUrl`) and
+    // not the reconnect wrapper.
+    const S = new Function('window', 'document', 'location', 'navigator', src
+      + '\n;return {KO, kickGoLive};')(
+      global, doc, global.location, global.navigator,
+    );
+    const K = S.KO;
+    const posted = [];
+    const frame = { ...el('iframe'), dataset: { koToken: 'tok-w4' }, contentWindow: { postMessage: (p) => posted.push(p && p.__koKick) } };
+    doc.getElementById = () => null;
+    K.wrap = el('div');
+    K.wrap.style.display = 'block';
+    K.kickFrame = frame;
+    K.kickWin = frame.contentWindow;
+    K.kickReady = true;
+    K.enabled = true;
+    K.player = 'kick';
+    K.kickSlug = 'w4channel';
+    K.activeUrl = 'https://ivs.example/live-w4';
+    K.kickDvrUrl = 'https://ivs.example/replay-w4';
+    K.kickOnDvr = true;
+    K.kickState = { state: 'Playing', pos: 500, lat: 2, dur: 2000 };
+    K.ytState = { ready: false, playing: false, live: false, muted: true, dur: 0, ct: 0, error: 0 };
+    const realFetch = global.fetch;
+    global.fetch = () => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({ livestream: { playback_url: 'https://ivs.example/live-w4-FRESH', id: 'w4' } }),
+    });
+    await S.kickGoLive();
+    global.fetch = realFetch;
+    const loads = posted.filter((m) => m && m.t === 'load');
+    assert.strictEqual(K.kickOnDvr, false, 'go live leaves the DVR');
+    assert.strictEqual(loads.length, 1, `go live loads exactly once (posted ${JSON.stringify(posted.map((m) => m && m.t))})`);
+    assert.strictEqual(loads[0].url, 'https://ivs.example/live-w4-FRESH', 'go live loads a FRESH mint, never the stale activeUrl');
+    assert.strictEqual(loads[0].seekTo, undefined, 'go live seeks nowhere: the live url starts at the edge');
+    assert.strictEqual(K.kickState.dur, 0, 'the replay clock is not carried onto the live url');
+    console.log('W4 go live: a fresh token, one load, and no replay clock left behind - OK');
+  }
+
+  {
+    // A SOURCE SWITCH IN FLIGHT IS NOT A STALL. Measured 2026-11-13 (0.8.88): the
+    // go-live mint landed 460 ms after the click, the frame took ~10 s to apply
+    // it, and the stall watchdog fired at 9.8 s on the OLD state — three
+    // reconnects and a teardown for a load that was already working. The
+    // watchdog and the grace must agree, or one undoes the other.
+    const S = new Function('window', 'document', 'location', 'navigator', src
+      + '\n;return {KO, rectTick};')(
+      global, doc, global.location, global.navigator,
+    );
+    const K = S.KO;
+    const posted = [];
+    const frame = { ...el('iframe'), dataset: { koToken: 'tok-w5' }, contentWindow: { postMessage: (p) => posted.push(p && p.__koKick) } };
+    doc.getElementById = () => null;
+    K.wrap = el('div');
+    K.wrap.style.display = 'block';
+    K.kickFrame = frame;
+    K.kickWin = frame.contentWindow;
+    K.kickReady = true;
+    K.enabled = true;
+    K.player = 'kick';
+    K.kickSlug = 'w5channel';
+    K.activeUrl = 'https://ivs.example/live-w5';
+    K.kickOnDvr = false;
+    K.kickState = { state: 'Playing', pos: 900, lat: 1, dur: 0, ts: Date.now() };
+    K.ytState = { ready: false, playing: false, live: false, muted: true, dur: 0, ct: 0, error: 0 };
+    K.reconnectCount = 0;
+    // A load was just issued: the OLD state is still frozen at the replay offset.
+    K.kickUrlT = Date.now();
+    K.stallTicks = 0;
+    K.lastTickT = 900;
+    // Drive the rect loop enough times that a 21-tick stall would have fired.
+    for (let i = 0; i < 26; i++) {
+      K.kickState = { state: 'Playing', pos: 900, lat: 1, dur: 0, ts: Date.now() };
+      S.rectTick();
+    }
+    assert.strictEqual(K.reconnectCount, 0, 'a stall watchdog fired inside a source switch that was still loading');
+    // Past the grace, the SAME frozen state is a real stall.
+    K.kickUrlT = Date.now() - 30000;
+    for (let i = 0; i < 26; i++) {
+      K.kickState = { state: 'Playing', pos: 900, lat: 1, dur: 0, ts: Date.now() };
+      S.rectTick();
+    }
+    assert.ok(K.reconnectCount > 0, 'past the load grace a frozen Playing element must still be recovered');
+    console.log('W5 stall grace: a source switch in flight is not a stall, a frozen element past it still is - OK');
+  }
+
+  // ANTI-VACUITY. Every arm above prints one "<label> - OK" line, and a suite
+  // whose arms silently stopped running still exits 0 today (that is how a
+  // regression gets a green receipt). The expected labels are listed HERE, in
+  // the same file, so an arm deleted or skipped without its label is a FAILURE
+  // rather than a quieter green. Appending an arm means appending its label.
+  const ARMS = [
+    'P1b2', 'P2e', 'P2f', 'P2g', 'P2h', 'P2i', 'P2k', 'P2n', 'P2o', 'P2p', 'P3', 'W1', 'W2', 'W3', 'W4', 'W5',
+    'U mute', 'V quality', 'X per-player', 'X2 manual sw', 'X3 stale liv', 'Z hover',
+  ];
+  const printed = armLog.map((l) => String(l).trim());
+  const missing = ARMS.filter((a) => !printed.some((l) => l.startsWith(a)));
+  assert.deepStrictEqual(missing, [], `arms that never printed their OK line: ${missing.join(', ')}`);
+  console.log(`ARMS ${ARMS.length}/${ARMS.length} present`);
   console.log('\nALL CONTENT.JS FIX CHECKS PASSED');
   process.exit(0);
 })().catch((e) => { console.error('HARNESS FAIL:', e); process.exit(1); });

@@ -494,6 +494,20 @@
   function setIntent(surface, patch, opts) {
     const it = intentOf(surface);
     const before = { muted: it.muted, volume: it.volume };
+    // WHO asked for this. The owner's order 2026-11-12: "tu tem que entender se
+    // o mute vem do meu click do mouse e se vem de alguma decisao do codigo".
+    // An ACCEPTED intent that names no author is what made his own log read as
+    // the extension muting him for no reason, so the label is mandatory: every
+    // in-file writer passes one, and an unlabelled write is itself the bug.
+    const origin = String((opts && opts.origin) || 'code:UNLABELLED');
+    const evidence = opts && opts.ev
+      ? {
+          input: opts.ev.input || null,
+          inputAgeMs: opts.ev.inputAgeMs == null ? null : Math.round(opts.ev.inputAgeMs),
+          userActive: !!opts.ev.userActive,
+          ownWrite: !!opts.ev.ownWrite,
+        }
+      : null;
     if (patch && typeof patch.muted === 'boolean') it.muted = patch.muted;
     if (patch && isNum(patch.volume)) it.volume = clamp(patch.volume);
     const changed = before.muted !== it.muted || Math.abs(before.volume - it.volume) > 0.0001;
@@ -503,6 +517,8 @@
         before,
         after: { muted: it.muted, volume: clamp(it.volume) },
         why: String((opts && opts.why) || 'direct'),
+        origin,
+        ev: evidence,
         silent: !!(opts && opts.silent),
         // WHO is on screen and what covers it, at the instant the decision was
         // written. Without these three, an accepted mute cannot be told apart
@@ -543,8 +559,10 @@
   const INPUT_FRESH_MS = 1200;
   const INPUT_EVENTS = ['pointerdown', 'mousedown', 'keydown', 'wheel', 'touchstart', 'click'];
   let lastInputAt = 0;
-  function markInput() {
+  let lastInputKind = '';
+  function markInput(ev) {
     lastInputAt = Date.now();
+    lastInputKind = String((ev && ev.type) || '');
   }
   function installInputClock() {
     const targets = [];
@@ -711,9 +729,18 @@
       }
       policy.delete(owner);
       const patch = { muted: !!el.muted, volume: Number(el.volume) };
-      setIntent(owner, patch, { silent: true });
+      // The ONLY path allowed to call a volumechange the user's: a fresh input
+      // and a real activation, both stated in the line so the owner's question
+      // ("veio do meu clique ou do código?") is answered by the log itself.
+      const gestureEvidence = {
+        input: lastInputKind || null,
+        inputAgeMs: lastInputAt ? Date.now() - lastInputAt : null,
+        userActive: userActive(),
+        ownWrite: false,
+      };
+      setIntent(owner, patch, { silent: true, origin: 'user:pointer', ev: gestureEvidence });
       const now = visibleNow();
-      if (now && now !== owner) setIntent(now, patch, { silent: true });
+      if (now && now !== owner) setIntent(now, patch, { silent: true, origin: 'user:pointer->visible', ev: gestureEvidence });
       apply();
       notify();
     }, true);

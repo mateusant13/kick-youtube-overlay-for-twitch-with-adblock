@@ -533,6 +533,238 @@
       "falsifier": "Falsify with `node kick-overlay/tab-audio-scope-test.cjs`: the arms 'a volumechange 3 s after the last real input is machine-driven' and 'a volumechange in the same task as a real input is intent' going red refute the claim; a mutation that restores the sticky hasBeenActive gate must turn an arm RED.",
       "owner_validation": "Proven in guest Chrome. Owed on his Chrome: after a reload with 0.8.56, talk in chat and type for a while, then check the volume is still his.",
       "next": "Owner: reload the tab so it runs 0.8.56, then chat normally for a few minutes and confirm the sound does not change by itself."
+    },
+    {
+      "id": "KO-20261112-01",
+      "date": "2026-11-12",
+      "title": "the picture froze right after an ad put the Twitch player back, and came back muted",
+      "state": "fixed",
+      "fixed_in": "0.8.85",
+      "verified": false,
+      "evidence": [
+        "ko.adlog (owner tab, 0.8.84): `native-edge-recover {behind:2.5, gap:6.8, from:18.8, to:25.6}` with `buffered.end` 26.1 — the hand-back landed 0.5 s before the end of the downloaded data — then `native-resume {ct:25.6, rs:1}` and `video-pause {rs:1}`; 2 ms later `native-catchup {gap:2, from:25.6, to:27.6}` with 28.1, parked again. Twice in one second under a picture that had already stalled",
+        "seekCovered() accepted `want <= buffered.end + 0.5`, so a landing with NO runway was treated as covered; the element needs HAVE_FUTURE_DATA (rs>=3) of runway to recover after a seek",
+        "same episode: `overlay-reveal {pos:30.2}` at 11.5 s and `overlay-reveal {pos:30.2}` at 35.8 s — the clean player had not advanced in 24 s and the second reveal put that stale frame on screen"
+      ],
+      "falsifier": "Run `node kick-overlay/ad-time-continuity-test.cjs`: the arms \"a frozen native with an unusable edge is seeked forward by the time it missed\" and \"the hand-back seeks once and the retries never seek\" go RED if the landing rule or the recovery is reverted. Run `node kick-overlay/cold-cover-fixture-test.cjs`: its SPARSE arm goes RED if a repeated position on a sparse heartbeat is refused.",
+      "owner_validation": "Gate only. Owed: the next pod on a live channel with 0.8.85 must show no `native-resume {rs:1}` pair and no second `native-catchup` within 1 s of a hand-back.",
+      "next": "Owner: on the next pod, check that the Twitch player comes back moving (no frozen picture) and that the clean picture is not re-revealed at a position it already showed."
+    },
+    {
+      "id": "KO-20261112-02",
+      "date": "2026-11-12",
+      "title": "an accepted mute could not be attributed to his click or to the code",
+      "state": "fixed",
+      "fixed_in": "0.8.85",
+      "verified": false,
+      "evidence": [
+        "every `audio-intent` line carried before/after/why/visible/claimed but no AUTHOR, so \"did this come from my mouse or from the code\" was unanswerable from his own log",
+        "the log reader `_tools/ko-adlog-window.mjs` printed all of it as a flat dump, which hid the 21 unattributed sound writes in an 11-minute episode"
+      ],
+      "falsifier": "`node _tools/ko-adlog-verdict.mjs --file <dump>` prints every sound change with its author; a line whose `origin` is missing or `code:UNLABELLED` is reported as a defect.",
+      "owner_validation": "Gate only. Owed: one live session where every mute line names his pointer, the bar, or a code path.",
+      "next": "Owner: after a reload with 0.8.85, mute and unmute with the mouse; the log must say `user:pointer` for each and `code:*` for anything the extension decides."
+    },
+    {
+      "id": "KO-20261112-03",
+      "date": "2026-11-12",
+      "title": "the ad log was a dump instead of an answer",
+      "state": "fixed",
+      "fixed_in": "0.8.85",
+      "verified": false,
+      "evidence": [
+        "reconstructing one episode needed a manual join across nine `playing-not-healthy` lines, a count of reveal lines by hand, and reading `audio-mismatch` ramp by ramp",
+        "reads only: `_tools/ko-adlog-verdict.mjs` prints ON SCREEN / FROZEN / JUMPS / SOUND / ANSWER per episode and exits 1 when a defect class is present"
+      ],
+      "falsifier": "`node _tools/ko-adlog-verdict.mjs --file <dump>` run against the 0.8.84 episode reports the unattributed writes and the volume ramps it was built to catch; a clean episode prints `VERDICT ... clean` and exits 0.",
+      "owner_validation": "Run against the live log after 0.8.85.",
+      "next": "Owner: after the next pod, run `node _tools/ko-adlog-verdict.mjs` instead of pasting the log."
+    },
+    {
+      "id": "KO-20261113-01",
+      "date": "2026-11-13",
+      "title": "the hand-back landed on the live edge instead of the frame he was watching, cutting the streamer's speech",
+      "state": "fixed",
+      "fixed_in": "0.8.86",
+      "verified": false,
+      "evidence": [
+        "owner report: the held ad desynchronised the live and the hand-back advanced the clock, so a sentence was cut",
+        "the recovery target was `from + behind` (the live edge), so the last `cleanLat` seconds of pictures he HAD watched were skipped",
+        "`ad-time-continuity` arm \"a frozen native with an unusable edge is seeked forward by the time it missed\" now asserts the landing is `from + behind - cleanLat` and that it is strictly before `from + behind`"
+      ],
+      "falsifier": "`node kick-overlay/ad-time-continuity-test.cjs`: the arm above, and the paired RED \"a buffered-end landing jumps the picture past everything he watched\", both go red if the watched-offset target is reverted.",
+      "owner_validation": "Gate only. Owed: one live pod with 0.8.86 where the picture continues from the sentence he was hearing.",
+      "next": "Owner: on the next pod, check that no word is skipped at the hand-back."
+    },
+    {
+      "id": "KO-20261113-02",
+      "date": "2026-11-13",
+      "title": "the clean picture was hidden while the pointer was over the player (hover opened a 0x0 rect)",
+      "state": "fixed",
+      "fixed_in": "0.8.86",
+      "verified": false,
+      "evidence": [
+        "owner report: \"ele da hide mesmo dando hover\"",
+        "`positionOverlay()` hid the frame on the FIRST `width < 40` tick; hovering Twitch opens a floating preview (a second, tiny video) and a quality switch re-creates the element, so those ticks are normal",
+        "the tick now keeps the last REAL rect through a degenerate one and hides only after `FRAME_RECT_HIDE_MS = 4000` of continuous degeneracy"
+      ],
+      "falsifier": "`node kick-overlay/ad-time-continuity-test.cjs`: \"a degenerate rect keeps the revealed frame on its last real geometry\" and its RED pair go red if the kept rect is removed.",
+      "owner_validation": "Gate only. Owed: one live pod where the pointer sits on the player for several seconds without the picture disappearing.",
+      "next": "Owner: hover the player during an ad and confirm the clean picture stays."
+    },
+    {
+      "id": "KO-20261113-03",
+      "date": "2026-11-13",
+      "title": "go-live left the picture frozen while the player kept reporting Playing, and the reconnect never reloaded it",
+      "state": "fixed",
+      "fixed_in": "0.8.87",
+      "verified": false,
+      "evidence": [
+        "guest 0.8.86, two kickparity runs: `go-live` failed with `live never advanced {\"pos\":9956.13,\"state\":\"Playing\",\"onDvr\":false}` and `{\"pos\":10262.7,...}` after a DVR seek",
+        "ko.adlog of the same window: `dvr_seek {target:10263}` then `stall {ct:10262}` x5 and `reconnect n:1..3` x2 over 80 s with the picture never moving",
+        "`ensureKick()` returned early on `KO.activeUrl === url && kickState.state === 'Playing'`, so every reconnect re-attached the same dead element; nothing in the reconnect path forced a reload",
+        "the reconnect budget also refilled on `Playing` alone, so a frozen element was counted as a stable 15 s run (`reconnect n:1` restarting after the third attempt)"
+      ],
+      "falsifier": "`node kick-overlay/content-fix-test.cjs`: W1 (a forced attach reloads the same url, a healthy one stays a no-op) and W2 (the budget requires an ADVANCING clock) go red when either half is reverted — both proven red before landing.",
+      "owner_validation": "Gate + guest. Owed: one pod on the owner's own Chrome with 0.8.87 where a frozen picture recovers on its own.",
+      "next": "Owner: if the kick picture ever freezes again, run `node _tools/ko-adlog-window.mjs 9222 60` and look for `stall` followed by a `switch`/load rather than a repeated reconnect."
+    },
+    {
+      "id": "KO-20261113-04",
+      "date": "2026-11-13",
+      "title": "a DVR stall was repaired onto the live url, and an exhausted DVR budget tore the layer down",
+      "state": "fixed",
+      "fixed_in": "0.8.89",
+      "verified": false,
+      "evidence": [
+        "owner adlog 0.8.86: `stall {ct:10529}` x3 then `owner-regress {from:10529.4,to:46.2}` — a freeze on the replay url came back at the live edge",
+        "`kickStallRecover` now reloads the source the dead element was on, at the offset it last reported; the live half reloads the fresh mint",
+        "kickparity 0.8.89: `RESULT PASS rows=9 failed=0`, `go-live liveClock=true adv=2.00s`, zero `stall`/`reconnect` after the mint"
+      ],
+      "falsifier": "`node kick-overlay/content-fix-test.cjs` W3 goes red when the replay branch is disabled (proven).",
+      "owner_validation": "Guest 0.8.89 kickparity + adlog. Owed: one owner-Chrome DVR freeze that recovers on the replay.",
+      "next": "Owner: on a kick picture freeze, `node _tools/ko-harness.mjs source` must show `source:replay` and `verdict:MOVING` after the reload."
+    },
+    {
+      "id": "KO-20261113-05",
+      "date": "2026-11-13",
+      "title": "the stall watchdog fired inside a source switch that was still loading",
+      "state": "fixed",
+      "fixed_in": "0.8.89",
+      "verified": false,
+      "evidence": [
+        "0.8.88 adlog: `go-live {minted:true}` at +460 ms, then `stall {ct:11597}` at +9.8 s and three reconnects, for a load that took ~10 s to first frames",
+        "`probe()` honoured a 25 s `kickUrlT` grace; the 400 ms loop did not. One constant `KICK_GRACE_MS` now feeds both",
+        "0.8.89 adlog: dvr_seek, go-live +469 ms mint, then NO stall and NO reconnect"
+      ],
+      "falsifier": "`content-fix-test.cjs` W5 goes red when `urlFresh` is forced false (proven).",
+      "owner_validation": "Guest 0.8.89. Owed: the same on his Chrome.",
+      "next": "Owner: after a go-live click the adlog must show `go-live {minted:true}` and then no `stall` line."
+    },
+    {
+      "id": "KO-20261113-06",
+      "date": "2026-11-13",
+      "title": "go-live reloaded the playback_url minted at mount, whose IVS token had expired",
+      "state": "fixed",
+      "fixed_in": "0.8.89",
+      "verified": false,
+      "evidence": [
+        "0.8.86/0.8.88: `go-live` -> `stall` on the OLD position, while the reconnect (which MINTS) is the only path that repaired it",
+        "`kickGoLive` now mints through `kickPlaybackUrl`; an offline channel tears down honestly instead of loading a dead token",
+        "kickparity 0.8.89 `go-live liveClock=true adv=2.00s`; the same row failed on 0.8.86 and 0.8.88"
+      ],
+      "falsifier": "`content-fix-test.cjs` W4 goes red when the load targets `activeUrl` (proven).",
+      "owner_validation": "Guest. Owed: his Chrome.",
+      "next": "Owner: the go-live pill must switch the clock to a session-relative position (pos ~2-25 s) in one click."
+    },
+    {
+      "id": "KO-20261113-07",
+      "date": "2026-11-13",
+      "title": "a hover hid the clean picture, because the rect grace was a timer over a live hover",
+      "state": "fixed",
+      "fixed_in": "0.8.90",
+      "verified": false,
+      "evidence": [
+        "owner report: 'ele da hide mesmo dando hover' — Twitch's floating preview is up for as long as the mouse points at the player, so any fixed grace hides it",
+        "the rect branch now asks whether a player is still on the page (`isConnected`/`mainVideo`) and follows a swapped node; no clock",
+        "`positionOverlay` hid nothing before the fix because `if (!v) return` swallowed the no-player case; it now hides there only",
+        "`ad-time-continuity` 54 checks: a 6 s hover keeps the frame, a removed player hides it in one tick, both with a RED arm"
+      ],
+      "falsifier": "both new arms fail against the pre-fix branch (proven in the same run).",
+      "owner_validation": "Unit only. Owed: a live hover on his Chrome.",
+      "next": "Owner: hover the Twitch player during a pod; the clean picture must stay."
+    },
+    {
+      "id": "KO-20261114-01",
+      "date": "2026-11-14",
+      "title": "a pod-sized deficit seeked an element that could not play forward (a 130 s jump past its buffer)",
+      "state": "fixed",
+      "fixed_in": "0.8.91",
+      "verified": false,
+      "evidence": [
+        "owner's own ko.adlog 0.8.90 twitch.tv/buzzyi_: native-edge-unusable {from:30.1, rs:2} -> native-edge-recover {behind:144.9, from:30.1, to:172, buf:42.4} -> native-resume {ct:41.4, rs:1}",
+        "seekCovered() refused on readyState < 3 and the pod-recovery escape (`recoverBehind >= POD_RECOVER_MIN`) overrode it without consulting readiness",
+        "the escape now requires `readyForPodSeek` (readyState >= 3): readiness is a precondition of length, never a competitor",
+        "ad-time-continuity 56 checks: new arm (16 s pod, rs:2) asserts zero clock writes + one native-seek-skipped; RED restores the override and is caught seekinq past buffered end 42.4"
+      ],
+      "falsifier": "the new arm is red against the pre-fix override and green after, in the same file.",
+      "owner_validation": "The defect was measured in his own live log; the fix is unit-proven and not yet observed in a pod on his Chrome."
+    },
+    {
+      "id": "KO-20261114-02",
+      "date": "2026-11-14",
+      "title": "a transition was emitted per heartbeat: 70 identical audio-mismatch rows evicted the pod chronology",
+      "state": "fixed",
+      "fixed_in": "0.8.91",
+      "verified": false,
+      "evidence": [
+        "owner's own ring: 77 audio-mismatch rows, of which 70 were the same `late` signature {wantMuted:true, frameMuted:false, wantVol:0.76, frameVol:0.76} on 1 Hz `st`",
+        "the line is now keyed by signature, cleared when the frame agrees again, and is not a `return` (it sits inside the st handler, whose health gate and reveal must still run)",
+        "owner rule for this log, verbatim: 'teus logs nao e pra ter dump inutil'"
+      ],
+      "falsifier": "count the rows per signature in the next ring: a repeated late disagreement must appear once.",
+      "owner_validation": "Measured in his own log; the dedupe is not yet observed live."
+    },
+    {
+      "state": "fixed",
+      "author": "lane",
+      "reported": "2026-11-15",
+      "fixed_in": "0.8.92",
+      "commit": null,
+      "verified": false,
+      "id": "KO-20261115-01",
+      "title": "A hand-back seeked a native whose timeline had already reset, producing a longer delay than before the pod",
+      "hypothesis": "The wall-clock recovery assumed the native's timeline is the one it held at take-over. Measured in the guest Chrome on a live Twitch element: pausing the <video> for 22 s EMPTIES it and it reloads from 0, i.e. AT the live edge (`ct 211.8 buf 212.9` -> `ct 0 buf null rs 1`). `holdCt` then names a timeline that no longer exists, so `behind = elapsed - advanced` measured the reload plus the pod and the recovery seeked forward by tens of seconds. His own ko.adlog 2026-11-13 shows the target that arithmetic produced (`to:172` on a 42.4 s window).",
+      "falsifier": "With a native 211.8 s into the pod and the element reloaded to 0 before the hand-back, `native-timeline-reset` must be logged once naming `holdCt 211.8`, and the element must receive ZERO writes to `currentTime`. If a `native-edge-recover` row appears, the reset was still read as a deficit.",
+      "evidence": [
+        "Guest measurement 2026-11-15 on a live Twitch element (twitch.tv/rodil): pausing for 22 s empties the element and it reloads at 0, i.e. the live edge; the sentinel edge (1073741824) means the wall clock was the only timeline the old code had",
+        "Owner report 2026-11-15: 'dei um seek e a live veio com delay MAIOR do que antes' — the recovery made the delay worse than the pod",
+        "Fix: `twitch-adblock.js` compares the native's `currentTime` at hand-back with the position captured at take-over; an element that went BACKWARDS by more than RESUME_GAP_SEC did not freeze, it reloaded, and is reported via `native-timeline-reset {holdCt, ct, elapsed}` with no seek",
+        "Arm `ad-time-continuity`: 'a native that reloaded during the pod is reported and never seeked' (60 checks total)",
+        "RED arm: the pre-reset guard is read as a pod-sized deficit (`behind > 200`), so the arm above measures the fix and not the harness"
+      ],
+      "owner_validation": "pending: one live pod on the installed build, where the hand-back must log `native-timeline-reset` and the picture must return at the live edge without a forward jump",
+      "next": "Owner: watch one pod with an ad that pauses the native. The row that matters is `native-timeline-reset` present and no `native-edge-recover` in the same hand-back."
+    },
+    {
+      "state": "fixed",
+      "author": "lane",
+      "reported": "2026-11-15",
+      "fixed_in": "0.8.92",
+      "commit": null,
+      "verified": false,
+      "id": "KO-20261115-02",
+      "title": "A catch-up seek landed with one second of buffer left, because a frontier-gap branch overrode the runway the health gate demands",
+      "hypothesis": "The catch-up ceiling was `pos + hold - 1`, so a seek could land with a single second of media in hand, and the guard `runway >= HEALTH_BUFFER_SEC || frontierGap >= 2` let a large frontier gap override exactly that starvation. The ceiling existed to prevent 2026-11-08's four-for-four `overlay-stall-stop`; the disjunct re-opened the same door for the case that actually fires.",
+      "falsifier": "With a standby at `pos:160, hold:6, lat:18.8`, every catch-up seek must move the playhead at most `pos + hold - HEALTH_BUFFER_SEC = +3 s`. If any seek moves further, the landing starves the buffer.",
+      "evidence": [
+        "Owner's own 0.8.91 ko.adlog 2026-11-15: `overlay-catchup {hold:6, lat:18.8, pos:160, source:\"standby\"}` — a 1 s landing with a 12.8 s frontier gap",
+        "Fix: `ceiling = pos + hold - HEALTH_BUFFER_SEC`, and the `|| frontierGap >= 2` disjunct deleted (with the ceiling in place it could only ever admit a starving seek); the dead `runway` re-check was removed with it rather than left as a check that cannot fail",
+        "Arm `ad-time-continuity`: 'a catch-up lands with the health gate\\'s runway, not on the buffer frontier' (`moved <= 3.05` and `>= 1.5`)",
+        "RED arm: restoring `ceiling = pos + hold - 1` moves 5.00 s into a 6 s buffer"
+      ],
+      "owner_validation": "pending: a live standby reveal where `overlay-catchup` rows must show `to - pos <= hold - 3` and no `overlay-stall-stop` follows",
+      "next": "Owner: read `overlay-catchup` rows on the next pod; `to - pos` must be at most `hold - 3`."
     }
   ]
 }

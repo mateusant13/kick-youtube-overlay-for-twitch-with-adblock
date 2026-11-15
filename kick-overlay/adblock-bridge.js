@@ -61,8 +61,18 @@
     scheduleFlush(400);
   };
 
+  // A RING THAT WRAPS CANNOT BE READ BY INDEX, AND THE INTRODUCTION OF `n` IS
+  // the fix for a tool that broke silently: `muteauthor` counted `length`, then
+  // re-read `slice(mark)` — correct while the log grows, ALWAYS EMPTY once it
+  // reached LOG_MAX (1200), so every measurement of "who moved the sound" read
+  // NONE on a long-lived tab (measured 2026-11-13: the adlog itself proved
+  // `user:pointer` + `audio-refused {why:'stale-input'}` while the arm reported
+  // failure). `n` is monotonic across the ring's whole life, so a reader can ask
+  // for "everything after n=X" without knowing where the buffer started.
+  let seq = 0;
   const persist = (ev) => {
-    const rec = Object.assign({ t: Date.now(), sid }, ev);
+    seq += 1;
+    const rec = Object.assign({ t: Date.now(), sid, n: seq }, ev);
     if (logCache) {
       push(rec);
       return;
@@ -75,6 +85,12 @@
         void chrome.runtime.lastError;
         loading = false;
         logCache = Array.isArray(o && o[LOG_KEY]) ? o[LOG_KEY] : [];
+        // The ring outlives this instance: continue its counter instead of
+        // restarting at 1, or a reader that saw n=900 would treat the next 900
+        // entries as already-read.
+        for (const r of logCache) {
+          if (r && typeof r.n === 'number' && r.n > seq) seq = r.n;
+        }
         const batch = pending;
         pending = [];
         for (const p of batch) push(p);
@@ -194,7 +210,7 @@
               muted: typeof d.muted === 'boolean' ? d.muted : undefined,
               volume: Number.isFinite(Number(d.volume)) ? Number(d.volume) : undefined,
             },
-            { persist: true },
+            { persist: true, origin: 'code:adpath' },
           );
         } catch {
           /* malformed intent */
