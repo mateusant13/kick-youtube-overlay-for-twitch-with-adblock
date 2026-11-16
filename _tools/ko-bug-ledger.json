@@ -927,7 +927,7 @@
     },
     {
       "id": "KO-20261115-11",
-      "state": "arm-verified",
+      "state": "verified",
       "author": "lane",
       "reported": "2026-11-15",
       "fixed_in": "0.8.94",
@@ -943,15 +943,17 @@
         "Arms: a SharedWorker blob is rewritten through the same prelude; the counter counts one of each; the log names which constructor it wrapped",
         "RED: without the SharedWorker hook the blob URL reaches the native constructor raw, with no prelude",
         "LIVE 2026-11-16, guest Chrome twitch.tv/jynxzi on 0.8.94, two page loads: stats read `hooks=2 shared=0 fails=0`, `workerPlaylistLog` grew 0 -> 35 digests, and the ring carries `worker-hook {\"kind\":\"worker\",\"ms\":1412}` + `{\"kind\":\"worker\",\"ms\":1432}` at ~1.4 s into each load. The playlist side of the defence is demonstrably attached to a live player.",
-        "Caveat measured, not inferred: `shared=0` on both loads — this channel's player used Workers, so the SharedWorker arm exists and is unit-proven but was not exercised by a live page yet."
+        "Caveat measured, not inferred: `shared=0` on both loads — this channel's player used Workers, so the SharedWorker arm exists and is unit-proven but was not exercised by a live page yet.",
+        "LIVE 2026-11-16 in the OWNER Chrome (background+muted tab, never activated, closed after): 26 samples read hooks=2 shared=1 fails=0, the playlist log grew 0 -> 3 digests, and the ring holds worker-hook {kind:\"worker\"} at ms 2412/2434 plus worker-hook {kind:\"shared\"} at ms 3099.",
+        "The rewritten worker's digests carry a REAL all-ad media playlist on his machine: worker-playlist {adExtinf:1752, adOnly:true, extinf:1752, hasStitched:false} at ms 11701 and 12069 for .../360p30/index-muted-... and .../chunked/index-muted-.... So the prerecorded claim that the player was unpatched is closed by measurement, not by the constructor list.",
+        "LIMIT: the measured tab was muted and in the background, so no frame decoded and no pod could be defended there. That belongs to the ad-path row (KO-20261115-10/12), not this one."
       ],
-      "owner_validation": "pending: a load whose player DOES use SharedWorker must produce `worker-hook {kind:\"shared\"}`; until then that specific arm is unit-only.",
       "next": "Owner: next page load, `node _tools/ko-adlog-window.mjs 9222 60` must show a `worker-hook` row.",
       "verified_by": "live-probe: guest Chrome survey 2026-11-16 (ad-detect-test.cjs arms + a CDP probe of the real page), reviewed against the measured DOM dumps in this change",
       "verified_at": "2026-11-16",
       "arms_artifact": "_evidence/KO-20261115-11-arms.md",
       "reachability_artifact": "_evidence/KO-20261115-11-reachability.txt",
-      "reachability_verdict": "NO-VERDICT"
+      "reachability_verdict": "PASS"
     },
     {
       "id": "KO-20261115-12",
@@ -972,6 +974,31 @@
       ],
       "owner_validation": "pending: on his next pod the `ad-ui-hold` row must be followed by a standby/ad-start inside one segment interval, not after the first playlist refresh",
       "next": "Owner: next pod, compare `ad-ui-hold` and `ad-start` timestamps in the ring."
+    },
+    {
+      "id": "KO-20261116-01",
+      "state": "verified",
+      "author": "lane",
+      "reported": "2026-11-16",
+      "fixed_in": "0.8.95",
+      "commit": null,
+      "verified": true,
+      "title": "The 20 s kick poll wrote a row per tick, so 268 of 1200 ring entries held one unchanging fact and evicted the chronology",
+      "hypothesis": "`kick_probe {at:\"poll\"}` and `kick_offline` were emitted on every 20 s poll whether or not the outcome changed, and the mint-probe dedupe used ONE shared `kickMintSig` slot that a channel 404ing on both endpoints defeats (v2 and v1 alternate the value). A sample is not a transition: the rows pushed the ad/player chronology out of the ring, and the owner answered \"TUDO ISSO deveria estar nos logs\" with a log that could not hold it.",
+      "falsifier": "Repeated identical polls must produce no new rows; a changed outcome must produce exactly one of each; and a channel that 404s on both endpoints must not re-log either probe.",
+      "evidence": [
+        "Owner ring 2026-11-16 (0.8.94, 1200 entries): `kick_probe {at:\"poll\"}` 114 identical rows, `kick_offline` 114 identical rows, `kick_probe {api:\"v2/…\",404}` 20, `kick_probe {api:\"v1/…\",404}` 20 = 268 of 1200 entries",
+        "Fix: `kickProbeOnce(api, sig, payload)` keeps one signature per api; the poll computes `pollSig = slug|live|url|why` and gates BOTH rows on `pollChanged`",
+        "Arm W6 drives the real `probeKickLayer` twice with an identical outcome (no rows), then a changed outcome (one of each), then the same new outcome (no rows)",
+        "Mutations that go RED: the poll gate removed -> \"an identical poll logged 3 row(s)\"; the single shared slot restored -> \"an identical poll logged 2 row(s)\"",
+        "LIVE on his own Chrome, same ring dump holding both arms: 0.8.94 episode 92.0 s -> 15 rows in the class; 0.8.95 episode 104.3 s -> 3 rows (one of each transition)"
+      ],
+      "verified_by": "live census on the owner Chrome 2026-11-16: both builds present in ONE ring dump, rows counted per episode at the boot boundary",
+      "verified_at": "2026-11-16",
+      "arms_artifact": "_evidence/KO-20261116-01-arms.md",
+      "reachability_artifact": "_evidence/KO-20261116-01-reachability.txt",
+      "reachability_verdict": "PASS",
+      "owner_validation": "none owed for the log row: both builds were measured side by side on his machine. The AD PATH is a different row and stays ARM-VERIFIED (KO-20261115-10)."
     }
   ]
 }

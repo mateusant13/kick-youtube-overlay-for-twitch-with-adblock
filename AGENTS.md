@@ -1651,3 +1651,48 @@ so `KO-20261115-11` is `arm-verified`, and the SharedWorker arm is unit-proven o
 whose player actually uses one produces `worker-hook {kind:"shared"}`. `KO-20261115-10` is
 `arm-verified` (exact shapes + a shell correctly refused); `KO-20261115-12` stays `fixed` because
 `requestStandby(0,true)` was never reached from a real hold — no pod meant no hold.
+
+## Wave record — 2026-11-16, the log was 22 % noise, and the ring could not hold the ad chronology (0.8.95)
+
+The owner asked for the ad/player chain to be in the logs, then his own ring answered with a different
+defect: **268 of 1200 entries described one unchanging fact.**
+
+|row|identical copies|what it is|
+|---|---|---|
+|`kick_probe {"at":"poll","live":false,"slug":"hagizao"}`|114|one offline channel, re-logged every 20 s poll|
+|`kick_offline {"live":false,"slug":"hagizao"}`|114|the same fact, second row|
+|`kick_probe {"api":"v2/channels/fredthefinch","status":404}`|20|a 404|
+|`kick_probe {"api":"v1/channels/fredthefinch","status":404}`|20|the same 404 on the second endpoint|
+
+It is the KO-20261114-02 class again (a sample emitted as a transition), and it is the reason the ring
+could not answer a pod: the rows that matter were pushed out by rows that said nothing new.
+
+**Two causes, not one.** The poll sites had no comparison at all. The mint probes had a dedupe, but it
+used **one shared `kickMintSig` slot for two endpoints**: a channel that 404s on v2 and v1 alternates
+the value on every poll, so neither probe ever looked "unchanged". `kickProbeOnce(api, sig, payload)`
+now keys the memory per api, and the poll computes `pollSig = slug|live|url|why` and gates BOTH rows on
+it. An offline → live → offline channel still logs all three, because the signature is the outcome.
+
+**Measured before/after on his own Chrome, same ring dump, both builds present**: the 0.8.94 episode
+(92.0 s) holds 15 rows in the class; the 0.8.95 episode (104.3 s) holds 3 — one of each transition.
+
+Arm W6 drives the real `probeKickLayer` (identical outcome → no rows, changed outcome → one of each,
+same new outcome → no rows) and two mutations turn it red: the poll gate removed
+(`an identical poll logged 3 row(s)`) and the single shared slot restored (`logged 2 row(s)`). Gate
+`RESULT PASS checks=23 failed=0`, `ARMS 23/23 present`, installed copy `loaded=0.8.95`.
+
+**The SharedWorker gap is closed, and it was closed by measurement.** `KO-20261115-11` was arm-verified
+because the guest never exercised the SharedWorker arm. A background+muted tab in HIS Chrome (created,
+measured over 26 samples, closed; never activated) read `hooks=2 shared=1 fails=0` and the ring holds
+`worker-hook {"kind":"shared","ms":3099}` beside the two `{"kind":"worker"}` rows — and the rewritten
+worker's digests carry a REAL all-ad playlist on his machine:
+`worker-playlist {"adExtinf":1752,"adOnly":true,"extinf":1752,"hasStitched":false}` for
+`.../360p30/index-muted-…` and `.../chunked/index-muted-…`. The row is `verified` now.
+
+**What that same measurement refused to claim.** The tab was muted and in the background, so no frame
+decoded and no pod could be defended there. The ad-path row `KO-20261115-10` therefore stays
+ARM-VERIFIED with its gap named, and `ALL_AD_FALLBACK` stays `false`: the worker-level playlist swap was
+disabled in 0.8.15 because the clean autoplay variant uses an MSE profile Twitch's player cannot append,
+and the defence that replaced it is the page overlay (`AD_BYPASS_ENABLED`), triggered by
+`liveMedia && info.adExtinf > 0`. An `adOnly:true` playlist therefore reaches `maybeStartBypass()`, not
+a silent no-op — that is the path a real pod has to be judged on, and it needs a pod.
