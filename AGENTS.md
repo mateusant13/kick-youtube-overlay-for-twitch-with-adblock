@@ -1875,9 +1875,12 @@ Three changes, each with its own row and its own arm:
    `adExtinf:16` listed for minutes after the break, the DOM correctly reports the ad UI leaving — so the
    signal that ends the pod may not be the one that re-opens it.
 3. **The reveal's latency gate is no longer standby-only** (twitch-adblock.js): `wasStandby &&` was the
-   reason a freshly switched frame with `lat 6.3` went up at 6.3 s behind. A frame that is not at
-   `cleanLatTarget() + 1.5` now asks for the catch-up and waits (bounded by `REVEAL_AWAIT_MS`), whatever
-   created it.
+   reason a freshly switched frame with `lat 6.3` went up at 6.3 s behind. The condition is now
+   `!overlay.revealed && lat > cleanLatTarget() + 1.5`, whatever created the frame. The first attempt
+   widened it to EVERY frame and `ad-time-continuity` caught it immediately ("a catch-up never seeks when
+   the buffer already reaches the edge": `catch-up fired 2x` on a `revealed:true` state), which is the
+   0.8.84 jump-cut — forcing a seek on a picture he is already watching. Two invariants hold together: an
+   unrevealed frame is pulled to the sync target before it is shown, and a revealed one is never re-seeked.
 
 The verdict tool prints two new sections, `DISPLAY` and `REPEATS`, plus `display: last=… lat=… repeats=N
 freezes=N` in `ANSWER`, and a repeat is a finding — a run that shows one exits 1.

@@ -2174,7 +2174,13 @@
     // A revealed player must sit at the same offset the native had. A standby
     // that is only 4-8s behind is still a visible delay against the native
     // edge, so pull it in before it is shown.
-    if (overlay.lastSt && Number(overlay.lastSt.lat) > cleanLatTarget() + 1.5) {
+    // ANY frame that is not on screen yet, not only a standby: a source switch
+    // creates a fresh frame (`reason:"playing"`, `wasStandby` false) and it went
+    // up at `lat 6.3` in the owner's own 2026-11-16 ring. NEVER a revealed one:
+    // forcing a seek on a picture he is already watching is the jump-cut that
+    // `ad-time-continuity` ("a catch-up never seeks when the buffer already
+    // reaches the edge") caught the moment this gate was widened.
+    if (!overlay.revealed && overlay.lastSt && Number(overlay.lastSt.lat) > cleanLatTarget() + 1.5) {
       // A SEEK AND A REVEAL IN THE SAME TICK IS A REVEAL AT THE OLD POSITION.
       // The frame applies the seek asynchronously, so raising it here puts a
       // picture on screen that is still the distance the seek was meant to

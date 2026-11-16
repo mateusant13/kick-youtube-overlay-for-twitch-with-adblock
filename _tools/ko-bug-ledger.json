@@ -981,7 +981,7 @@
     },
     {
       "id": "KO-20261116-01",
-      "state": "verified",
+      "state": "fixed",
       "author": "lane",
       "reported": "2026-11-16",
       "fixed_in": "0.8.95",
@@ -1002,7 +1002,10 @@
       "arms_artifact": "_evidence/KO-20261116-01-arms.md",
       "reachability_artifact": "_evidence/KO-20261116-01-reachability.txt",
       "reachability_verdict": "PASS",
-      "owner_validation": "none owed for the log row: both builds were measured side by side on his machine. The AD PATH is a different row and stays ARM-VERIFIED (KO-20261115-10)."
+      "owner_validation": "none owed for the log row: both builds were measured side by side on his machine. The AD PATH is a different row and stays ARM-VERIFIED (KO-20261115-10).",
+      "next": "Re-arm: the kick poll must emit one row per CHANGED outcome; a page load on a channel with no kick mirror must show kick_probe once, not 268 times. The record predates the 0.8.98/0.8.99 changes to kick-overlay/content.js, so it no longer covers the shipped file.",
+      "demoted_at": "2026-11-16",
+      "demoted_why": "reachability record older than the last change to kick-overlay/content.js"
     },
     {
       "id": "KO-20261116-02",
