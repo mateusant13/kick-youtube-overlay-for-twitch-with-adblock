@@ -308,7 +308,7 @@ const NOT_CHANNEL = new Set([
 
 // Build marker for the diag stream — lets us tell which code a tab runs
 // (content scripts of pre-reload tabs survive extension reloads).
-const KO_VER = '0.8.94';
+const KO_VER = '0.8.95';
 // How long a lost picture may last before the native player is allowed to
 // reclaim the screen (owner 2026-11-11: an ad and the player fighting).
 const OWNER_GRACE_MS = 6000;
@@ -351,6 +351,17 @@ const KO = {
   ytNoEvidence: 0,  // consecutive probe cycles that learned nothing (no live, no failure, no fresh embed)
   kickEverPlayed: false, // current url reached Playing at least once (re-buffers ≠ dead url)
   kickMintSig: '', // last kick probe outcome recorded (the mint is silent otherwise)
+  // Per-API memory for the mint probes. One shared slot was defeated by a
+  // channel that 404s on both endpoints: v2 and v1 alternate the value, so
+  // every poll re-logged both and nothing was ever "unchanged". Measured in
+  // the owner's ring 2026-11-16: 20 identical `{api:"v2/…",status:404}` and
+  // 20 identical `{api:"v1/…",status:404}` rows for one channel.
+  kickApiSig: {},
+  // The poll's own outcome. `kick_probe {at:"poll"}` and `kick_offline` were
+  // emitted every 20 s whether or not anything moved: 114 identical rows each
+  // in that same ring, 228 of 1200 entries, which is what evicted the ad
+  // chronology the owner asked the log to answer. Transition only.
+  kickPollSig: '',
   kickDvrUrl: null, // replay source (sources.dvr) from the playback bootstrap
   kickOnDvr: false, // frame is playing the DVR url (replay mode)
   // Published replay edge learned from a previous replay: a live VOD grows ~1
@@ -680,6 +691,17 @@ function kickLog(ev, d) {
   diag(ev, d); // diag() persists to ko.adlog too - one sink, no double line
 }
 
+// Records one mint-probe outcome per api, and only when THAT api's outcome
+// changed. Returns true when the row was written, so a caller can act on it.
+function kickProbeOnce(api, sig, payload) {
+  if (!KO.kickApiSig || typeof KO.kickApiSig !== 'object') KO.kickApiSig = {};
+  if (KO.kickApiSig[api] === sig) return false;
+  KO.kickApiSig[api] = sig;
+  KO.kickMintSig = sig; // `why` on the offline row still names the last outcome
+  kickLog('kick_probe', payload);
+  return true;
+}
+
 async function kickPlaybackUrl(slug) {
   if (!plausibleKickSlug(slug)) return { live: false };
   // A mint started at document_start (init) is CONSUMED here, not repeated: the
@@ -706,19 +728,13 @@ async function kickPlaybackUrl(slug) {
       const r = await fetch(url, { credentials: 'omit' });
       const api = url.replace('https://kick.com/api/', '');
       if (!r.ok) {
-        if (KO.kickMintSig !== `${api}|${r.status}`) {
-          KO.kickMintSig = `${api}|${r.status}`;
-          kickLog('kick_probe', { api, status: r.status });
-        }
+        kickProbeOnce(api, `${api}|${r.status}`, { api, status: r.status });
         continue;
       }
       const d = await r.json();
       const ls = d && d.livestream;
       const shape = ls ? (ls.playback_url ? 'ls.url' : (d.playback_url ? 'top.url' : 'no.url')) : 'no.ls';
-      if (KO.kickMintSig !== `${api}|${shape}`) {
-        KO.kickMintSig = `${api}|${shape}`;
-        kickLog('kick_probe', { api, status: r.status, shape, live: !!ls });
-      }
+      kickProbeOnce(api, `${api}|${shape}`, { api, status: r.status, shape, live: !!ls });
       if (ls) {
         if (ls.playback_url) return { live: true, url: ls.playback_url, streamId: ls.id || null };
         if (d && d.playback_url) return { live: true, url: d.playback_url, streamId: ls.id || null };
@@ -2894,7 +2910,14 @@ async function probeKickLayer() {
     return;
   }
   const k = await kickPlaybackUrl(KO.kickSlug);
-  kickLog('kick_probe', { slug: KO.kickSlug, live: k.live, url: k.url ? 'yes' : 'no', at: 'poll' });
+  // The poll runs every 20 s, so an unchanged outcome is stable state, not
+  // news: `kick_probe {at:"poll"}` + `kick_offline` repeated 114 times each in
+  // the owner's 2026-11-16 ring and evicted the ad chronology. One row per
+  // transition; a channel that goes offline -> live -> offline logs all three.
+  const pollSig = `${KO.kickSlug}|${k.live ? 1 : 0}|${k.url ? 1 : 0}|${KO.kickMintSig || ''}`;
+  const pollChanged = pollSig !== KO.kickPollSig;
+  KO.kickPollSig = pollSig;
+  if (pollChanged) kickLog('kick_probe', { slug: KO.kickSlug, live: k.live, url: k.url ? 'yes' : 'no', at: 'poll' });
   if (k.live && k.url) {
     KO.kickStreamId = k.streamId || null;
     // Live CONFIRMED: anchor the keep-up clock. A first frame slower than
@@ -2909,7 +2932,7 @@ async function probeKickLayer() {
   // P8 (0.8.6): log only the slug + a short live/url status — the full
   // kickPlaybackUrl payload (playback_url) never hits the console.
   console.log('[ko] kick offline or unreachable', KO.kickSlug, 'live:', k.live, 'url:', k.url ? 'yes' : 'no');
-  kickLog('kick_offline', { slug: KO.kickSlug, live: k.live, url: k.url ? 'yes' : 'no', why: KO.kickMintSig || null });
+  if (pollChanged) kickLog('kick_offline', { slug: KO.kickSlug, live: k.live, url: k.url ? 'yes' : 'no', why: KO.kickMintSig || null });
   // Honest offline badge: after a yt→kick fallback the layer the user
   // actually chose is the failed one — say so instead of a KICK that
   // implies their own kick choice.

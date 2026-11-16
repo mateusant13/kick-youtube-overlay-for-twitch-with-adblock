@@ -2400,6 +2400,67 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   }
 
   {
+    // A POLL THAT LEARNED NOTHING IS NOT NEWS. Measured in the owner's own ring
+    // on 2026-11-16 (0.8.94, 1200 entries): `kick_probe {at:"poll"}` 114 times
+    // and `kick_offline` 114 times for one channel, plus 20 `{api:"v2/…",404}`
+    // and 20 `{api:"v1/…",404}` — 268 of 1200 rows for a single unchanging
+    // fact. That is the class that buried the ad chronology he asked the log to
+    // answer ("TUDO ISSO deveria estar nos logs"). The single `kickMintSig` slot
+    // could not dedupe the mint probes either: a channel that 404s on BOTH
+    // endpoints makes v2 and v1 alternate the value, so each poll looked new.
+    const S = new Function('window', 'document', 'location', 'navigator', src
+      + '\n;return {KO, probeKickLayer};')(
+      global, doc, global.location, global.navigator,
+    );
+    const K = S.KO;
+    doc.getElementById = () => null;
+    K.enabled = true;
+    K.player = 'kick';
+    K.kickSlug = 'w6channel';
+    K.activeUrl = '';
+    K.kickState = null;
+    K.kickUrlT = 0;
+    K.kickEverPlayed = false;
+    K.kickWrap = null;
+    K.wrap = null;
+    K.kickFrame = null;
+
+    const rows = () => swCalls.filter((m) => m && m.__koDiag).map((m) => m.__koDiag);
+    let mode = 'both404';
+    const realFetch = global.fetch;
+    global.fetch = (url) => {
+      if (mode === 'both404') return Promise.resolve({ ok: false, status: 404 });
+      // v2 answers with no livestream (channel offline), v1 never asked.
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ livestream: null }) });
+    };
+    try {
+      swCalls.length = 0;
+      await S.probeKickLayer();
+      const first = rows();
+      assert.strictEqual(first.filter((r) => r.ev === 'kick_probe' && r.data.at === 'poll').length, 1, 'the first poll must log its outcome');
+      assert.strictEqual(first.filter((r) => r.ev === 'kick_offline').length, 1, 'the first offline poll must log once');
+
+      swCalls.length = 0;
+      await S.probeKickLayer();
+      assert.deepStrictEqual(rows(), [], `an identical poll logged ${rows().length} row(s); a sample is not a transition`);
+
+      swCalls.length = 0;
+      mode = 'noLs'; // same channel, DIFFERENT outcome: this is news
+      await S.probeKickLayer();
+      const changed = rows();
+      assert.ok(changed.some((r) => r.ev === 'kick_probe' && r.data.at === 'poll'), 'a changed outcome must log its poll row');
+      assert.ok(changed.some((r) => r.ev === 'kick_offline'), 'a changed outcome must log its offline row');
+
+      swCalls.length = 0;
+      await S.probeKickLayer();
+      assert.deepStrictEqual(rows(), [], 'the same NEW outcome logged twice; the guard only suppressed the first state');
+    } finally {
+      global.fetch = realFetch;
+    }
+    console.log('W6 kick log: an unchanged poll is silent, a changed outcome is news - OK');
+  }
+
+  {
     // A SOURCE SWITCH IN FLIGHT IS NOT A STALL. Measured 2026-11-13 (0.8.88): the
     // go-live mint landed 460 ms after the click, the frame took ~10 s to apply
     // it, and the stall watchdog fired at 9.8 s on the OLD state — three
@@ -2452,7 +2513,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   // the same file, so an arm deleted or skipped without its label is a FAILURE
   // rather than a quieter green. Appending an arm means appending its label.
   const ARMS = [
-    'P1b2', 'P2e', 'P2f', 'P2g', 'P2h', 'P2i', 'P2k', 'P2n', 'P2o', 'P2p', 'P3', 'W1', 'W2', 'W3', 'W4', 'W5',
+    'P1b2', 'P2e', 'P2f', 'P2g', 'P2h', 'P2i', 'P2k', 'P2n', 'P2o', 'P2p', 'P3', 'W1', 'W2', 'W3', 'W4', 'W5', 'W6',
     'U mute', 'V quality', 'X per-player', 'X2 manual sw', 'X3 stale liv', 'Z hover',
   ];
   const printed = armLog.map((l) => String(l).trim());
