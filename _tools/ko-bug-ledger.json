@@ -897,7 +897,7 @@
     },
     {
       "id": "KO-20261115-10",
-      "state": "fixed",
+      "state": "arm-verified",
       "author": "lane",
       "reported": "2026-11-15",
       "fixed_in": "0.8.94",
@@ -912,14 +912,22 @@
         "Fix: the surface is measured by PAINT (computed style + largest painted node in the subtree), not by class token; the countdown and slate text are read from text nodes inside the player subtree",
         "Fix: the recorder tick asks `adHoldWorthy`, not mere presence, so a permanent squeezeback shell can never log an ad or pause a player",
         "Arms (kick-overlay/ad-detect-test.cjs, now gate check 23): 5 detector arms + 2 beat cases, incl. the slate he pasted and both non-ad controls (promo button, chat text)",
-        "RED: restoring `!/hidden/i.test(className)` makes the measured real ad invisible"
+        "RED: restoring `!/hidden/i.test(className)` makes the measured real ad invisible",
+        "LIVE 2026-11-16, guest Chrome, twitch.tv/jynxzi on 0.8.94: the permanent squeezeback shell measured 714x325 visibility:hidden opacity:0 with a 160x90 inner container; `adUiDetail()` returned null and the native video ran 0 -> 51.7 s with paused:false through three amazon-adsystem `ad-net` requests (no pod played). The detector correctly refused the shell instead of pausing the picture.",
+        "LIVE 2026-11-16, same build: injecting the measured painted shape (1236x695, display:block, visibility:visible, opacity:1) returned {kind:\"wrapper\",w:1236,h:695} and adHoldWorthy=true against the real video element; injecting the text \"Anúncio (0:15)\" into the player subtree returned {kind:\"countdown\",label:\"Anúncio (0:15)\"}.",
+        "Why this is arm-verified and not verified: no REAL preroll was painted in the measured windows (bypass.probe reported adExtinf:0 on every probe), so the two paths are proven against the exact shapes and against a shell that must be refused, not against a live pod."
       ],
-      "owner_validation": "pending: on his next preroll the ring must show `ad-ui-on {match:{kind:\"wrapper\"}}` or `{kind:\"countdown\"|\"slate\"}` inside one 500 ms tick of the ad starting",
-      "next": "Owner: next preroll, `node _tools/ko-adlog-window.mjs 9222 60` must show `ad-ui-on` before the first `ad-hold`."
+      "owner_validation": "pending: a REAL preroll on his Chrome must show `ad-ui-on {match:{kind:\"wrapper\"|\"countdown\"|\"slate\"}}` before the first `ad-hold`.",
+      "next": "Owner: next preroll, `node _tools/ko-adlog-window.mjs 9222 60` must show `ad-ui-on` before the first `ad-hold`.",
+      "verified_by": "live-probe: guest Chrome survey 2026-11-16 (ad-detect-test.cjs arms + a CDP probe of the real page), reviewed against the measured DOM dumps in this change",
+      "verified_at": "2026-11-16",
+      "arms_artifact": "_evidence/KO-20261115-10-arms.md",
+      "reachability_artifact": "_evidence/KO-20261115-10-reachability.txt",
+      "reachability_verdict": "NO-VERDICT"
     },
     {
       "id": "KO-20261115-11",
-      "state": "fixed",
+      "state": "arm-verified",
       "author": "lane",
       "reported": "2026-11-15",
       "fixed_in": "0.8.94",
@@ -933,10 +941,17 @@
         "Fix: one `makePatchedWorker(Native, isShared)` wraps BOTH constructors; the prelude rewrite is identical",
         "Fix: the hook logs `worker-hook {kind:\"worker\"|\"shared\"}` on success and `worker-hook-fail` on failure, so \"no worker-playlist rows\" is never again ambiguous between \"clean playlist\" and \"never seen\"",
         "Arms: a SharedWorker blob is rewritten through the same prelude; the counter counts one of each; the log names which constructor it wrapped",
-        "RED: without the SharedWorker hook the blob URL reaches the native constructor raw, with no prelude"
+        "RED: without the SharedWorker hook the blob URL reaches the native constructor raw, with no prelude",
+        "LIVE 2026-11-16, guest Chrome twitch.tv/jynxzi on 0.8.94, two page loads: stats read `hooks=2 shared=0 fails=0`, `workerPlaylistLog` grew 0 -> 35 digests, and the ring carries `worker-hook {\"kind\":\"worker\",\"ms\":1412}` + `{\"kind\":\"worker\",\"ms\":1432}` at ~1.4 s into each load. The playlist side of the defence is demonstrably attached to a live player.",
+        "Caveat measured, not inferred: `shared=0` on both loads — this channel's player used Workers, so the SharedWorker arm exists and is unit-proven but was not exercised by a live page yet."
       ],
-      "owner_validation": "pending: on his next page load the ring must carry `worker-hook {kind:\"shared\"}` — or `worker-hook-fail` naming the reason",
-      "next": "Owner: next page load, `node _tools/ko-adlog-window.mjs 9222 60` must show a `worker-hook` row."
+      "owner_validation": "pending: a load whose player DOES use SharedWorker must produce `worker-hook {kind:\"shared\"}`; until then that specific arm is unit-only.",
+      "next": "Owner: next page load, `node _tools/ko-adlog-window.mjs 9222 60` must show a `worker-hook` row.",
+      "verified_by": "live-probe: guest Chrome survey 2026-11-16 (ad-detect-test.cjs arms + a CDP probe of the real page), reviewed against the measured DOM dumps in this change",
+      "verified_at": "2026-11-16",
+      "arms_artifact": "_evidence/KO-20261115-11-arms.md",
+      "reachability_artifact": "_evidence/KO-20261115-11-reachability.txt",
+      "reachability_verdict": "NO-VERDICT"
     },
     {
       "id": "KO-20261115-12",
