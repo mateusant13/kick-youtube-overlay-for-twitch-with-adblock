@@ -1630,3 +1630,24 @@ standby request removed). Gate `RESULT PASS checks=23 failed=0`.
 `ad-ui-on` (wrapper or countdown/slate) before the first `ad-hold`, then `ad-ui-hold {act:"paused"}`
 inside one 500 ms tick. Ledger `KO-20261115-10/11/12` stay `fixed`; the older KO-20261115-03 moved to
 `recurrence-watch` because its arms assumed a detector that could never fire.
+
+**Live half, measured 2026-11-16 in the guest on 0.8.94 (`twitch.tv/jynxzi`, `player=twitch`), and the
+answer is half positive, half honest `UNPROVEN`.** Positive: `worker-hook {"kind":"worker","ms":1412}`
+and `{"kind":"worker","ms":1432}` land ~1.4 s into every load, `stats` reads `hooks=2 fails=0`, and
+`workerPlaylistLog` grew 0 → 35 digests — the playlist side is attached to a live player. The detector
+was proven against the exact measured shape: injecting `1236x695 display:block visibility:visible` into
+the page made `adUiDetail()` return `{kind:"wrapper",w:1236,h:695}` with `adHoldWorthy=true`, and
+injecting `Anúncio (0:15)` into the player subtree returned `{kind:"countdown"}`.
+
+Negative, and this is the part worth keeping: in the same windows the page carried its PERMANENT
+squeezeback shell (`stream-display-ad__wrapper` + `_squeezeback` + `_wrapper-hidden`, measured
+714x325 `visibility:hidden` `opacity:0`, inner container 160x90), the ad SDK requested three
+`s.amazon-adsystem.com` frames, and **no pod ever painted** — `bypass.probe` reported
+`adExtinf:0 adOnly:false` on every probe and the native video ran 0 → 51.7 s with `paused:false`.
+So the detector refused the shell instead of pausing the picture, which is the guard that matters.
+
+`shared=0` on both loads is stated as a limit, not smoothed over: that channel's player used Workers,
+so `KO-20261115-11` is `arm-verified`, and the SharedWorker arm is unit-proven only until a live page
+whose player actually uses one produces `worker-hook {kind:"shared"}`. `KO-20261115-10` is
+`arm-verified` (exact shapes + a shell correctly refused); `KO-20261115-12` stays `fixed` because
+`requestStandby(0,true)` was never reached from a real hold — no pod meant no hold.
