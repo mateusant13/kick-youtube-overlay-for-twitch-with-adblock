@@ -1696,3 +1696,91 @@ disabled in 0.8.15 because the clean autoplay variant uses an MSE profile Twitch
 and the defence that replaced it is the page overlay (`AD_BYPASS_ENABLED`), triggered by
 `liveMedia && info.adExtinf > 0`. An `adOnly:true` playlist therefore reaches `maybeStartBypass()`, not
 a silent no-op — that is the path a real pod has to be judged on, and it needs a pod.
+
+## Wave record — 2026-11-16, the mute button's level, the hover the IVS layer never reported, and a seek the element could not hold (0.8.96/0.8.97)
+
+Owner reports, verbatim, both this wave: *"por algum motivo o botao de mutar e desmutar funciona de forma
+inconsistente. até fora de anuncio rodando. normalmente vnedo live mesmo"* and, earlier the same day,
+*"hover nao mostrava o player"*. Both were answered from his own `ko.adlog` and from the code path that
+could not produce a row, not from an opinion about the code.
+
+**1. The mute lost the level it silenced.** His 0.8.95 ring, outside any pod (`claimed:null`, `vis:"twitch"`):
+
+```
+audio-intent {before:{muted:false,volume:1}, after:{muted:true, volume:0}}   <- Twitch writes muted+volume 0
+audio-intent {before:{muted:true, volume:0}, after:{muted:false,volume:0}}   <- unmute, still silent
+audio-intent {before:{muted:false,volume:0}, after:{muted:false,volume:1}}   <- the level, only if the page sends it
+```
+
+One gesture, three rows, and the sound came back only because the player happened to send the last event.
+Persisting `volume:0` threw his level away, so `{muted:false, volume:0}` was a silent tab whose bar said
+audible. A mute now keeps `prevIntent.volume` (`volume: Math.abs(lvl) > 0.001 ? lvl : clamp(prevIntent.volume)`),
+so one unmute click restores the level with no second event. Arms: "a mute remembers the level it
+silenced", "one unmute click restores the sound without a second event", RED without the memory.
+
+**2. The hover relay existed only in the hls.js branch.** `player-bridge.js` installed `{t:'ptr'}` inside
+the hls.js wiring; the kick layer runs on IVS, so it posted no pointer activity at all and the page's own
+rectangle hit-test is exactly what a full-size frame swallows. The relay now installs once, after the
+engine branch, and says `{t:'ptr', engine}`. The arm for it is the vocabulary the next report needs:
+`bar-arm {src:'frame'|'page'|'bar'|'boot'}` on the hidden→shown transition and `bar-hide {why:'timer'}`,
+transition-only (a row per pointermove is the sample-not-transition defect this file already paid for).
+
+**3. A hand-back seek aimed past the downloaded media parked the native.** `seekCovered`'s pod-sized
+escape admitted any forward seek, and `buffered.end` is not a ceiling the browser respects: it clamps,
+the element parks at `rs<3`, and `play()` cannot start (his "trava ... e pra destravar eu tenho q clicar
+em pause despause", same class as KO-20261114-01). The landing is now kept `HEALTH_BUFFER_SEC` this side
+of what the element holds **whenever the live edge is the 2^30 sentinel** - a REAL edge means hls.js will
+fetch from that offset, so the cold-preroll hand-back still lands at `edge-3`. A target the element cannot
+hold is skipped with both numbers (`native-seek-skipped {from,to,buffered,rs}`).
+
+**4. `cleanPos` is NOT a clock.** The first attempt at "go to frame 101 where the 360p was" compared the
+clean frame's `pos` with the native's `currentTime`; they are two session clocks with different origins
+(his ring: native `ct 33.2 / buf 38.1` while the clean frame reported `pos 44.9 / lat 6.2`). The idea was
+reverted before it shipped, and the row that made it look plausible now carries its inputs instead:
+`native-handoff {podAgeMs, holdCt, cleanHold, cleanPos, cleanLat, cleanLatSrc}`. The verdict tool prints
+`no recovery ran (pod age …s, stamped at ct=…)` - and says `build < 0.8.96 does not log the decision
+inputs` rather than inventing "the wall clock was never stamped" from an absent field.
+
+**5. A keystroke authorized Twitch's own ad volume.** `volumeCapableTarget` accepted ANY keydown, and the
+old gate only protected the `muted` direction: eleven `audio-refused {why:"stale-input", el:{volume:0.32}}`
+rows ended when a keystroke was fresh, and `{muted:false, volume:0.32}` became intent - his "ai mutou a
+live". Only `m`/`ArrowUp`/`ArrowDown` authorize a volume now, and a volume **drop** passes the same control
+test as a mute (a raise/UNMUTE is never refused, so a refused mute can never trap a silent tab).
+`audio-refused` and `audio-intent` carry `inputTarget` and `volumeCapable`.
+
+**6. A paused standby was chased forever, and the chase bought nothing.** His own 0.8.96 ring
+(`twitch.tv/lua_hx`, `player=kick`, read with `ko-adlog-window.mjs 9222 1200`) repeats one row for two
+minutes: `overlay-catchup {hold:8.04, lat:8, pos:82, source:"standby"}` -> `{hold:9, lat:9, pos:87}` ->
+`{pos:93}` -> `{pos:103}` ... and the shape is structural, not a bug in the arithmetic. `catchUpClean`
+lands at `pos + hold - HEALTH_BUFFER_SEC`, where `hold` is the distance to the newest DOWNLOADED frame:
+a PAUSED playhead never moves while that frontier advances at 1x, so the same seek is due again the
+moment the buffer grows past the gap - and every one of them threw away the hls.js buffer it had just
+filled. `lat` never closed in twenty rows. A standby is caught up when it is REVEALED
+(`revealOverlay` asks once and waits `REVEAL_AWAIT_MS` for the new position), so the periodic chase is
+skipped while the frame reports `paused`, and the skip is a row, once per latency signature:
+`overlay-catchup-skip {why:'standby-paused', lat, pos}`. Arms (both directions, this file's rule): a
+parked standby gets zero seeks and exactly one skip row across four samples; the RED removes the guard
+and the same samples seek every time.
+
+**7. The verdict printed the manifest's build over another build's rows.** `VERDICT build=0.8.96` sat
+above an episode whose every row said `ver=0.8.95` - a stale tab is exactly the case where the two
+disagree, and the reader is supposed to answer "which build wrote this". It now prints the episode's own
+boot version and names the manifest beside it: `VERDICT build=0.8.95 (manifest=0.8.96)`.
+
+**Live, measured in the guest on 0.8.96 (`twitch.tv/rodil`, `player=twitch`):** `muteauthor` →
+`PASS pointer/bar accepted with their author, machine mute refused`, and the ring shows one intent per
+click with the level kept: `audio-intent {before:{muted:false,volume:0.5}, after:{muted:true,volume:0.5}}`
+then `{before:{muted:true,volume:0.5}, after:{muted:false,volume:0.5}}` and
+`audio-state {audible:1, el:"0|0.50"}`. `audio --seconds=45` → `ONE` (no duplicated surface in the standby
+state). Gate `RESULT PASS checks=23 failed=0`; `mute-decision` 57 checks, `ad-time-continuity` **82**
+(two new arms, each with its RED: "a paused standby is not chased: no seek, and the skip is said once per
+signature" and the pre-fix `catch-up scope/threshold` mutation retargeted at the new dispatch line).
+
+Items 1-5 shipped in **0.8.96** and were measured on it; items 6-7 shipped in **0.8.97** (the installed copy
+reports `loaded=0.8.97`, and the byte-level check that matters here is the VERSION bump: `ko-reload-persistent`
+compares versions only, so a fix landed under an unchanged version reads as "already current").
+
+**Owed, and named:** the frame's `bar-arm {src:"frame"}` row needs a pod on his Chrome (the guest cannot
+summon one and the bar only exists where the layer owns the picture); one `native-handoff` on a sentinel
+edge must show either `native-edge-recover` with `runway >= 3` or `native-seek-skipped`, and never
+`native-resume {rs:1}`; and a pod's `audio-intent` must be absent for Twitch's 0.32 volume.

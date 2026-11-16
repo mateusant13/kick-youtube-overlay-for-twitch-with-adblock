@@ -561,6 +561,25 @@
   let lastInputAt = 0;
   let lastInputKind = '';
   let lastInputVolumeCapable = false;
+  // WHICH element took the input. "He clicked" is not an answer: a click on the
+  // player's volume button and a click on the picture are the same event, and
+  // the difference decides whether a mute is his. The row carries it so the
+  // next reader does not have to guess (owner order 2026-11-16: "TUDO ISSO
+  // deveria estar nos logs").
+  let lastInputTarget = null;
+  function describeTarget(t) {
+    try {
+      if (!t || typeof t !== 'object') return null;
+      if (t.id) return `#${t.id}`;
+      const attr = (t.getAttribute && (t.getAttribute('data-a-target') || t.getAttribute('aria-label'))) || '';
+      if (attr) return String(attr).slice(0, 40);
+      const tag = String(t.tagName || '').toLowerCase();
+      const cls = String((t.className && t.className.baseVal) || t.className || '').split(/\s+/)[0];
+      return (tag || '?') + (cls ? `.${cls.slice(0, 30)}` : '');
+    } catch {
+      return null;
+    }
+  }
   // WHICH input, not just WHEN. Freshness alone cannot tell a click on the
   // player's volume button from a click anywhere else on the page followed by
   // the machine muting its own element. Measured in the owner's ko.adlog
@@ -590,10 +609,24 @@
       // cannot change a volume refutes the mute; unknown is not a refutation.
       if (!t) return true;
       if (t.closest && t.closest(VOLUME_CONTROL_SEL)) return true;
-      // A keyboard shortcut ('m' is Twitch's mute) has no target control, and
-      // the owner does use it. Only pointer-like inputs are held to the target.
+      // A keyboard shortcut can change a volume, but ONLY the keys that do:
+      // Twitch's player binds `m` to mute and ArrowUp/ArrowDown to volume.
+      // Accepting ANY keydown made every other key the owner presses — space to
+      // pause, a letter typed in chat, an arrow used to seek — authorize
+      // whatever the player wrote next. Measured in his own ko.adlog 2026-11-16
+      // (0.8.95, twitch.tv/iolkaida):
+      //   audio-refused {intent:{volume:1}, el:{volume:0.32}, why:"stale-input"}   (x11)
+      //   ... then, 528 ms after a keydown:
+      //   audio-intent  {before:{volume:1}, after:{volume:0.32}, ev:{input:"keydown", inputAgeMs:528}}
+      // 0.32 is Twitch's own ad volume: the same value the arbiter had been
+      // REFUSING all pod long, accepted once because a keystroke was fresh.
+      // That is his "ai mutou a live". An UNMUTE is still accepted from any
+      // fresh input (see the caller), so a refused mute can never trap a silent
+      // tab, and every refusal names itself in `audio-refused`.
       const kind = String((ev && ev.type) || '');
-      return kind === 'keydown';
+      if (kind !== 'keydown') return false;
+      const key = String((ev && (ev.key || ev.code)) || '');
+      return key === 'm' || key === 'M' || key === 'ArrowUp' || key === 'ArrowDown';
     } catch {
       return false;
     }
@@ -602,6 +635,7 @@
     lastInputAt = Date.now();
     lastInputKind = String((ev && ev.type) || '');
     lastInputVolumeCapable = volumeCapableTarget(ev);
+    lastInputTarget = describeTarget(ev && ev.target);
   }
   function installInputClock() {
     const targets = [];
@@ -774,26 +808,57 @@
       // opened started muted and "só desmuta se eu ligar e desligar o som".
       // Only a mute arriving on a control that can carry a volume is his. An
       // UNMUTE is never refused here: refusing it would trap a silent tab.
-      if (!!el.muted && !lastInputVolumeCapable) {
+      // ...and the same is true of a volume DROP. The gate above only covered
+      // the `muted` direction, so Twitch's ad volume arriving fresh after a
+      // keystroke became intent as `{muted:false, volume:0.32}` — a slash he
+      // can hear and cannot explain (owner 2026-11-16: "ai mutou a live", with
+      // the same 0.32 the arbiter had refused eleven times in that pod). A
+      // LOWERING is the harm; a raise can only make the tab louder than he
+      // asked, and refusing that would trap a quiet tab.
+      const prevVolume = +Number(intentOf(owner).volume || 0);
+      const lowering = !!el.muted || +Number(el.volume || 0) < prevVolume - 0.01;
+      if (lowering && !lastInputVolumeCapable) {
         report('audio-refused', {
           why: 'not-volume-control',
+          dir: el.muted ? 'mute' : 'drop',
           owner,
-          el: { muted: true, volume: +Number(el.volume || 0).toFixed(2) },
+          el: { muted: !!el.muted, volume: +Number(el.volume || 0).toFixed(2) },
           sinceInputMs: lastInputAt ? Date.now() - lastInputAt : null,
           input: lastInputKind || null,
+          inputTarget: lastInputTarget || null,
           intent: { muted: !!intentOf(owner).muted, volume: clamp(intentOf(owner).volume) },
         });
         apply();
         return;
       }
       policy.delete(owner);
-      const patch = { muted: !!el.muted, volume: Number(el.volume) };
+      // A MUTE REMEMBERS THE LEVEL IT SILENCED. Twitch's own volume button writes
+      // `muted:true` AND `volume:0`, and persisting that 0 threw the level away:
+      // unmuting then reported `{muted:false, volume:0}` - unmuted by intent,
+      // silent by volume, the bar icon saying "sound on" - until the player
+      // happened to send a SECOND volumechange. That is the owner's "o botao de
+      // mutar e desmutar funciona de forma inconsistente ... normalmente vendo
+      // live mesmo" (2026-11-16), and his ring shows both halves of it:
+      //   audio-intent {before:{muted:false,volume:1}, after:{muted:true,volume:0}}
+      //   audio-intent {before:{muted:true,volume:0},  after:{muted:false,volume:0}}
+      //   audio-intent {before:{muted:false,volume:0}, after:{muted:false,volume:1}}
+      // One gesture, three rows, and a restore that depends on the page sending
+      // the last event. The decision is "muted"; the level is what he had, and
+      // `want()` applies the 0 only while muted.
+      const prevIntent = intentOf(owner);
+      const lvl = Number(el.volume);
+      const patch = {
+        muted: !!el.muted,
+        volume: Math.abs(lvl) > 0.001 ? lvl : clamp(prevIntent.volume),
+      };
       // The ONLY path allowed to call a volumechange the user's: a fresh input
       // and a real activation, both stated in the line so the owner's question
       // ("veio do meu clique ou do código?") is answered by the log itself.
       const gestureEvidence = {
         input: lastInputKind || null,
         inputAgeMs: lastInputAt ? Date.now() - lastInputAt : null,
+        inputTarget: lastInputTarget || null,
+        volumeCapable: lastInputVolumeCapable,
         userActive: userActive(),
         ownWrite: false,
       };

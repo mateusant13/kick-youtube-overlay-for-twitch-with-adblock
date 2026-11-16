@@ -394,6 +394,27 @@ function makeWorld(opts, extra) {
     clickDocumentTarget(target) {
       for (const f of (document.listeners.pointerdown || []).slice()) f({ type: 'pointerdown', target });
     },
+    // A KEYSTROKE with no volume control behind it. Twitch's player writes its
+    // own volume during an ad; the arbiter has to tell a real volume key from a
+    // space bar typed while the ad rolls (owner report 2026-11-16).
+    pressKey(key, target) {
+      const t = target || { tagName: 'DIV', closest: () => null };
+      for (const f of (document.listeners.keydown || []).slice()) f({ type: 'keydown', target: t, key });
+    },
+    // The MACHINE lowering the page video's volume — Twitch writes 0.32 for an
+    // ad, which is audible as "mutou a live" without ever setting muted.
+    machineDropsVolume(v) {
+      video.volume = v;
+      document.fire({ type: 'volumechange', target: video });
+    },
+    // Any element state Twitch's own controls write, in one event: its mute
+    // button sets `muted:true` AND `volume:0`, and un-muting emits
+    // `{muted:false, volume:0}` before the level comes back.
+    machineSetsNative(muted, volume) {
+      video.muted = !!muted;
+      video.volume = volume;
+      document.fire({ type: 'volumechange', target: video });
+    },
     // The MACHINE muting the page video while a click is still fresh (owner
     // report 2026-11-11: he clicks to recover the delay, Twitch mutes its own
     // element as the pod takes over). No pointerdown is fired here: the click
@@ -720,9 +741,108 @@ async function main() {
     });
   }
 
+  // ---- 2c5: a mute remembers the level it silenced ----------------------
+  // Owner report 2026-11-16, verbatim: "o botao de mutar e desmutar funciona de
+  // forma inconsistente ... normalmente vendo live mesmo". His ring (0.8.95)
+  // shows one gesture producing three intents, and the unmute depending on the
+  // page sending a LAST event:
+  //   audio-intent {before:{muted:false,volume:1}, after:{muted:true,volume:0}}
+  //   audio-intent {before:{muted:true,volume:0},  after:{muted:false,volume:0}}
+  //   audio-intent {before:{muted:false,volume:0}, after:{muted:false,volume:1}}
+  // Persisting the 0 threw his level away, so `{muted:false, volume:0}` was a
+  // silent tab that the bar reported as audible.
+  {
+    const page = makeWorld({});
+    await runPod(page, { mutedBeforeAd: false });
+    page.bypass({ type: 'ad-end' });
+    await new Promise((r) => setTimeout(r, 2800));
+    const ctl = { tagName: 'BUTTON', closest: (sel) => (/ko-mute|ko-vol|volume|mute/i.test(String(sel)) ? {} : null) };
+    page.clickDocumentTarget(ctl);
+    page.machineSetsNative(true, 0); // Twitch's button: muted AND volume 0
+    check('a mute remembers the level it silenced', () => {
+      assert(page.audio.intent('twitch').muted === true, 'the mute was not recorded');
+      assert(page.audio.intent('twitch').volume > 0.5,
+        `the level was thrown away: intent.volume=${page.audio.intent('twitch').volume}`);
+    });
+    page.clickDocumentTarget(ctl);
+    page.machineSetsNative(false, 0); // the page's own intermediate, and NOTHING after it
+    check('one unmute click restores the sound without a second event', () => {
+      assert(page.audio.intent('twitch').muted === false, 'the unmute was not recorded');
+      assert(page.audio.intent('twitch').volume > 0.5,
+        `intent.volume=${page.audio.intent('twitch').volume}: the tab is silent and says audible`);
+      assert(page.video.volume > 0.5, `the element was left at volume ${page.video.volume}`);
+    });
+  }
+  {
+    const blind = AUDIO.split('        volume: Math.abs(lvl) > 0.001 ? lvl : clamp(prevIntent.volume),').join('        volume: lvl,');
+    if (blind === AUDIO) throw new Error('the mute-memory mutation did not apply');
+    const page = makeWorld({ audioSource: blind });
+    await runPod(page, { mutedBeforeAd: false });
+    page.bypass({ type: 'ad-end' });
+    await new Promise((r) => setTimeout(r, 2800));
+    const ctl = { tagName: 'BUTTON', closest: (sel) => (/ko-mute|ko-vol|volume|mute/i.test(String(sel)) ? {} : null) };
+    page.clickDocumentTarget(ctl);
+    page.machineSetsNative(true, 0);
+    page.clickDocumentTarget(ctl);
+    page.machineSetsNative(false, 0);
+    check('RED: without the memory, the intermediate leaves a silent tab saying audible', () => {
+      assert(page.audio.intent('twitch').muted === false && page.audio.intent('twitch').volume === 0,
+        `the mutant ended at ${JSON.stringify(page.audio.intent('twitch'))}, so the arms above measure nothing`);
+    });
+  }
+
+  // ---- 2c4: a volume DROP is a silence too, and a stray keystroke is not a
+  // volume key. Measured in the owner's ko.adlog 2026-11-16 (0.8.95,
+  // twitch.tv/iolkaida): the arbiter refused Twitch's own `volume:0.32`
+  // ELEVEN times as `stale-input`, then accepted it once a keydown landed
+  // 528 ms before it — `audio-intent {before:{volume:1}, after:{volume:0.32},
+  // ev:{input:"keydown", inputAgeMs:528}}`. That is his "ai mutou a live": not a
+  // mute, a slash he cannot explain.
+  {
+    const page = makeWorld({});
+    await runPod(page, { mutedBeforeAd: false });
+    page.bypass({ type: 'ad-end' });
+    await new Promise((r) => setTimeout(r, 2800));
+    page.pressKey(' '); // space: pauses Twitch's player, cannot carry a volume
+    page.machineDropsVolume(0.32); // the player's own ad volume
+    check('a volume drop after a key that cannot change a volume is refused', () => {
+      assert(page.audio.intent('twitch').volume > 0.5,
+        `intent volume became ${page.audio.intent('twitch').volume} from a space bar (the drop was recorded as his)`);
+      assert(page.video.volume > 0.5, 'the page surface was left quiet');
+    });
+  }
+  {
+    const page = makeWorld({});
+    await runPod(page, { mutedBeforeAd: false });
+    page.bypass({ type: 'ad-end' });
+    await new Promise((r) => setTimeout(r, 2800));
+    page.pressKey('ArrowDown'); // Twitch's own volume-down key
+    page.machineDropsVolume(0.5);
+    check('ArrowDown IS a volume key: the drop after it is the user choice', () => {
+      assert(Math.abs(page.audio.intent('twitch').volume - 0.5) < 0.01,
+        `intent volume is ${page.audio.intent('twitch').volume}; the guard refused a real volume key`);
+    });
+  }
+  {
+    // RED: the same mutation the 2c3 control uses, measured on the drop. If this
+    // passes, the arm above is not measuring the guard.
+    const blind = AUDIO.split('if (lowering && !lastInputVolumeCapable) {').join('if (false && lowering && !lastInputVolumeCapable) {');
+    if (blind === AUDIO) throw new Error('the volume-drop mutation did not apply');
+    const page = makeWorld({ audioSource: blind });
+    await runPod(page, { mutedBeforeAd: false });
+    page.bypass({ type: 'ad-end' });
+    await new Promise((r) => setTimeout(r, 2800));
+    page.pressKey(' ');
+    page.machineDropsVolume(0.32);
+    check('RED: without the drop guard a space bar records the ad volume as his', () => {
+      assert(Math.abs(page.audio.intent('twitch').volume - 0.32) < 0.01,
+        'the mutant refused it too: the arm above is not measuring the guard');
+    });
+  }
+
   // ---- 2c3: RED control — without the control test the click muting returns.
   {
-    const blind = AUDIO.split('if (!!el.muted && !lastInputVolumeCapable) {').join('if (false && !!el.muted && !lastInputVolumeCapable) {');
+    const blind = AUDIO.split('if (lowering && !lastInputVolumeCapable) {').join('if (false && lowering && !lastInputVolumeCapable) {');
     if (blind === AUDIO) throw new Error('the control-test mutation did not apply');
     const page = makeWorld({ audioSource: blind });
     await runPod(page, { mutedBeforeAd: false });

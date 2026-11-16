@@ -308,7 +308,7 @@ const NOT_CHANNEL = new Set([
 
 // Build marker for the diag stream — lets us tell which code a tab runs
 // (content scripts of pre-reload tabs survive extension reloads).
-const KO_VER = '0.8.95';
+const KO_VER = '0.8.97';
 // How long a lost picture may last before the native player is allowed to
 // reclaim the screen (owner 2026-11-11: an ad and the player fighting).
 const OWNER_GRACE_MS = 6000;
@@ -1248,7 +1248,7 @@ window.addEventListener('message', (ev) => {
     // Pointer activity INSIDE the overlay player (the frame swallows the page's
     // own pointer events). Arming here is what makes the bar appear when the
     // mouse moves over the picture, every time, not just before the first hide.
-    if (KO._hotArm) KO._hotArm();
+    if (KO._hotArm) KO._hotArm('frame');
   } else if (m.t === 'st') {
     // Carry a wall-clock freshness stamp ON the state object so the kick
     // LIVE pill (P3b) has a production-honest clock — 0.8.5 kept a stale
@@ -2108,14 +2108,22 @@ function renderQualityMenu() {
 function setupHotBar(wrap) {
   teardownHotBar();
   KO.hotWrap = wrap;
-  const armHot = () => {
+  // A TRANSITION, not a sample: the bar going from hidden to shown is the fact
+  // worth a row, and it names what armed it (`frame` = the overlay player's own
+  // pointer relay, `page` = the page's rectangle hit-test). Owner report
+  // 2026-11-16: "hover nao mostrava o player" - and the vocabulary that decides
+  // where to look for the row that explains it is this one.
+  const armHot = (src) => {
     if (!KO.hotWrap) return;
+    const wasHot = KO.hotWrap.classList.contains('ko-hot');
     KO.hotWrap.classList.add('ko-hot');
+    if (!wasHot) diag('bar-arm', { src: src || 'page' });
     clearTimeout(KO.hotTimer);
     KO.hotTimer = setTimeout(() => {
       if (!KO.hotWrap) return;
       if (KO.hotWrap.classList.contains('ko-hot-lock')) return; // the mouse is still ON the bar
       KO.hotWrap.classList.remove('ko-hot');
+      diag('bar-hide', { why: 'timer' });
     }, 2600);
   };
   KO._hotArm = armHot;
@@ -2125,11 +2133,11 @@ function setupHotBar(wrap) {
     const r = w.getBoundingClientRect();
     if (!r.width || !r.height) return;
     if (e.clientX >= r.left && e.clientX <= r.left + r.width &&
-        e.clientY >= r.top && e.clientY <= r.top + r.height) armHot();
+        e.clientY >= r.top && e.clientY <= r.top + r.height) armHot('page');
   };
-  wrap.addEventListener('pointermove', armHot);
-  wrap.addEventListener('pointerdown', armHot);
-  wrap.addEventListener('mouseenter', armHot);
+  wrap.addEventListener('pointermove', () => armHot('page'));
+  wrap.addEventListener('pointerdown', () => armHot('page'));
+  wrap.addEventListener('mouseenter', () => armHot('page'));
   // While the pointer sits ON the bar it stays up; a timer must never hide the
   // controls under a mouse that is still there (the other half of "o ux ta uma
   // merda" on 2026-11-11).
@@ -2137,16 +2145,16 @@ function setupHotBar(wrap) {
     clearTimeout(KO.hotTimer);
     KO.hotTimer = null;
     if (!KO.hotWrap) return;
-    KO.hotWrap.classList.add('ko-hot');
+    armHot('bar');
     KO.hotWrap.classList.add('ko-hot-lock');
   });
   wrap.addEventListener('pointerleave', () => {
     if (KO.hotWrap) KO.hotWrap.classList.remove('ko-hot-lock');
-    armHot();
+    armHot('page');
   });
   document.addEventListener('pointermove', KO._hotArmDoc, true);
   document.addEventListener('pointerdown', KO._hotArmDoc, true);
-  armHot();
+  armHot('boot');
 }
 
 function teardownHotBar() {

@@ -568,22 +568,6 @@ if (HLS_MODE) {
     try { V.addEventListener(ev, sendStSoon); } catch { /* not ready */ }
   }
   setInterval(sendSt, 1000);
-  // The frame covers the whole player, so a pointer over the picture never
-  // reaches the page: the page's own hover listener is blind exactly where the
-  // user moves the mouse ("passar o mouse e fazer hover pra mostrar o player
-  // tambem e inconsistente", owner 2026-11-11). Report pointer activity upward,
-  // coalesced, and let the page arm its bar from it.
-  let ptrAt = 0;
-  const ptrTick = () => {
-    const now = Date.now();
-    if (now - ptrAt < 120) return;
-    ptrAt = now;
-    post({ t: 'ptr' });
-  };
-  try {
-    for (const ev of ['pointermove', 'pointerdown']) document.addEventListener(ev, ptrTick, { capture: true, passive: true });
-    document.addEventListener('pointerleave', () => { ptrAt = 0; }, { passive: true });
-  } catch { /* a document without pointer events */ }
   // Report the first real frame immediately. The 1/s `st` heartbeat can lag
   // up to a second; the content script uses this to swap surfaces exactly when
   // the clean player can paint, not on a fixed timeout.
@@ -923,3 +907,27 @@ try {
 setInterval(sendSt, 1000);
 post({ t: 'ready' });
 } // /else (IVS engine)
+
+// ---- pointer relay (BOTH engines) ---------------------------------------
+// The frame covers the whole player, so a pointer over the picture never
+// reaches the page: the page's own hover listener is blind exactly where the
+// user moves the mouse ("passar o mouse e fazer hover pra mostrar o player
+// tambem e inconsistente", owner 2026-11-11). This relay used to live INSIDE
+// the hls.js branch, so the kick layer -- which runs on IVS -- never posted a
+// single `ptr`: its bar could only be re-armed by the page's own rectangle
+// hit-test, and the frame swallows exactly those events (owner 2026-11-16:
+// "hover nao mostrava o player"). Installed once, for whichever engine loaded,
+// and it says which engine it is under so the row is not a guess.
+try {
+  let ptrAt = 0;
+  let engine = 'hls';
+  try { engine = window.IVSPlayerModule ? 'ivs' : 'hls'; } catch { /* unknown */ }
+  const ptrTick = () => {
+    const now = Date.now();
+    if (now - ptrAt < 120) return;
+    ptrAt = now;
+    post({ t: 'ptr', engine });
+  };
+  for (const ev of ['pointermove', 'pointerdown']) document.addEventListener(ev, ptrTick, { capture: true, passive: true });
+  document.addEventListener('pointerleave', () => { ptrAt = 0; }, { passive: true });
+} catch { /* a document without pointer events */ }

@@ -596,7 +596,20 @@
     // `buffered.end` 26.1 (0.5 s of runway) parked the element at rs:1, then
     // `native-catchup to 27.6` with 28.1 parked it again — twice in one second
     // under a picture that had already stalled.
-    return want - from >= POD_RECOVER_MIN;
+    //
+    // AND THE ASK IS NOT THE LANDING. Measured in the owner's own ring
+    // 2026-11-16 (0.8.95, twitch.tv/iolkaida, the pod he described):
+    //   native-edge-recover {behind:22.4, from:23.4, to:39.7, gap:16.3, edge:"buffered"}
+    //   native-resume       {ct:39.7, rs:1, selfPaused:22.4}  video-pause {rs:1}
+    // `buffered.end` was 42.3, so the landing left 2.6 s of runway: below
+    // HEALTH_BUFFER_SEC, i.e. the exact stall this function exists to refuse,
+    // admitted because the DISTANCE was pod-sized. A pod-sized ask may only be
+    // accepted when the element holds enough media to land this side of the
+    // frontier, because `resumeNative` clamps the target to that landing. The
+    // remaining deficit is closed by the next hand-back, when Twitch has
+    // downloaded more — a picture that plays at 3 s behind is the product; a
+    // picture parked at rs:1 until the user clicks pause/unpause is not.
+    return want - from >= POD_RECOVER_MIN && end > 0 && end - from >= HEALTH_BUFFER_SEC + RESUME_GAP_SEC;
   }
   stats.seekCovered = seekCovered;
   function nativeLatency(v) {
@@ -1558,6 +1571,18 @@
       if (seek) {
         let want = from;
         let why = null;
+        // `cleanPos` CANNOT BE THE TARGET, and this is measured rather than a
+        // matter of taste: the clean frame's `pos` is ITS OWN media element's
+        // clock (0 when the frame mounts), while the native's `currentTime` is
+        // the page player's clock (0 when the tab loaded). Two origins, so
+        // `cleanPos - from` is meaningless - his own 0.8.95 ring shows the
+        // native at `ct 33.2 / buf 38.1` while the clean frame reported
+        // `pos 44.9 / lat 6.2`, i.e. the native's whole timeline is shorter than
+        // the clean one. Only DELTAS are comparable: `lat` (distance to the
+        // edge) and `behind` (the time the element missed). So the hand-off keeps
+        // the wall clock as its clock and LOGS the numbers that decide the
+        // recovery (`native-handoff`), instead of inventing a seek between
+        // incomparable timelines.
         if (se <= 0 && overlay.holdAt) {
           const at = overlay.holdAt;
           const ct0 = Number(overlay.holdCt || 0);
@@ -1647,6 +1672,25 @@
         // Readiness is a precondition of length, never a competitor to it.
         const readyForPodSeek = Number(v.readyState || 0) >= 3;
         if (!covered && readyForPodSeek && why === 'edge-recover' && overlay.recoverBehind >= POD_RECOVER_MIN) covered = true;
+        // THE ASK IS NOT THE LANDING (owner ring 2026-11-16: `to:39.7` with
+        // `buffered.end` 42.3 landed at 2.6 s of runway and parked the element
+        // at rs:1 until he clicked pause/unpause). Whatever the request, the
+        // landing stays HEALTH_BUFFER_SEC this side of what the element holds,
+        // and the row says the target it could not reach.
+        const askedWant = want;
+        const runwayEnd = nativeBufferedEnd(v);
+        // ONLY WHEN THE EDGE IS UNUSABLE does `buffered.end` bound the landing.
+        // A REAL seekable edge means hls.js will fetch from that offset, so a
+        // `want` behind it is legal however much is downloaded (the cold-preroll
+        // hand-back depends on it: the element sits at 0.2 s with 40 s buffered
+        // and must come back at the live edge, not at `buffered.end - 3`).
+        // A sentinel edge means nobody can tell what is seekable, and there the
+        // newest downloaded frame is the only place `play()` can start.
+        if (covered && se <= 0 && runwayEnd > 0 && want > runwayEnd - HEALTH_BUFFER_SEC) {
+          const land = +(runwayEnd - HEALTH_BUFFER_SEC).toFixed(1);
+          if (land > from + RESUME_GAP_SEC) want = land;
+          else covered = false; // nothing landable ahead: doing nothing IS the recovery
+        }
         if (!covered) {
           adLogState('native-seek-skipped', {
             why: 'no-data',
@@ -1667,6 +1711,13 @@
             why,
           };
           if (why.startsWith('edge-recover')) payload.behind = overlay.recoverBehind;
+          // A clamped landing is a DIFFERENT decision from the one the wall
+          // clock asked for: say both numbers, or the next reader cannot tell a
+          // 16 s recovery from a 13 s one.
+          if (want !== askedWant) {
+            payload.asked = +askedWant.toFixed(1);
+            payload.runway = +(runwayEnd - want).toFixed(1);
+          }
           overlay.recoverBehind = 0;
           adLogState(why.startsWith('edge-recover') ? 'native-edge-recover' : 'native-catchup', payload);
         }
@@ -1949,6 +2000,15 @@
           // forward buffer, or a seekable end. A 9 s steady state that never
           // closes is a different bug depending on this field.
           cleanLatSrc: (overlay.lastSt && overlay.lastSt.latSrc) || null,
+          // THE INPUTS OF THE RECOVERY DECISION, in the row that starts it. The
+          // verdict could only say `recovery NEVER RAN` for his 2026-11-16
+          // hand-back, because `holdAt`/`holdCt` were consumed here and never
+          // logged: the next reader had to re-read this file to learn whether the
+          // wall clock had been stamped at all. A decision without its inputs in
+          // the log is the "os logs nao devem ser hints" defect again.
+          podAgeMs: overlay.holdAt ? Date.now() - overlay.holdAt : null,
+          holdCt: overlay.holdCt == null ? null : +Number(overlay.holdCt).toFixed(1),
+          cleanHold: overlay.lastSt && isFinite(Number(overlay.lastSt.hold)) ? +Number(overlay.lastSt.hold).toFixed(2) : null,
         });
       } catch { /* ignore */ }
       // CSS back (mute ownership never left the authority); the claim was
@@ -2744,7 +2804,32 @@
         // CLEAN_LAT_REVEAL_MAX. Before 2026-11-07 this only ran while an ad was
         // active and only above 20s, so a warm standby could sit 5-19s behind
         // and be revealed as-is.
-        if ((overlay.adActive || overlay.standby) && typeof m.st.lat === 'number') catchUpClean(m.st);
+        // A PAUSED STANDBY THAT IS CHASED NEVER CONVERGES. `catchUpClean` seeks
+        // to `pos + hold - HEALTH_BUFFER_SEC`, and hold is the distance to the
+        // newest DOWNLOADED frame: a paused playhead never moves while that
+        // frontier advances at 1x, so the same seek fires again as soon as the
+        // buffer grows past the gap. The owner's own 0.8.96 ring (2026-11-16,
+        // twitch.tv/lua_hx, player=kick) shows it running forever:
+        // `overlay-catchup {hold:8.04, lat:8, pos:82, source:"standby"}` ->
+        // `{hold:9, lat:9, pos:87}` -> `{pos:93}` -> `{pos:103}` ... 20 rows over
+        // two minutes, `lat` never closing, each one throwing away the hls.js
+        // buffer it had just filled. A standby is caught up WHEN IT IS REVEALED
+        // (revealOverlay asks once and waits for the new position), so the
+        // paused case has nothing to gain and a decoder to lose.
+        if ((overlay.adActive || overlay.standby) && typeof m.st.lat === 'number') {
+          const pausedStandby = !!overlay.standby && !overlay.revealed && !!m.st.paused;
+          if (pausedStandby) {
+            const sig = String(Math.round(Number(m.st.lat)));
+            if (sig !== overlay.catchupSkipSig) {
+              overlay.catchupSkipSig = sig;
+              adLog('overlay-catchup-skip', { why: 'standby-paused', lat: +Number(m.st.lat).toFixed(1), pos: +Number(m.st.pos || 0).toFixed(1) });
+            }
+          } else if (catchUpClean(m.st)) {
+            overlay.catchupSkipSig = '';
+          } else {
+            overlay.catchupSkipSig = '';
+          }
+        }
         if (m.st.state === 'Playing') {
           // HAVE_FUTURE_DATA plus four seconds of forward buffer is the minimum
           // that survived the ad-heavy 2026-10-23 channels without a freeze.

@@ -1876,24 +1876,63 @@ async function main() {
     };
     let mark = await lastSeq();
 
-    // (1) HIS POINTER: a real trusted click, then the element's own volume
-    //     changes — exactly what Twitch's volume button does.
-    try { await s.page.click('video', { real: true, settle: 120 }); } catch { await s.page.click('body', { real: true, settle: 120 }); }
+    // (1) HIS POINTER: a real trusted click ON A VOLUME CONTROL, then the
+    //     element's own volume change. A click on the PICTURE is not one: the
+    //     owner's own 2026-11-16 report ("ai mutou a live") was a machine volume
+    //     write accepted because a keystroke was fresh, and 0.8.96 accepts a
+    //     mute or a volume DROP only from a control that can carry a volume.
+    //     Clicking `video` here measured the old, too-broad rule.
+    let volCtl = null;
+    let volCtlCovered = false;
+    try {
+      const probe = await s.page.evalMain(`(() => {
+        const sels = ['[data-a-target="player-mute-unmute-button"]','[data-a-target="player-volume-slider"]','[data-a-target*="volume"]','[data-a-target*="mute"]'];
+        for (const q of sels) {
+          const e = document.querySelector(q);
+          if (!e) continue;
+          const r = e.getBoundingClientRect();
+          if (!r.width || !r.height) continue;
+          const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+          return { sel: q, covered: !!(top && top.tagName === 'IFRAME') };
+        }
+        return null;
+      })()`);
+      if (probe && probe.sel) { volCtl = probe.sel; volCtlCovered = !!probe.covered; }
+    } catch { /* no page */ }
+    if (volCtl && !volCtlCovered) await s.page.click(volCtl, { real: true, settle: 120 });
+    else await s.page.click('video', { real: true, settle: 120 });
     // Write the OPPOSITE of what the ELEMENT currently holds, not the opposite
     // of the intent. A held-muted element (kick mode keeps the native muted
     // because it is not the visible surface) already equals `!intent.muted`, so
     // writing that value is a no-op that fires NO volumechange and the arm then
     // reports `origin=NONE` for a correct build — measured 2026-11-13. The
     // gesture the reader must see is a real change on the element.
+    // EVERY element, not "the first one with data": the page carries more than
+    // one <video> (the ad/preview element was measured at h=360), and the
+    // arbiter's `main()` picks its own. Writing to a different element than the
+    // arbiter reads produced NO row at all and the arm reported a correct build
+    // as a failure (measured 2026-11-16: `left no audio-refused line`).
     await s.page.evalMain(`(() => {
-      const v = [...document.querySelectorAll('video')].find((x) => x.isConnected && x.readyState > 0) || document.querySelector('video');
-      if (!v) return false;
-      v.muted = !v.muted;
-      if (v.volume === 0) v.volume = 0.5;
-      return v.muted;
+      const vs = [...document.querySelectorAll('video')].filter((x) => x.isConnected);
+      if (!vs.length) return false;
+      for (const v of vs) {
+        v.muted = !v.muted;
+        if (v.volume === 0) v.volume = 0.5;
+      }
+      return vs.length;
     })()`);
     await delay(900);
-    rows.push({ step: 'pointer', origin: lastOrigin(await readSince(mark)), want: 'user:pointer' });
+    const pointerUnmeasurable = !volCtl || volCtlCovered;
+    rows.push(pointerUnmeasurable
+      ? {
+        step: 'pointer',
+        origin: 'N/A',
+        want: 'N/A',
+        why: volCtl
+          ? `the volume control (${volCtl}) is covered by the overlay layer: a real click on the picture cannot reach it, and a click on the picture is not a volume gesture`
+          : 'this page exposes no volume control to click',
+      }
+      : { step: 'pointer', origin: lastOrigin(await readSince(mark)), want: 'user:pointer' });
     mark = await lastSeq();
 
     // (2) THE CODE: the extension's own bar button, via a real click on it.
@@ -1933,11 +1972,15 @@ async function main() {
       const v = [...document.querySelectorAll('video')].find((x) => x.isConnected && x.readyState > 0) || document.querySelector('video');
       return v ? { muted: v.muted, volume: v.volume } : null;
     })()`);
+    // THE FLIP, not a fixed direction: a write that sets the value the element
+    // already holds fires NO volumechange, and the arm then reports a correct
+    // build as "left no audio-refused line" (measured 2026-11-16 in
+    // player=twitch, right after the pointer step left the element unmuted).
+    const flipTo = elBefore ? !elBefore.muted : false;
     await s.page.evalMain(`(() => {
       const v = [...document.querySelectorAll('video')].find((x) => x.isConnected && x.readyState > 0) || document.querySelector('video');
       if (!v) return false;
-      if (v.volume === 0) v.volume = 0.5;
-      v.muted = false; // the machine trying to make the page audible
+      v.muted = ${JSON.stringify(flipTo)}; // the machine, with no input near it
       return true;
     })()`);
     await delay(900);
@@ -1964,14 +2007,21 @@ async function main() {
 
     const stale = rows.find((r) => r.step === 'stale');
     const fails = [];
-    if (!/^user:pointer/.test(rows[0].origin)) fails.push(`pointer step origin=${rows[0].origin}`);
+    const pointerN_A = rows[0] && rows[0].origin === 'N/A';
+    if (!pointerN_A && !/^user:pointer/.test(rows[0].origin)) fails.push(`pointer step origin=${rows[0].origin}`);
+    if (pointerN_A) rows[0].ok = 'N/A: ' + rows[0].why;
     if (hit && !/^user:ui:bar/.test(rows[1].origin)) fails.push(`bar step origin=${rows[1].origin}`);
     if (stale.origin !== 'NONE') fails.push(`stale change was ACCEPTED as ${stale.origin}`);
     if (!stale.refused) fails.push('stale change left no audio-refused line');
     if (stale.why !== 'stale-input') fails.push(`refusal reason=${stale.why} (want stale-input)`);
     if (stale.intentMoved) fails.push('stale change moved the intent');
-    if (stale.elementAfter && stale.elementAfter.muted === false) {
-      fails.push('the arbiter did not re-assert the machine element back to muted');
+    // RE-ASSERTED means "back to what the intent says", not "muted": the stale
+    // step flips whatever direction the element was in, so a hard-coded
+    // expectation of `muted === true` failed a correct build the moment the
+    // intent was "audible" (measured 2026-11-16).
+    const wantMuted = !!(afterMute && afterMute.muted);
+    if (stale.elementAfter && !!stale.elementAfter.muted !== wantMuted) {
+      fails.push(`the arbiter did not re-assert the machine element back to the intent (muted=${wantMuted})`);
     }
     // Only a mode that is SUPPOSED to mount the bar can fail this step.
     if (!hit && mode !== 'twitch') fails.push(`bar was never visible in player=${mode}: the ui author is UNPROVEN here`);

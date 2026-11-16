@@ -44,8 +44,8 @@ const PRE_FIX_OWNER = [[
 ]];
 // 1. catch-up only inside an ACTIVE ad and only above 20s.
 const PRE_FIX_CATCHUP = [[
-  "if ((overlay.adActive || overlay.standby) && typeof m.st.lat === 'number') catchUpClean(m.st);",
-  "if (overlay.adActive && typeof m.st.lat === 'number' && m.st.lat > 20) catchUpClean(m.st);",
+  "        if ((overlay.adActive || overlay.standby) && typeof m.st.lat === 'number') {",
+  "        if (overlay.adActive && typeof m.st.lat === 'number' && m.st.lat > 20) {",
 ]];
 // 2. hand-off seeked to the buffered end - 0.5 (a free jump, never aligned).
 const PRE_FIX_HANDOFF = [[
@@ -270,27 +270,35 @@ async function main() {
     await new Promise((r) => setTimeout(r, 12200));
     page.bypass({ type: 'ad-end' });
     await settle(30);
-    check('a frozen native with an unusable edge is seeked forward by the time it missed', () => {
+    // THE CONTRACT THIS ARM NOW HOLDS IS THE OPPOSITE OF WHAT IT HELD BEFORE, and
+    // the owner's own 2026-11-16 report is why: "ao voltar pro player da twitch,
+    // ele TRAVA inves de voltar pro tempo real ... e pra destravar eu q tenho q
+    // clicar em pause despause". A wall-clock target that sits PAST the newest
+    // downloaded frame is a seek into nothing: the browser clamps it, the
+    // element parks at rs:1, and the picture stays frozen until he clicks. With
+    // 1 s of runway (his log's `buf 101` over `ct 100` shape) there is no
+    // forward landing inside the data the element holds, so doing nothing IS the
+    // recovery - Twitch refills from its own live edge. The skip says both
+    // numbers instead of silently parking the element.
+    check('a recovery target past the downloaded data is skipped, and the skip carries both numbers', () => {
       const v = page.video;
       const rec = page.logsOf('native-edge-recover');
-      assert(rec.length === 1, `expected one recovery seek, got ${rec.length}`);
-      const behind = rec[0].d.behind;
-      assert(behind > 1.5, `logged deficit ${behind} is below the seek threshold`);
-      assert(v.currentTime > 101, `currentTime ${v.currentTime} was not moved forward`);
-      // The landing is the offset the CLEAN player was showing, not the edge:
-      // `pod()` announces lat 3, so the continuous target is 100 + behind - 3.
-      // Landing on `100 + behind` would skip the last 3 s of pictures he
-      // actually watched (owner report 2026-11-13, "cortou a fala").
-      assert(Math.abs(v.currentTime - (100 + behind - 3)) < 0.6,
-        `currentTime ${v.currentTime} != ${100 + behind - 3} (watched offset, cleanLat 3)`);
-      assert(v.currentTime < 100 + behind, 'the hand-back landed on the live edge, past what was on screen');
+      assert(rec.length === 0, `the hand-back seeked into undownloaded media: ${JSON.stringify(rec[0] && rec[0].d)}`);
+      const skip = page.logsOf('native-seek-skipped');
+      assert(skip.length === 1, `expected one native-seek-skipped, got ${skip.length}`);
+      assert(Math.abs(skip[0].d.from - 100) < 0.2, `from ${skip[0].d.from} is not the frozen position`);
+      assert(skip[0].d.to > 105, `to ${skip[0].d.to} did not record the wall-clock target`);
+      assert(Math.abs(skip[0].d.buffered - 101) < 0.2, `buffered ${skip[0].d.buffered} is not the element's own end`);
+      assert(Math.abs(v.currentTime - 100) < 0.2, `currentTime ${v.currentTime} moved on a refused seek`);
     });
   }
   {
     // RED: the pre-fix hand-back, with the wall-clock recovery removed.
+    // RED: the runway clamp removed -> the hand-back seeks 9 s into media the
+    // element does not hold, which is the freeze the arm above refuses.
     const mutated = mutate([[
-      "      if (se <= 0 && overlay.holdAt) {",
-      "      if (false && se <= 0 && overlay.holdAt) {",
+      "        if (covered && se <= 0 && runwayEnd > 0 && want > runwayEnd - HEALTH_BUFFER_SEC) {",
+      "        if (false && covered && se <= 0 && runwayEnd > 0 && want > runwayEnd - HEALTH_BUFFER_SEC) {",
     ]]);
     const page = makeWorld(mutated);
     setNative(page, { ct: 100, edge: 1073741824, bufferedEnd: 101 });
@@ -298,9 +306,9 @@ async function main() {
     await new Promise((r) => setTimeout(r, 12200));
     page.bypass({ type: 'ad-end' });
     await settle(30);
-    check('RED: without the wall-clock recovery the delayed native stays delayed', () => {
-      assert(page.video.currentTime < 106,
-        `the mutated hand-back recovered to ${page.video.currentTime}, so the arm above measures nothing`);
+    check('RED: without the runway clamp the hand-back seeks past the downloaded data', () => {
+      assert(page.video.currentTime > 106,
+        `the mutant left the element at ${page.video.currentTime}, so the arm above measures nothing`);
     });
   }
   {
@@ -682,6 +690,59 @@ async function main() {
     });
   }
 
+  // ---- 10a2b. a PAUSED standby is not chased (the owner's own 0.8.96 ring) --
+  // twitch.tv/lua_hx, player=kick, 2026-11-16: `overlay-catchup {hold:8.04,
+  // lat:8, pos:82, source:"standby"}` -> `{hold:9, lat:9, pos:87}` ->
+  // `{pos:93}` -> `{pos:103}` ... twenty rows over two minutes, `lat` never
+  // closing. The playhead is PAUSED and the frontier it measures against moves
+  // at 1x, so the same seek is due again as soon as the buffer grows past the
+  // gap - and every one of them threw away the hls.js buffer it had filled.
+  {
+    const page = makeWorld();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    page.bypass({ type: 'standby-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+    await settle(20);
+    page.frameMsg({ t: 'ready' });
+    // Three healthy-but-PARKED reports, then the steady shape: 9 s behind, 8 s
+    // of downloaded media in hand, the playhead never moving.
+    for (let i = 0; i < 3; i++) page.frameMsg(healthySt({ state: 'Paused', paused: true, pos: 82, lat: 9, buffered: 8.5 }));
+    await settle(10);
+    const before = page.seeks().length;
+    for (let i = 0; i < 4; i++) {
+      page.frameMsg(healthySt({ state: 'Paused', paused: true, pos: 82 + i * 5, lat: 9, buffered: 8.5 }));
+      await settle(2200); // past the 2 s catch-up throttle
+    }
+    check('a paused standby is not chased: no seek, and the skip is said once per signature', () => {
+      const seeked = page.seeks().length - before;
+      assert(seeked === 0, `a paused standby was seeked ${seeked}x: ${JSON.stringify(page.seeks().slice(before))}`);
+      const skips = page.logsOf('overlay-catchup-skip');
+      assert(skips.length === 1, `expected one transition row, got ${skips.length}`);
+      assert(skips[0].d.why === 'standby-paused', `wrong reason: ${skips[0].d.why}`);
+      assert(page.logsOf('overlay-catchup').length === 0, 'a catch-up row was written for a paused standby');
+    });
+  }
+  {
+    // RED: the guard is what stops it. Without it the same four samples seek.
+    const page = makeWorld({
+      adSource: mutate([[`          const pausedStandby = !!overlay.standby && !overlay.revealed && !!m.st.paused;`, '          const pausedStandby = false;']]),
+    });
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    page.bypass({ type: 'standby-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+    await settle(20);
+    page.frameMsg({ t: 'ready' });
+    for (let i = 0; i < 3; i++) page.frameMsg(healthySt({ state: 'Paused', paused: true, pos: 82, lat: 9, buffered: 8.5 }));
+    await settle(10);
+    const before = page.seeks().length;
+    for (let i = 0; i < 3; i++) {
+      page.frameMsg(healthySt({ state: 'Paused', paused: true, pos: 82 + i * 5, lat: 9, buffered: 8.5 }));
+      await settle(2200);
+    }
+    check('RED: without the paused-standby guard the same samples seek every time', () => {
+      const seeked = page.seeks().length - before;
+      assert(seeked >= 1, 'the mutant did not seek either: the arm measures nothing');
+    });
+  }
+
   // ---- 10a3. no seek the element cannot cover (the 7 s freeze) -----------
   // Owner report 2026-11-12: "travou por uns 7 segundos. depois, destravou".
   // His ko.adlog: `native-handoff {buf:468, ct:468}` -> `native-edge-recover
@@ -723,7 +784,15 @@ async function main() {
   {
     // RED: without the guard the same hand-back seeks into nothing.
     const page = makeWorld({
-      adSource: mutate([['        let covered = seekCovered(v, want);', '        let covered = true;']]),
+      adSource: mutate([
+        ['        let covered = seekCovered(v, want);', '        let covered = true;'],
+        // and the runway clamp, which is a second guard on the same harm: a RED
+        // that leaves it armed measures the clamp, not the guard under test.
+        [
+          '        if (covered && se <= 0 && runwayEnd > 0 && want > runwayEnd - HEALTH_BUFFER_SEC) {',
+          '        if (false && covered && se <= 0 && runwayEnd > 0 && want > runwayEnd - HEALTH_BUFFER_SEC) {',
+        ],
+      ]),
     });
     setNative(page, { ct: 468, edge: 1073741824, bufferedEnd: 468 });
     page.video.readyState = 1;
@@ -793,10 +862,18 @@ async function main() {
     // RED: the pre-fix escape hatch, which ignored readiness. This is the
     // defect itself, rebuilt from his own log line.
     const page = makeWorld({
-      adSource: mutate([[
-        '        const readyForPodSeek = Number(v.readyState || 0) >= 3;\n        if (!covered && readyForPodSeek && why === \'edge-recover\' && overlay.recoverBehind >= POD_RECOVER_MIN) covered = true;',
-        '        if (!covered && why === \'edge-recover\' && overlay.recoverBehind >= POD_RECOVER_MIN) covered = true;',
-      ]]),
+      adSource: mutate([
+        [
+          '        if (!covered && readyForPodSeek && why === \'edge-recover\' && overlay.recoverBehind >= POD_RECOVER_MIN) covered = true;',
+          '        if (!covered && why === \'edge-recover\' && overlay.recoverBehind >= POD_RECOVER_MIN) covered = true;',
+        ],
+        // and the runway clamp, added after this RED was written: leaving it
+        // armed would make the mutant measure the clamp instead of the gap.
+        [
+          '        if (covered && se <= 0 && runwayEnd > 0 && want > runwayEnd - HEALTH_BUFFER_SEC) {',
+          '        if (false && covered && se <= 0 && runwayEnd > 0 && want > runwayEnd - HEALTH_BUFFER_SEC) {',
+        ],
+      ]),
     });
     setNative(page, { ct: 30.1, edge: 1073741824, bufferedEnd: 42.4 });
     page.video.readyState = 2;
@@ -833,7 +910,11 @@ async function main() {
     // before `buffered.end` parks the element at rs:1), and only pays that price
     // for the delay a whole pod costs. `POD_RECOVER_MIN` is 10 s.
     const page = makeWorld();
-    setNative(page, { ct: 100, edge: 1073741824, bufferedEnd: 101 });
+    // RUNWAY, not 1 s: the 2026-11-16 clamp refuses a landing past the data the
+    // element holds (that refusal is its own arm). This arm measures the
+    // different contract - ONE seek per hand-back, none from the retries - so it
+    // needs a target the element can actually reach.
+    setNative(page, { ct: 100, edge: 1073741824, bufferedEnd: 130 });
     await pod(page);
     await new Promise((r) => setTimeout(r, 12200));
     // Count every write to the native clock from here on.
@@ -873,7 +954,10 @@ async function main() {
           '      const target = se > 0 ? Math.max(0, se - cleanLat) : Math.max(0, nativeBufferedEnd(v) - 0.5);'],
       ]),
     });
-    setNative(page, { ct: 100, edge: 1073741824, bufferedEnd: 101 });
+    // The same runway the arm above uses: the mutant restores the pre-fix aim,
+    // and the clamp (armed here, since this mutant is about the retries) must
+    // not be what produces the second write.
+    setNative(page, { ct: 100, edge: 1073741824, bufferedEnd: 130 });
     await pod(page);
     await new Promise((r) => setTimeout(r, 12200));
     let writes = 0;

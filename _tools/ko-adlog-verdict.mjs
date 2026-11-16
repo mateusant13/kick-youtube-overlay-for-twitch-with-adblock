@@ -250,6 +250,15 @@ function reportEpisode(ep, idx) {
       recovered: rec ? { nudged: rec.d && rec.d.nudged, rs: rec.d && rec.d.rs, after: rec.t - h.t } : null,
       skipped: !!skipped,
       seeked: recover ? +(recover.d && recover.d.to) : null,
+      // The recovery DECISION's inputs, logged on the hand-off row itself: a
+      // verdict that says `recovery NEVER RAN` must be able to say whether the
+      // wall clock was even stamped, or the next reader re-reads the source.
+      // `null` and "absent" are different facts: a ring written before 0.8.96
+      // has no field at all, and claiming the wall clock "was never stamped"
+      // from an absent field is an invented finding.
+      podAgeMs: h.d && Object.prototype.hasOwnProperty.call(h.d, 'podAgeMs') ? h.d.podAgeMs : undefined,
+      holdCt: h.d && h.d.holdCt,
+      clock: recover && recover.d ? recover.d.clock || null : null,
     });
   }
 
@@ -416,7 +425,13 @@ function reportEpisode(ep, idx) {
         h.reloaded ? 'native RELOADED to a new timeline' : null,
         h.seeked != null ? `seeked to ${h.seeked}s` : null,
         h.skipped ? 'seek refused: no data in hand' : null,
-        h.recovered ? `recovery after ${fmt(h.recovered.after)} nudged=${h.recovered.nudged} rs=${h.recovered.rs}` : 'recovery NEVER RAN',
+        h.recovered
+          ? `recovery after ${fmt(h.recovered.after)} nudged=${h.recovered.nudged} rs=${h.recovered.rs}`
+          : h.podAgeMs === undefined
+            ? 'recovery NEVER RAN (build < 0.8.96 does not log the decision inputs)'
+            : h.podAgeMs === null
+              ? 'recovery NEVER RAN (the wall clock was never stamped at take-over)'
+            : `no recovery ran (pod age ${fmt(h.podAgeMs / 1000)}s, stamped at ct=${h.holdCt}) - deficit under the 1.5s floor or the element reloaded`,
       ].filter(Boolean);
       lines.push(`    ${fmt(h.t - ep.start).padStart(7)}  ${bits.join('  ')}`);
       if (h.rs != null && h.rs < 3) findings.push(`hand-back at ${fmt(h.t - ep.start)} resumed at rs=${h.rs} (parked)`);
@@ -483,6 +498,20 @@ function reportEpisode(ep, idx) {
   return { lines, findings };
 }
 
+// The build that ANSWERED is the build the ROWS were written by, never the
+// manifest the browser happens to hold now. Printing the manifest beside an
+// episode booted by an older script read as "0.8.96 verdict" over 0.8.95 rows
+// (measured 2026-11-16), which is the reader-lying class this file exists to
+// avoid: a stale tab is exactly the case where the two disagree.
+function episodeBuilds(list) {
+  const seen = [];
+  for (const ep of list) {
+    const v = String((ep && ep.ver) || '').trim();
+    if (v && !seen.includes(v)) seen.push(v);
+  }
+  return seen.length ? seen.join('+') : '?';
+}
+
 // ---- run -------------------------------------------------------------------
 let ver = '?';
 let log;
@@ -509,9 +538,9 @@ for (let i = 0; i < eps.length; i += 1) {
 }
 console.log('');
 if (findings.length) {
-  console.log(`VERDICT build=${ver} defects=${findings.length}`);
+  console.log(`VERDICT build=${episodeBuilds(eps)} (manifest=${ver}) defects=${findings.length}`);
   for (const f of findings) console.log(`  - ${f}`);
   process.exit(1);
 }
-console.log(`VERDICT build=${ver} clean`);
+console.log(`VERDICT build=${episodeBuilds(eps)} (manifest=${ver}) clean`);
 process.exit(0);
