@@ -146,6 +146,10 @@
   // the native where Twitch left it; the clean overlay either covers or the
   // native ad stays visible.
   const AD_REWIND_SEC = 0;
+  // How long a pod opened from the playlist alone may cover the native. It has
+  // no page lifecycle to end it, and the measured failure was 180 s of a 360p
+  // cover over an ad that lasted 3 s (owner ring 2026-11-16).
+  const AD_POD_MAX_MS = 60000;
   // ---- live-time alignment (owner report 2026-11-07) ----------------------
   // Three of the four owner symptoms are one property: the clean player and
   // the native player must sit at the SAME small offset from the live edge.
@@ -194,6 +198,20 @@
   // 1-2s; past 3s the honest move is to hand the native back (the handoff
   // seeks to the live edge, which also skips the rest of the pod).
   const COLD_COVER_BOUND_MS = 3000;
+  // ONE POD PER AD BREAK. The two signals that open and close a pod disagree:
+  // the playlist keeps the ad segments listed for minutes after the break
+  // (`worker-playlist {adExtinf:16, extinf:17}` in the owner's 2026-11-16 ring),
+  // while the page's own detector correctly reports the ad UI leaving. Measured
+  // on twitch.tv/srdogg, 0.8.97: pod #1 ended at ms 25977 (`native-handoff
+  // {podAgeMs:23235}`) and a playlist-derived `ad-hold` re-opened a pod 717 ms
+  // later (`cold-cover {ct:22.6}`), so the native and the clean player swapped
+  // the screen three times in 28 s - the "they fight" report in its 0.8.78 form.
+  // After a pod ends, a hold from the playlist is refused for this window
+  // UNLESS the page's own detector sees an ad right now.
+  const AD_REOPEN_COOLDOWN_MS = 30000;
+  // A clean-source switch aborts the load in flight; the floor must exceed the
+  // time a fresh live url takes to produce frames (~10 s measured).
+  const SWITCH_FLOOR_MS = 12000;
   const RESUME_GAP_SEC = 1.5; // a smaller native/clean difference is not worth a seek
   // How long a reveal waits for the frame to report the position its catch-up
   // seek aimed at. One frame report is ~1 s; past this the picture is shown
@@ -270,6 +288,7 @@
     lastRect: null, // last REAL player rect, kept through a degenerate tick
     smallRectSince: 0, // when the rect first went degenerate (0 = healthy)
     timeoutTimer: 0,
+    lastEndAt: 0, // when the last pod ended (feeds AD_REOPEN_COOLDOWN_MS)
     extTimer: 0,
     adEndTimer: 0,
     adEndTries: 0,
@@ -1889,6 +1908,7 @@
     // player. Stopping it must not post overlay-stop (that clears the worker's
     // ad state without an ad) and must not resume/seek the native player.
     const wasStandby = !!overlay.standby && !overlay.revealed && !overlay.adActive;
+    if (!wasStandby) overlay.lastEndAt = Date.now();
     try { clearTimeout(overlay.extTimer); } catch { /* ignore */ }
     overlay.extTimer = 0;
     try { clearTimeout(overlay.adEndTimer); } catch { /* ignore */ }
@@ -2154,7 +2174,7 @@
     // A revealed player must sit at the same offset the native had. A standby
     // that is only 4-8s behind is still a visible delay against the native
     // edge, so pull it in before it is shown.
-    if (wasStandby && overlay.lastSt && Number(overlay.lastSt.lat) > cleanLatTarget() + 1.5) {
+    if (overlay.lastSt && Number(overlay.lastSt.lat) > cleanLatTarget() + 1.5) {
       // A SEEK AND A REVEAL IN THE SAME TICK IS A REVEAL AT THE OLD POSITION.
       // The frame applies the seek asynchronously, so raising it here puts a
       // picture on screen that is still the distance the seek was meant to
@@ -3029,6 +3049,16 @@
         switch: !!msg.switch,
         hasUrl: !!msg.url,
         reason: msg.reason ? String(msg.reason).slice(0, 80) : null,
+        // The playlist evidence a cover was opened from, and the ceiling that
+        // closed it. `ad-hold` used to arrive here with no numbers at all.
+        from: msg.from || null,
+        adExtinf: msg.adExtinf === undefined ? null : msg.adExtinf,
+        extinf: msg.extinf === undefined ? null : msg.extinf,
+        adOnly: msg.adOnly === undefined ? null : msg.adOnly,
+        hasStitched: msg.hasStitched === undefined ? null : msg.hasStitched,
+        adChanged: msg.adChanged === undefined ? null : msg.adChanged,
+        podAgeMs: msg.podAgeMs === undefined ? null : msg.podAgeMs,
+        markerAgeMs: msg.markerAgeMs === undefined ? null : msg.markerAgeMs,
       });
       if (document.documentElement.getAttribute('data-ko-adblock') === '0') {
         stopAdOverlay('disabled');
@@ -3036,6 +3066,23 @@
       }
       if (msg.type === 'ad-hold') {
         if (!AD_OVERLAY_ENABLED) return;
+        if (
+          !overlay.adActive &&
+          overlay.lastEndAt &&
+          Date.now() - overlay.lastEndAt < AD_REOPEN_COOLDOWN_MS &&
+          !adUiDetail()
+        ) {
+          // The playlist marker that produced the pod we just closed is still
+          // there, and the page itself shows no ad. Refusing is the whole fix:
+          // the marker cannot be trusted to say the ad is still running.
+          adLog('ad-skip', {
+            reason: 'cooldown',
+            sinceEndMs: Date.now() - overlay.lastEndAt,
+            adUi: null,
+            markerAdExtinf: msg.adExtinf === undefined ? null : msg.adExtinf,
+          });
+          return;
+        }
         if (overlayOwnsPlayback()) {
           // No cover, no claim, no native pause: the overlay player is what the
           // user is watching and it never carries this ad.
@@ -3866,6 +3913,10 @@
     // other token types and only adopt one that actually has content segments.
     let fallbackAttemptAt = 0;
     let adBypassActive = false;
+    // The last playlist refresh that carried ad evidence, and when this pod
+    // opened. Both feed AD_POD_MAX_MS below.
+    let lastAdMarker = null;
+    let bypassStartedAt = 0;
     let bypassBusy = false;
     let lastBypassAt = 0;
     let cleanPlaylistStreak = 0;
@@ -3903,7 +3954,18 @@
     // fresh ad-start; the page rebuilds the hls.js iframe with it.
     async function switchCleanSource(channel) {
       if (bypassBusy || switchBusy) return;
-      if (Date.now() - lastSwitchAt < 4000) return;
+      // A SWITCH NEEDS AS LONG AS A LIVE LOAD, NOT 4 SECONDS. Measured in the
+      // owner's 2026-11-16 ring (twitch.tv/srdogg, 0.8.97): two `ad-start
+      // {switch:true}` 8.2 s apart, and the reveal between them reported
+      // `advanced:0.1 since:7708ms` - the first switch's frame was still filling
+      // when the second one replaced it, so the picture that went up was a
+      // rebuilt player showing its own first seconds (the "repeticoes"). A fresh
+      // live url needs ~10 s to first frames on this product's own measurement,
+      // so the floor sits above that and the refusal is a row.
+      if (Date.now() - lastSwitchAt < SWITCH_FLOOR_MS) {
+        postBypass({ type: 'switch-skip', channel: channel || lastChannel, reason: 'loading', sinceMs: Date.now() - lastSwitchAt });
+        return;
+      }
       switchBusy = true;
       lastSwitchAt = Date.now();
       try {
@@ -3995,7 +4057,27 @@
       if (Date.now() - lastBypassAt < 15000) return;
       bypassBusy = true;
       lastBypassAt = Date.now();
-      postBypass({ type: 'ad-hold', channel: lastChannel });
+      // WHO STARTED THIS POD. `ad-hold` was posted here with no row at all, so a
+      // page load with `ad-ui-on=0` and no `ad-hold` left the ring unable to say
+      // what covered the native: the owner's 2026-11-16 load on fredthefinch has
+      // `ad-rewind-skip {reason:"standby"}` and an `overlay-reveal` and nothing
+      // naming the trigger. `ad-bypass-start` is the transition that answers it,
+      // and it carries the playlist evidence that produced the decision.
+      // The worker region has no `adLog` (it is a separate eval scope: calling it
+      // threw `ReferenceError: adLog is not defined`), so the playlist evidence
+      // that opens this pod rides the message the page side already logs as
+      // `bypass-msg`. Without it a load with `ad-ui-on=0` and no DOM signal has
+      // an `overlay-reveal` and nothing naming what covered the native.
+      postBypass({
+        type: 'ad-hold',
+        channel: lastChannel,
+        from: 'playlist',
+        adExtinf: lastAdMarker ? lastAdMarker.adExtinf : undefined,
+        extinf: lastAdMarker ? lastAdMarker.extinf : undefined,
+        adOnly: lastAdMarker ? lastAdMarker.adOnly : undefined,
+        hasStitched: lastAdMarker ? lastAdMarker.hasStitched : undefined,
+        adChanged: lastAdMarker ? lastAdMarker.changed : undefined,
+      });
       try {
         let url = null;
         let prewarmAge = 0;
@@ -4021,6 +4103,7 @@
         if (!url) url = await withTimeout(findCleanHlsUrl(lastChannel), 10000);
         if (url) {
           adBypassActive = true;
+          bypassStartedAt = Date.now();
           postBypass({ type: 'ad-start', channel: lastChannel, url });
         } else {
           postBypass({ type: 'ad-fail', channel: lastChannel });
@@ -4270,6 +4353,36 @@
           const info = playlistInfo(text);
           const clean = stripAds(text);
           const liveMedia = isLiveMediaUrl(url);
+          if (liveMedia && info.extinf > 0 && info.adExtinf > 0) {
+            lastAdMarker = { at: Date.now(), adExtinf: info.adExtinf, extinf: info.extinf, adOnly: info.adOnly, hasStitched: info.hasStitched, changed: info.adExtinf !== (lastAdMarker && lastAdMarker.adExtinf) ? true : null };
+          }
+          // A POD OPENED FROM THE PLAYLIST HAS NO PAGE LIFECYCLE TO CLOSE IT.
+          // `ad-start` is posted here, not by a page element, so nothing on the
+          // page ever reports `ad-end`: the pod ends on the clean-playlist
+          // streak or on the page-side 180 s timeout. Measured in the owner's own
+          // ring 2026-11-16 (twitch.tv/fredthefinch, 0.8.97): the ad's own
+          // playlist window was `adOnly:true` for 3 s and then content came back
+          // while 16 ad segments stayed listed, so the streak never reached two
+          // and `native-handoff {podAgeMs:180008}` closed the pod THREE MINUTES
+          // after the ad was over - 360p on screen for the whole wait. A real
+          // break is under a minute, so a playlist-derived pod may not outlive
+          // AD_POD_MAX_MS; past it the native is handed back and the row says so.
+          if (adBypassActive && bypassStartedAt && Date.now() - bypassStartedAt > AD_POD_MAX_MS) {
+            const podAgeMs = Date.now() - bypassStartedAt;
+            adBypassActive = false;
+            cleanPlaylistStreak = 0;
+            bypassStartedAt = 0;
+            postBypass({
+              type: 'ad-end',
+              channel: lastChannel,
+              reason: 'pod-max',
+              podAgeMs,
+              adExtinf: info.adExtinf,
+              extinf: info.extinf,
+              adOnly: info.adOnly,
+              markerAgeMs: lastAdMarker ? Date.now() - lastAdMarker.at : undefined,
+            });
+          }
           if (info.extinf > 0) {
             if (liveMedia && info.adExtinf > 0) {
               // Any stitched ad, not just an all-ad preroll. A midroll can be

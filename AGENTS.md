@@ -1784,3 +1784,100 @@ compares versions only, so a fix landed under an unchanged version reads as "alr
 summon one and the bar only exists where the layer owns the picture); one `native-handoff` on a sentinel
 edge must show either `native-edge-recover` with `runway >= 3` or `native-seek-skipped`, and never
 `native-resume {rs:1}`; and a pod's `audio-intent` must be absent for Twitch's 0.32 volume.
+
+## Wave record — 2026-11-16 (later), the pod that ran for three minutes over a three-second ad (0.8.98)
+
+Owner, verbatim: *"veja oq aconteceu de errado agora nos logs."* Read from his own ring
+(`ko-adlog-verdict.mjs --episodes=3`, `ko-adlog-window.mjs 9222 1200`), page load
+`twitch.tv/fredthefinch`, build 0.8.97, `player=kick`:
+
+```
+   1.7s  kick_offline  {why:"v1/channels/fredthefinch|404"}     <- no kick mirror: no layer at all
+  every  hb            {tw:{ct:0,paused:true,rs:1}, twLive:true}  <- the page's 1080p element never played
+   8.0s  content-play  {video:{h:360,w:640,muted:true,paused:false,rs:4}}  <- Twitch's own muted 360p
+ 5m06.8  ad-rewind-skip {reason:"standby", ms:306780}
+ 5m06.8  reveal-caught-up {lat:4.8, target:3}
+ 5m06.8  audio-claim   {to:"ad", visible:"ad"}
+ 5m06.9  overlay-reveal {reason:"standby", q:"360p", clean:{pos:184, muted:true, lat:4.8}}
+ 5m06.9  audio-mismatch {phase:"swap", frameMuted:true, wantMuted:false}   <- the swap's silent second
+ 5m08.3  unmute-ok     {tries:0}
+ 8m06.8  native-handoff {podAgeMs:180008, ct:0, holdCt:0, cleanPos:364.1, cleanLat:4.9}
+```
+
+Three facts, and only the third is ours:
+
+1. **The channel has no kick mirror**, so `player=kick` had nothing to mount (`kick:null`, `wrapShown:false`,
+   `bar:null` for the whole load). The extension correctly fell back — there was no layer to switch to.
+2. **The page's own 1080p element never played** (`ct:0, paused:true, rs:1` on every heartbeat, `muted:false`, tab
+   unfocused) while a `360p` element played `muted:true`. That is Twitch's own muted-autoplay fallback (the reading
+   is inference; the element states are measured), and it is the 360p he saw.
+3. **Our pod covered it for 180 s over an ad that lasted 3 s.** `maybeStartBypass()` posts `ad-hold` from the
+   playlist hook when `adExtinf > 0`, and it wrote **no row at all** — the ring had `ad-rewind-skip {reason:"standby"}`
+   and an `overlay-reveal` and nothing naming what opened the pod. The pod's only end is "two clean playlist
+   refreshes" or the page-side 180 s timeout, and `worker-playlist` shows why the first never fired: after the ad's
+   `adOnly:true` window (3 s) the playlist kept `adExtinf:16` beside one content segment, so `adExtinf` never reached
+   0 and `cleanPlaylistStreak` never reached 2. `native-handoff {podAgeMs:180008}` is that wait.
+
+Two changes, both about the pod's boundary rather than its picture:
+
+- **`ad-bypass-start {channel, from:"playlist", adExtinf, extinf, adOnly, hasStitched, changed}`** is the row that
+  names the trigger, and a playlist-derived pod now ends at **`AD_POD_MAX_MS = 60000`** with
+  `ad-pod-max {podAgeMs, adExtinf, extinf, adOnly, markerAgeMs}` plus `ad-end {reason:"pod-max"}`. A real break is
+  under a minute; a cover with no page lifecycle to close it must carry its own ceiling, and the trade is stated:
+  a midroll longer than 60 s now shows its tail instead of being covered. The alternative was three minutes of a
+  360p cover, measured.
+- The swap's silent second is the one already bounded: `audio-mismatch {phase:"swap"}` at the reveal, command
+  re-sent, `unmute-ok {tries:0}` 1.4 s later.
+
+**No new arm, and that is the honest part of this record.** The suite's world has no `fetch` stub
+(`mute-decision-test.cjs` line 238), so the playlist hook that opens this pod cannot fire there, and a 60 s ceiling
+cannot be waited for in a test. The ceiling rides the same `ad-end` → hand-back path the existing arms drive, and the
+number is the change. The re-arm is a real pod on his Chrome showing `ad-pod-max` at or under 60 s, or an `ad-end`
+from a clean streak before it.
+
+**A gate failure that predates this change, named rather than inherited.** `verified-artifacts` refused
+`KO-20261115-10` because its reachability record was generated `2026-11-16T00:39Z` and
+`kick-overlay/twitch-adblock.js` was committed again at `04:50` (`8ee5325`, 0.8.97) — measured by
+`git log -1 --format=%ct -- kick-overlay/twitch-adblock.js` against the artifact's mtime, so it was red before
+this wave touched the file. The row is demoted `arm-verified` -> `fixed` with its re-arm command, which is the
+same treatment the 2026-11-07 wave gave `KO-20261023-01`: a record from before the source changed says nothing
+about the code that shipped after it.
+
+### 0.8.98, same wave: the clock he can SEE, and the pod that re-opened 717 ms after it closed
+
+He asked, verbatim: *"tu entende literalmente tudo que acontece? quando o player volta, quando o player lag
+behind, quando a live ta em x tempo em tempo real mas o display ta y tempo atras? e quando repeticoes
+acontecem"* — then *"faz isso ser loggado. e resolve tudo de errado que ta acontecendo"*.
+
+**The honest answer was no, and his own ring proved it.** Read live from `twitch.tv/srdogg` (0.8.97,
+`ko-adlog-verdict.mjs --episodes=1`): three reveals and five screen changes in 41 s, `lat=6.3 / 4.2 / 6.1`
+against `target=3`, `overlay-reveal {advanced:-9.8}`, `advanced:0.1 since=7708ms`, and a pod that ended at
+ms 25977 (`native-handoff {podAgeMs:23235}`) whose `ad-hold` re-opened it **717 ms later**
+(`cold-cover {ct:22.6}`). The ring could say where the clean player thought it was (`lat`) and where the
+native element sat (`ct`); it could not say "the live is at X and the screen shows Y", and `advanced:-9.8`
+was a number nobody read as "these seconds are being shown again".
+
+Three changes, each with its own row and its own arm:
+
+1. **`display-clock` / `display-repeat` / `display-frozen`** (content.js, on its own 1 s timer, NOT on
+   `rectTick` — that one returns early when there is no overlay, which is exactly `player=twitch` and every
+   channel with no kick mirror). `dispSample()` reads the surface that is on screen, and its verdict is one
+   of `LIVE`, `BEHIND` (> `DISP_BEHIND_SEC` = 8), `REPEAT` (a backwards step ≥ 1 s), `FROZEN` (claims to
+   play, has not moved for `DISP_FROZEN_MS` = 2500), `PAUSED`. Rows are transition-only plus one per 10 s,
+   because 70 identical heartbeat lines is the defect 0.8.90 already paid for. The native's distance to the
+   edge prints as `lat=null/latSrc=null` when Twitch reports its 2^30 sentinel — `NOT-MEASURABLE`, never an
+   invented number. Arm `D1` in `content-fix-test.cjs` drives all four verdicts plus the sub-second
+   negative half (a 0.4 s step must NOT read REPEAT), and reads `KO.disp.last` for the cases where two
+   identical samples correctly emit no row.
+2. **`AD_REOPEN_COOLDOWN_MS = 30000`** (twitch-adblock.js): after a pod ends, a playlist-derived `ad-hold`
+   is refused unless the page's own detector sees an ad right now, and the refusal is a row
+   (`ad-skip {reason:"cooldown", sinceEndMs}`). The two signals disagree by construction — the playlist keeps
+   `adExtinf:16` listed for minutes after the break, the DOM correctly reports the ad UI leaving — so the
+   signal that ends the pod may not be the one that re-opens it.
+3. **The reveal's latency gate is no longer standby-only** (twitch-adblock.js): `wasStandby &&` was the
+   reason a freshly switched frame with `lat 6.3` went up at 6.3 s behind. A frame that is not at
+   `cleanLatTarget() + 1.5` now asks for the catch-up and waits (bounded by `REVEAL_AWAIT_MS`), whatever
+   created it.
+
+The verdict tool prints two new sections, `DISPLAY` and `REPEATS`, plus `display: last=… lat=… repeats=N
+freezes=N` in `ANSWER`, and a repeat is a finding — a run that shows one exits 1.

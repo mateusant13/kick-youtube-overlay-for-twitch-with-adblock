@@ -446,6 +446,35 @@ function reportEpisode(ep, idx) {
     lines.push('  JUMPS (what he sees as "pulou")');
     for (const j of jumps) lines.push(`    ${fmt(j.t - ep.start).padStart(7)}  +${j.delta}s  ${j.what}`);
   }
+  // ---- the display clock: what the surface on screen was DOING ------------
+  // The owner's 2026-11-16 questions - lag behind, "a live ta em x tempo em
+  // tempo real mas o display ta y tempo atras", "quando repeticoes acontecem" -
+  // had no section here at all before this. The rows are transition-only, so a
+  // run of identical samples prints as one line.
+  const clocks = evs.filter((e) => e.ev === 'display-clock').map((e) => ({ t: e.t, d: e.d || {} }));
+  const repeats = evs.filter((e) => e.ev === 'display-repeat').map((e) => ({ t: e.t, d: e.d || {} }));
+  const frozenDisplays = evs.filter((e) => e.ev === 'display-frozen').map((e) => ({ t: e.t, d: e.d || {} }));
+  if (clocks.length) {
+    lines.push('  DISPLAY (the surface on screen, sampled)');
+    for (const c of clocks.slice(-6)) {
+      const d = c.d;
+      lines.push(
+        `    ${fmt(c.t - ep.start).padStart(7)}  ${String(d.srf || '?').padEnd(7)} pos=${d.pos} delta=${d.delta == null ? '?' : d.delta} lat=${d.lat == null ? 'NOT-MEASURABLE' : `${d.lat}s(${d.latSrc})`}  ${d.verdict}`,
+      );
+    }
+  }
+  if (repeats.length) {
+    lines.push('  REPEATS (the picture went back and showed what he already watched)');
+    for (const r of repeats) {
+      lines.push(`    ${fmt(r.t - ep.start).padStart(7)}  ${String(r.d.srf || '?').padEnd(7)} -${r.d.back}s  ${r.d.from} -> ${r.d.to}`);
+    }
+    findings.push(`${repeats.length} repeat(s) on screen (largest -${Math.max(...repeats.map((r) => Number(r.d.back) || 0))}s)`);
+  }
+  if (frozenDisplays.length) {
+    lines.push('  FROZEN DISPLAY (still claimed to play, did not move)');
+    for (const f of frozenDisplays) lines.push(`    ${fmt(f.t - ep.start).padStart(7)}  ${String(f.d.srf || '?').padEnd(7)} ${fmt(f.d.ms)} at pos=${f.d.pos}`);
+    findings.push(`${frozenDisplays.length} frozen display period(s)`);
+  }
   if (shown.length) {
     lines.push('  SOUND');
     for (const s of shown) {
@@ -488,6 +517,12 @@ function reportEpisode(ep, idx) {
     return ms > (w == null ? -1 : w) ? ms : w;
   }, null);
   lines.push(`    reveals=${reveals} screenChanges=${screenSwaps.length} frozen=${fmt(frozenMs)} jumps=${jumps.length}`);
+  if (clocks.length) {
+    const last = clocks[clocks.length - 1].d;
+    lines.push(
+      `    display: last=${last.verdict} lat=${last.lat == null ? 'NOT-MEASURABLE' : `${last.lat}s(${last.latSrc})`}  repeats=${repeats.length} freezes=${frozenDisplays.length}`,
+    );
+  }
   lines.push(
     `    realtime: last reveal ${lastLat || 'NO LATENCY LOGGED'}` +
       (adWindows.length ? `  adPlayed=${worstAd === Infinity ? 'NEVER STOPPED' : fmt(worstAd)} (${adWindows.length} window(s))` : ''),

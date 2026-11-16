@@ -897,7 +897,7 @@
     },
     {
       "id": "KO-20261115-10",
-      "state": "arm-verified",
+      "state": "fixed",
       "author": "lane",
       "reported": "2026-11-15",
       "fixed_in": "0.8.94",
@@ -918,16 +918,18 @@
         "Why this is arm-verified and not verified: no REAL preroll was painted in the measured windows (bypass.probe reported adExtinf:0 on every probe), so the two paths are proven against the exact shapes and against a shell that must be refused, not against a live pod."
       ],
       "owner_validation": "pending: a REAL preroll on his Chrome must show `ad-ui-on {match:{kind:\"wrapper\"|\"countdown\"|\"slate\"}}` before the first `ad-hold`.",
-      "next": "Owner: next preroll, `node _tools/ko-adlog-window.mjs 9222 60` must show `ad-ui-on` before the first `ad-hold`.",
+      "next": "Re-arm: node _tools/ko-harness.mjs start https://www.twitch.tv/<live channel with prerolls> --fresh, then the DOM probe over 5 samples of adUiDetail(); the record is valid only when it is generated AFTER the last commit to kick-overlay/twitch-adblock.js. The 2026-11-16T00:39Z record predates 8ee5325 (0.8.97), so it no longer covers the shipped detector; the row returns to arm-verified only with a fresh live run.",
       "verified_by": "live-probe: guest Chrome survey 2026-11-16 (ad-detect-test.cjs arms + a CDP probe of the real page), reviewed against the measured DOM dumps in this change",
       "verified_at": "2026-11-16",
       "arms_artifact": "_evidence/KO-20261115-10-arms.md",
       "reachability_artifact": "_evidence/KO-20261115-10-reachability.txt",
-      "reachability_verdict": "NO-VERDICT"
+      "reachability_verdict": "NO-VERDICT",
+      "demoted_at": "2026-11-16",
+      "demoted_why": "reachability record older than the last change to kick-overlay/twitch-adblock.js (8ee5325, 2026-11-16T07:50Z)"
     },
     {
       "id": "KO-20261115-11",
-      "state": "verified",
+      "state": "fixed",
       "author": "lane",
       "reported": "2026-11-15",
       "fixed_in": "0.8.94",
@@ -948,12 +950,14 @@
         "The rewritten worker's digests carry a REAL all-ad media playlist on his machine: worker-playlist {adExtinf:1752, adOnly:true, extinf:1752, hasStitched:false} at ms 11701 and 12069 for .../360p30/index-muted-... and .../chunked/index-muted-.... So the prerecorded claim that the player was unpatched is closed by measurement, not by the constructor list.",
         "LIMIT: the measured tab was muted and in the background, so no frame decoded and no pod could be defended there. That belongs to the ad-path row (KO-20261115-10/12), not this one."
       ],
-      "next": "Owner: next page load, `node _tools/ko-adlog-window.mjs 9222 60` must show a `worker-hook` row.",
+      "next": "Re-arm: next page load, `node _tools/ko-adlog-window.mjs 9222 60` must show a `worker-hook` row. The 2026-11-16T02:14Z record predates 8ee5325 (0.8.97) and 0.8.98, so it no longer covers the shipped worker patch; the row returns to verified only with a fresh live run.",
       "verified_by": "live-probe: guest Chrome survey 2026-11-16 (ad-detect-test.cjs arms + a CDP probe of the real page), reviewed against the measured DOM dumps in this change",
       "verified_at": "2026-11-16",
       "arms_artifact": "_evidence/KO-20261115-11-arms.md",
       "reachability_artifact": "_evidence/KO-20261115-11-reachability.txt",
-      "reachability_verdict": "PASS"
+      "reachability_verdict": "PASS",
+      "demoted_at": "2026-11-16",
+      "demoted_why": "reachability record older than the last change to kick-overlay/twitch-adblock.js (8ee5325)"
     },
     {
       "id": "KO-20261115-12",
@@ -999,6 +1003,82 @@
       "reachability_artifact": "_evidence/KO-20261116-01-reachability.txt",
       "reachability_verdict": "PASS",
       "owner_validation": "none owed for the log row: both builds were measured side by side on his machine. The AD PATH is a different row and stays ARM-VERIFIED (KO-20261115-10)."
+    },
+    {
+      "id": "KO-20261116-02",
+      "state": "fixed",
+      "author": "lane",
+      "reported": "2026-11-16",
+      "fixed_in": "0.8.96",
+      "commit": null,
+      "verified": false,
+      "title": "A mute persisted volume 0, so one unmute click left the tab silent while the bar said audible",
+      "hypothesis": "The arbiter recorded whatever the element reported, and Twitch's volume button writes `muted:true` AND `volume:0`. The level was thrown away, so un-muting produced `{muted:false, volume:0}` - silent by volume, unmuted by intent - and the sound only came back if the page sent a second volumechange. That dependence is the owner's \"o botao de mutar e desmutar funciona de forma inconsistente ... normalmente vendo live mesmo\".",
+      "falsifier": "One mute click must leave the intent at the level it silenced, and one unmute click must restore that level with no further event from the page.",
+      "evidence": [
+        "Owner ring 2026-11-16 (0.8.95, live, claimed:null so no pod involved): audio-intent {before:{muted:false,volume:1},after:{muted:true,volume:0}} then {before:{muted:true,volume:0},after:{muted:false,volume:0}} then {before:{muted:false,volume:0},after:{muted:false,volume:1}} = one gesture, three rows, restore depends on the last",
+        "Fix: a mute keeps `prevIntent.volume` when the element reports volume 0 (`volume: Math.abs(lvl) > 0.001 ? lvl : clamp(prevIntent.volume)`); `want()` applies muted + the remembered level",
+        "Arms: 'a mute remembers the level it silenced' and 'one unmute click restores the sound without a second event'",
+        "RED: without the memory the tab ends at {muted:false, volume:0}"
+      ],
+      "owner_validation": "pending: on his Chrome one click on Twitch's volume button must produce ONE `audio-intent` pair and sound back on the next click"
+    },
+    {
+      "id": "KO-20261116-03",
+      "state": "fixed",
+      "author": "lane",
+      "reported": "2026-11-16",
+      "fixed_in": "0.8.96",
+      "commit": null,
+      "verified": false,
+      "title": "The pointer relay lived inside the hls.js branch, so the IVS kick layer never armed the bar",
+      "hypothesis": "`player-bridge.js` installed the `{t:'ptr'}` relay inside the `if (window.MediaSource && Hls...)` branch. The kick layer runs on IVS, so it posted no pointer activity at all, and the page's own rectangle hit-test is exactly what the frame swallows. Hovering the picture could not bring the bar back.",
+      "falsifier": "A pointer over the picture must arm the bar in BOTH engines, and the arm must be a logged transition naming what armed it.",
+      "evidence": [
+        "Owner report 2026-11-16: \"hover nao mostrava o player\" (after the same report on 2026-11-11)",
+        "Code: the relay block sat between the hls.js event wiring and `} else {` (the IVS branch); `grep -n pointermove player-bridge.js` matched only that one site",
+        "Fix: the relay is installed once, after the engine branch, and posts `{t:'ptr', engine}`",
+        "Instrument: content.js logs `bar-arm {src:'frame'|'page'|'bar'|'boot'}` on the hidden->shown transition and `bar-hide {why}` on the timer, so the next report is answered by a row instead of by this file"
+      ],
+      "owner_validation": "pending: hover over the kick picture on his Chrome must write `bar-arm {src:\"frame\"}` in the ring"
+    },
+    {
+      "id": "KO-20261116-04",
+      "state": "fixed",
+      "author": "lane",
+      "reported": "2026-11-16",
+      "fixed_in": "0.8.96",
+      "commit": null,
+      "verified": false,
+      "title": "A hand-back seek aimed past the downloaded media parked the native at rs:1 until he clicked pause/unpause",
+      "hypothesis": "`seekCovered`'s pod-sized escape admitted any forward seek after a pod, and `buffered.end` on a live element is not a ceiling the seek respects: the browser clamps it, the element parks at rs<3, and play() cannot start. The landing is now kept HEALTH_BUFFER_SEC this side of what the element holds whenever the live edge is the 2^30 sentinel, and a target the element cannot hold is skipped with both numbers logged.",
+      "falsifier": "With 1 s of runway and a sentinel edge, the hand-back must write no clock value and must log `native-seek-skipped` naming the wall-clock target and the buffered end; with real runway it must land where the element can play forward.",
+      "evidence": [
+        "Owner report 2026-11-16: \"ao voltar pro player da twitch, ele TRAVA inves de voltar pro tempo real ... e pra destravar eu q tenho q clicar em pause despause\"",
+        "Prior measurements of the same class: KO-20261114-01 (`to:172` on a 42.4 s window) and the 2026-11-15 0.8.93 note (`to:39.7` with `buffered.end` 42.3 landed at 2.6 s of runway)",
+        "Fix: the clamp runs only when `se <= 0` (a real edge means hls.js will fetch); the skip row carries `from`, `to`, `buffered`, `rs`",
+        "Arms: 'a recovery target past the downloaded data is skipped, and the skip carries both numbers' + RED without the clamp; 'the hand-back seeks once and the retries never seek' keeps its contract with real runway"
+      ],
+      "owner_validation": "pending: next hand-back on a sentinel edge must show either `native-edge-recover` with `runway >= 3` or `native-seek-skipped`, and never `native-resume {rs:1}`"
+    },
+    {
+      "id": "KO-20261116-05",
+      "state": "fixed",
+      "author": "lane",
+      "reported": "2026-11-16",
+      "fixed_in": "0.8.96",
+      "commit": null,
+      "verified": false,
+      "title": "A keystroke authorized Twitch's own ad volume as the user's decision",
+      "hypothesis": "`volumeCapableTarget()` accepted ANY keydown as a control that can carry a volume, and the freshness gate only protected the `muted` direction. Twitch writes `volume:0.32` during a pod; refused eleven times as `stale-input`, it was accepted the first time a keystroke was fresh, and a volume DROP (not a mute) became intent - his \"ai mutou a live\".",
+      "falsifier": "Only the keys that change a volume (m/ArrowUp/ArrowDown) may authorize one, and a volume LOWERING must pass the same control test as a mute; an UNMUTE/raise must never be refused.",
+      "evidence": [
+        "Owner ring 2026-11-16 (0.8.95): `audio-refused {why:\"stale-input\", el:{volume:0.32}, intent:{volume:1}}` x11, then `audio-intent {before:{volume:1}, after:{volume:0.32}, ev:{input:\"keydown\", inputAgeMs:528}}`",
+        "Fix: keydown -> only m/M/ArrowUp/ArrowDown; `lowering = el.muted || el.volume < prevIntent.volume - 0.01` is gated on `lastInputVolumeCapable`, and the refusal names `dir`",
+        "Instrument: `audio-refused` and `audio-intent` now carry `inputTarget` (id / data-a-target / aria-label / tag.class) and `volumeCapable`",
+        "Arms: 'a volume drop after a key that cannot change a volume is refused', 'ArrowDown IS a volume key', RED with the gate disarmed"
+      ],
+      "owner_validation": "pending: a pod on his Chrome must show `audio-refused {why:\"not-volume-control\", dir:\"drop\"}` instead of an accepted 0.32"
     }
   ]
 }

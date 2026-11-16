@@ -239,6 +239,142 @@ function visAudio(tag) {
   }
 }
 
+// ---- the clock the owner actually sees -----------------------------------
+// The ring could say where the CLEAN player thought it was (`lat`) and where the
+// NATIVE element sat (`ct`), but never "the live is at X and the screen shows
+// Y", never "the picture went backwards and is showing those seconds again", and
+// never "the display claims to be playing and has not moved in N seconds". His
+// 2026-11-16 questions - "quando o player lag behind", "quando a live ta em x
+// tempo em tempo real mas o display ta y tempo atras", "quando repeticoes
+// acontecem" - are answered by these rows and by nothing else.
+const DISP_SAMPLE_MS = 10000; // one row per 10 s while nothing changes
+const DISP_FROZEN_MS = 2500; // a playing surface that has not moved this long is frozen
+const DISP_REPEAT_SEC = 1; // a backwards step this large is a repeat of what he saw
+const DISP_BEHIND_SEC = 8; // CLEAN_LAT_MAX: past this the picture is not live
+
+// Which surface is on screen right now, and where it is. `player=twitch` means
+// the page's own element; anything else means our frame, and in that mode the
+// native is paused BY DESIGN, so reading it would answer the wrong question.
+function dispSurface() {
+  if (KO.player === 'kick') return 'kick';
+  if (KO.player === 'youtube') return 'youtube';
+  return 'twitch';
+}
+
+// One sample, on the 1 s timer below. Transition-only output: a row per surface
+// change, per verdict change, and at most one every DISP_SAMPLE_MS otherwise -
+// the same rule the ad path learned when 70 identical heartbeat lines buried a
+// chronology (0.8.90).
+function dispSample() {
+  try {
+    if (document.hidden) return; // a throttled tab measures the throttle, not the product
+    const now = Date.now();
+    const srf = dispSurface();
+    let pos = null;
+    let lat = null;
+    let latSrc = null;
+    let playing = false;
+    if (srf === 'kick' || srf === 'youtube') {
+      const st = (srf === 'kick' ? KO.kickState : KO.ytState) || {};
+      pos = Number(srf === 'kick' ? st.pos : st.ct);
+      lat = isFinite(Number(st.lat)) ? Number(st.lat) : null;
+      latSrc = lat == null ? null : 'frame';
+      playing = st.state === 'Playing';
+    } else {
+      const v = twitchVideo();
+      if (v) {
+        pos = Number(v.currentTime);
+        playing = !v.paused && v.readyState >= 2;
+        // Twitch reports the live edge as the literal 2^30 sentinel on most
+        // loads, and then the distance to it is NOT-MEASURABLE - which the row
+        // says instead of inventing a number.
+        let e = 0;
+        try {
+          const s = v.seekable;
+          e = s && s.length ? Number(s.end(s.length - 1)) : 0;
+        } catch {
+          e = 0;
+        }
+        if (isFinite(e) && e > 0 && e < 1e6) {
+          lat = e - pos;
+          latSrc = 'seekable';
+        }
+      }
+    }
+    if (!isFinite(pos)) {
+      // No surface to measure is ITSELF the answer: `player=kick` with no kick
+      // state means the layer never produced a position, and silence in the ring
+      // used to be indistinguishable from "the sampler never ran". One row per
+      // transition, never per tick.
+      const n0 = (KO.disp = KO.disp || { srf: null, pos: null, movedAt: 0, verdict: null, loggedAt: 0 });
+      if (n0.verdict !== 'NO-SURFACE') {
+        n0.verdict = 'NO-SURFACE';
+        n0.srf = null;
+        n0.pos = null;
+        n0.loggedAt = now;
+        diag('display-clock', {
+          srf: null,
+          pos: null,
+          delta: null,
+          lat: null,
+          latSrc: null,
+          playing: false,
+          verdict: 'NO-SURFACE',
+          why: srf === 'kick' ? (KO.kickState ? 'kick state has no pos' : 'no kick state') : srf === 'youtube' ? 'no yt position' : 'no page video',
+        });
+      }
+      return;
+    }
+    const d = (KO.disp = KO.disp || { srf: null, pos: null, movedAt: 0, verdict: null, loggedAt: 0 });
+    const delta = d.srf === srf && d.pos != null ? pos - d.pos : null;
+    if (d.srf !== srf || delta == null || Math.abs(delta) > 0.05) d.movedAt = now;
+    let verdict;
+    if (!playing) verdict = 'PAUSED';
+    else if (delta != null && delta <= -DISP_REPEAT_SEC) verdict = 'REPEAT';
+    else if (now - d.movedAt > DISP_FROZEN_MS) verdict = 'FROZEN';
+    else if (lat != null && lat > DISP_BEHIND_SEC) verdict = 'BEHIND';
+    else verdict = 'LIVE';
+    const transition = d.srf !== srf || d.verdict !== verdict;
+    if (transition || verdict === 'REPEAT' || now - d.loggedAt >= DISP_SAMPLE_MS) {
+      const row = {
+        srf,
+        pos: +pos.toFixed(2),
+        delta: delta == null ? null : +delta.toFixed(2),
+        lat: lat == null ? null : +lat.toFixed(2),
+        latSrc,
+        playing,
+        verdict,
+        movedMs: d.movedAt ? now - d.movedAt : null,
+      };
+      diag('display-clock', row);
+      // A repeat is its own sentence: "the picture went back N seconds and will
+      // show what he already saw". The clock row carries the numbers; this row
+      // names the event so the verdict tool can count them.
+      if (verdict === 'REPEAT') {
+        diag('display-repeat', {
+          srf,
+          from: d.pos == null ? null : +d.pos.toFixed(2),
+          to: +pos.toFixed(2),
+          back: delta == null ? null : +(-delta).toFixed(2),
+        });
+      }
+      if (transition && verdict === 'FROZEN') {
+        diag('display-frozen', { srf, pos: +pos.toFixed(2), ms: d.movedAt ? now - d.movedAt : null });
+      }
+      d.loggedAt = now;
+    }
+    d.srf = srf;
+    d.pos = pos;
+    d.verdict = verdict;
+    // The CURRENT answer, readable without a row: two identical samples inside
+    // DISP_SAMPLE_MS emit nothing by design, and "what does the display say right
+    // now" must still be answerable (the suites read it, and so can a probe).
+    d.last = { srf, pos: +pos.toFixed(2), delta: delta == null ? null : +delta.toFixed(2), lat: lat == null ? null : +lat.toFixed(2), latSrc, playing, verdict };
+  } catch {
+    /* a diag line must never break the overlay */
+  }
+}
+
 // The audio authority cannot write the log itself (it has no message channel and
 // must stay side-effect free); it dispatches, and this forwards. One listener,
 // attached once, so a second copy of content.js cannot double every audio line.
@@ -308,7 +444,7 @@ const NOT_CHANNEL = new Set([
 
 // Build marker for the diag stream — lets us tell which code a tab runs
 // (content scripts of pre-reload tabs survive extension reloads).
-const KO_VER = '0.8.97';
+const KO_VER = '0.8.98';
 // How long a lost picture may last before the native player is allowed to
 // reclaim the screen (owner 2026-11-11: an ad and the player fighting).
 const OWNER_GRACE_MS = 6000;
@@ -3219,6 +3355,11 @@ function startWatchers() {
   KO.pollTimer = setInterval(() => {
     if (KO.enabled) fire(probe);
   }, POLL_MS);
+  // The surface he is watching, sampled every second. Independent of `KO.wrap`
+  // on purpose: `rectTick()` returns early when there is no overlay (a channel
+  // with no kick mirror, or `player=twitch`), which is exactly the case where
+  // "is the display live" needs an answer.
+  if (!KO.dispTimer) KO.dispTimer = setInterval(dispSample, 1000);
   // The boot probe can race the Twitch player's start — re-probe the
   // moment the player starts playing, throttled. Video events don't
   // bubble; capture catches them.

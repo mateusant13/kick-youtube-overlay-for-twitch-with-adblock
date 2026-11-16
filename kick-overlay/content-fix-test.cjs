@@ -238,7 +238,7 @@ const bridgeSrc = fs.readFileSync('player-bridge.js', 'utf8');
 const scope = {};
 const fn = new Function('window', 'document', 'location', 'navigator', src + '\n;return {KO, probe, apply, ensureYtHls, injectStyles, teardown, setPlayer, saveState, ' +
   'loadState, rectTick, rectFromHost, currentSlug, resolveYtPageKick, ensureYtIframe, ensureKick, showKickLayer, showYtLayer, hideWrap, hideWrapForProbe, ' +
-  'renderQualityMenu, mount, updateKickBar, seekOverlayStep, onOverlayKeydown, syncMute, overlayOwnsPicture, visibleSurface};');
+  'renderQualityMenu, mount, updateKickBar, seekOverlayStep, onOverlayKeydown, syncMute, overlayOwnsPicture, visibleSurface, dispSample};');
 const api = fn(global, doc, global.location, global.navigator);
 const KO = api.KO;
 
@@ -2507,6 +2507,56 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     console.log('W5 stall grace: a source switch in flight is not a stall, a frozen element past it still is - OK');
   }
 
+  // ---- D1: the clock the owner can SEE -------------------------------------
+  // Owner 2026-11-16: "tu entende literalmente tudo que acontece? quando o
+  // player volta, quando o player lag behind, quando a live ta em x tempo em
+  // tempo real mas o display ta y tempo atras? e quando repeticoes acontecem".
+  // The ring could name the clean player's own `lat` and the native element's
+  // `ct`, and nothing compared them or named a repeat. These four verdicts are
+  // the answer, and each one is driven through the real sampler.
+  {
+    const rows = () => swCalls.filter((m) => m && m.__koDiag && m.__koDiag.ev === 'display-clock').map((m) => m.__koDiag.data);
+    const reps = () => swCalls.filter((m) => m && m.__koDiag && m.__koDiag.ev === 'display-repeat').map((m) => m.__koDiag.data);
+    KO.player = 'kick';
+    KO.disp = null;
+    const base = rows().length;
+    // The sampler keeps its own clock in KO.disp; the arm drives it the way a
+    // fake clock would instead of spending seconds of real time, so the suite
+    // still finishes in the window its other arms were tuned for.
+    KO.kickState = { state: 'Playing', pos: 100, lat: 3 };
+    api.dispSample();
+    KO.kickState = { state: 'Playing', pos: 101.2, lat: 3 };
+    api.dispSample();
+    const live = KO.disp.last; // two identical LIVE samples emit no row by design
+    assert.strictEqual(live.verdict, 'LIVE', `a playing surface at lat 3 is not LIVE: ${JSON.stringify(live)}`);
+    assert.ok(live.delta > 0.5, `the sample did not measure the advance: ${JSON.stringify(live)}`);
+    assert.strictEqual(live.latSrc, 'frame', `latSrc=${live.latSrc} (the frame reports its own edge)`);
+    assert.ok(rows().slice(base).some((r) => r.verdict === 'LIVE'), 'the surface change did not emit a clock row');
+    // the picture steps BACK 11 s: those seconds are shown again
+    KO.kickState = { state: 'Playing', pos: 90, lat: 3 };
+    api.dispSample();
+    const back = KO.disp.last;
+    assert.strictEqual(back.verdict, 'REPEAT', `an 11 s backwards step is not named REPEAT: ${JSON.stringify(back)}`);
+    assert.ok(reps().some((r) => r.back >= 11), `no display-repeat row carrying the size: ${JSON.stringify(reps())}`);
+    // still claims Playing, has not moved for longer than the freeze floor
+    KO.disp.movedAt = Date.now() - 3000;
+    api.dispSample();
+    assert.strictEqual(KO.disp.last.verdict, 'FROZEN', 'a Playing surface that has not moved is not named FROZEN');
+    assert.ok(rows().slice(base).some((r) => r.verdict === 'FROZEN'), 'the freeze did not emit a clock row');
+    // a paused surface is not a frozen one
+    KO.kickState = { state: 'Paused', pos: 90, lat: 3 };
+    api.dispSample();
+    assert.strictEqual(KO.disp.last.verdict, 'PAUSED', 'a paused surface must not read FROZEN');
+    // and the floor has to DECIDE: a step smaller than DISP_REPEAT_SEC is not a
+    // repeat, or every frame-time jitter would be reported as one.
+    KO.disp.movedAt = Date.now();
+    KO.kickState = { state: 'Playing', pos: 89.6, lat: 3 };
+    api.dispSample();
+    const jitter = KO.disp.last;
+    assert.notStrictEqual(jitter.verdict, 'REPEAT', `a ${Math.abs(jitter.delta)} s step is below the floor and must not be REPEAT: ${JSON.stringify(jitter)}`);
+    console.log('D1 display clock: LIVE, REPEAT, FROZEN and PAUSED are named per sample - OK');
+  }
+
   // ANTI-VACUITY. Every arm above prints one "<label> - OK" line, and a suite
   // whose arms silently stopped running still exits 0 today (that is how a
   // regression gets a green receipt). The expected labels are listed HERE, in
@@ -2514,7 +2564,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   // rather than a quieter green. Appending an arm means appending its label.
   const ARMS = [
     'P1b2', 'P2e', 'P2f', 'P2g', 'P2h', 'P2i', 'P2k', 'P2n', 'P2o', 'P2p', 'P3', 'W1', 'W2', 'W3', 'W4', 'W5', 'W6',
-    'U mute', 'V quality', 'X per-player', 'X2 manual sw', 'X3 stale liv', 'Z hover',
+    'U mute', 'V quality', 'X per-player', 'X2 manual sw', 'X3 stale liv', 'Z hover', 'D1',
   ];
   const printed = armLog.map((l) => String(l).trim());
   const missing = ARMS.filter((a) => !printed.some((l) => l.startsWith(a)));
