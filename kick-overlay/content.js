@@ -256,8 +256,13 @@ const DISP_BEHIND_SEC = 8; // CLEAN_LAT_MAX: past this the picture is not live
 // the page's own element; anything else means our frame, and in that mode the
 // native is paused BY DESIGN, so reading it would answer the wrong question.
 function dispSurface() {
-  if (KO.player === 'kick') return 'kick';
-  if (KO.player === 'youtube') return 'youtube';
+  // WHAT IS ON SCREEN, not what he PREFERS. His own srdogg load (2026-11-16)
+  // reads `player:"kick"` with `kick:null` while the page's native element plays
+  // at `rs:4, ct:545` - mapping the preference would have reported NO-SURFACE
+  // for a healthy picture. The product already owns this answer in
+  // `overlayOwnsPicture()` (a frame report younger than STALE_REPORT_MS, minus a
+  // layer proven dead), so the sampler asks it instead of re-deriving ownership.
+  if (overlayOwnsPicture()) return KO.player === 'youtube' ? 'youtube' : 'kick';
   return 'twitch';
 }
 
@@ -274,6 +279,7 @@ function dispSample() {
     let lat = null;
     let latSrc = null;
     let playing = false;
+    let buf = null;
     if (srf === 'kick' || srf === 'youtube') {
       const st = (srf === 'kick' ? KO.kickState : KO.ytState) || {};
       pos = Number(srf === 'kick' ? st.pos : st.ct);
@@ -288,6 +294,15 @@ function dispSample() {
         // Twitch reports the live edge as the literal 2^30 sentinel on most
         // loads, and then the distance to it is NOT-MEASURABLE - which the row
         // says instead of inventing a number.
+        // The runway in hand is measurable even when the live edge is not, and
+        // it is what separates "behind live" from "about to freeze": a native at
+        // 0.2 s of forward buffer is a stall with a second of delay on it.
+        try {
+          const b = v.buffered;
+          if (b && b.length) buf = Math.max(0, Number(b.end(b.length - 1)) - pos);
+        } catch {
+          buf = null;
+        }
         let e = 0;
         try {
           const s = v.seekable;
@@ -342,6 +357,7 @@ function dispSample() {
         delta: delta == null ? null : +delta.toFixed(2),
         lat: lat == null ? null : +lat.toFixed(2),
         latSrc,
+        buf: buf == null ? null : +buf.toFixed(2),
         playing,
         verdict,
         movedMs: d.movedAt ? now - d.movedAt : null,
@@ -369,7 +385,7 @@ function dispSample() {
     // The CURRENT answer, readable without a row: two identical samples inside
     // DISP_SAMPLE_MS emit nothing by design, and "what does the display say right
     // now" must still be answerable (the suites read it, and so can a probe).
-    d.last = { srf, pos: +pos.toFixed(2), delta: delta == null ? null : +delta.toFixed(2), lat: lat == null ? null : +lat.toFixed(2), latSrc, playing, verdict };
+    d.last = { srf, pos: +pos.toFixed(2), delta: delta == null ? null : +delta.toFixed(2), lat: lat == null ? null : +lat.toFixed(2), latSrc, buf: buf == null ? null : +buf.toFixed(2), playing, verdict };
   } catch {
     /* a diag line must never break the overlay */
   }
@@ -444,7 +460,7 @@ const NOT_CHANNEL = new Set([
 
 // Build marker for the diag stream — lets us tell which code a tab runs
 // (content scripts of pre-reload tabs survive extension reloads).
-const KO_VER = '0.8.98';
+const KO_VER = '0.8.99';
 // How long a lost picture may last before the native player is allowed to
 // reclaim the screen (owner 2026-11-11: an ad and the player fighting).
 const OWNER_GRACE_MS = 6000;
