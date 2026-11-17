@@ -59,6 +59,8 @@ const SOUND = new Set([
   'audio-inherit',
   'audio-visible',
   'audio-mismatch',
+  'audio-stale-report',
+  'audio-agreed',
   'overlay-audio',
   'video-volume',
 ]);
@@ -326,6 +328,21 @@ function reportEpisode(ep, idx) {
         text: `${d.from} -> ${d.to} inherit ${d.was ? `${d.was.muted ? 'muted' : 'on'} ${Number(d.was.volume).toFixed(2)}` : '?'} => ${d.now ? `${d.now.muted ? 'muted' : 'on'} ${Number(d.now.volume).toFixed(2)}` : '?'}`,
         a: { who: 'CODE', cls: 'code', note: 'swap inherit' },
       });
+    } else if (e.ev === 'audio-agreed') {
+      // The number he actually asked for: how long the swap was silent, from
+      // our command to the first report that matched it.
+      sound.push({
+        t: e.t,
+        ms: d.ms,
+        text: `swap audio agreed after ${d.ms} ms (${d.wantMuted ? 'muted' : 'on'} ${d.wantVol}, sends=${d.sends})`,
+        a: { who: 'CODE', cls: 'code', note: 'swap audio' },
+      });
+    } else if (e.ev === 'audio-stale-report') {
+      sound.push({
+        t: e.t,
+        text: `stale report ${d.sentAgeMs} ms after our write: frame said ${d.frameMuted ? 'muted' : 'on'}, want ${d.wantMuted ? 'muted' : 'on'} (report lag, not a mute)`,
+        a: { who: 'CODE', cls: 'code', note: 'report lag' },
+      });
     } else if (e.ev === 'audio-mismatch') {
       const own = d.sentAgeMs == null ? 'NO WRITE FROM US' : `our last write ${d.sentAgeMs} ms ago (#${d.sends})`;
       sound.push({
@@ -530,6 +547,12 @@ function reportEpisode(ep, idx) {
   lines.push(
     `    mute by USER=${mutedByUser.length}  by CODE=${mutedByCode.length}  unattributed=${unattributed.length}`,
   );
+  const agreedMs = sound.filter((s) => typeof s.ms === 'number').map((s) => s.ms);
+  if (agreedMs.length) {
+    lines.push(
+      `    swap audio: ${agreedMs.length} agreement(s), worst=${agreedMs.reduce((a, b) => Math.max(a, b), 0)} ms  staleReports=${sound.filter((s) => /^stale report/.test(s.text)).length}`,
+    );
+  }
   return { lines, findings };
 }
 

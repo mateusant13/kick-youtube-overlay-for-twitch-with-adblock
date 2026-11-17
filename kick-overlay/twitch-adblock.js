@@ -301,6 +301,10 @@
     lastStAt: 0,
     catchupAt: 0,
     unmuteTried: false,
+    audioAgreedAt: 0, // page clock when the frame's report first matched our command
+    audioDisagreeSince: 0, // page clock of the FIRST report in the current disagreement streak
+    audioStaleLogged: false, // the streak's lag row was already written
+    audioMismatchLogged: false, // the streak's real-mismatch row was already written
     unmuteTries: 0, // bounded audible-apply retries before a refusal is declared
     unmuteCheck: 0,
     switchTries: 0,
@@ -861,6 +865,7 @@
     if (last && last.muted === muted && Math.abs(last.volume - volume) < 0.02) return;
     overlay.audioSent = { muted, volume };
     overlay.audioSentAt = Date.now();
+    overlay.audioAgreedAt = 0; // a new command restarts the "how long until the frame agrees" clock
     overlay.audioSends = (overlay.audioSends || 0) + 1;
     adLogState('overlay-audio', { muted, volume: +Number(volume).toFixed(2), refused: !!overlay.audioRefused });
     overlaySend({ t: 'mute', m: muted });
@@ -1072,6 +1077,12 @@
   // our command (see the `st` handler). Long enough to survive a slow first
   // report in a throttled tab, short enough that it never looks like a fight.
   const AUDIO_ASSERT_MS = 4000;
+  // A disagreement reported this soon after our own command cannot have seen it:
+  // the frame publishes `st` once a second, so the first report after a reveal
+  // still carries the mute it had before we told it anything. Under this bound
+  // the row is `audio-stale-report` (report lag), never `audio-mismatch` (a real
+  // disagreement), and the command is re-sent either way.
+  const AUDIO_REPORT_LAG_MS = 400;
   function overlaySend(msg) {
     if (!overlay.frame || !overlay.token) return;
     // Before the frame's navigation commits its contentWindow still belongs to
@@ -2778,32 +2789,51 @@
         // policy, and re-sending would be the mute fight the 0.8.50 wave ended.
         if (overlay.revealed && overlay.audioSent && typeof m.st.muted === 'boolean') {
           const cmd = overlay.audioSent;
+          const sentAge = overlay.audioSentAt ? Date.now() - overlay.audioSentAt : null;
+          const inSwap = Date.now() < (overlay.audioAssertUntil || 0);
           // Agreement clears the memory, so a disagreement that RETURNS after
           // being fixed is logged again. Without this, a cleared-then-broken
           // state would be silent for the rest of the page load.
-          if (m.st.muted === cmd.muted && !(typeof m.st.volume === 'number' && Math.abs(Number(m.st.volume) - cmd.volume) > 0.02)) overlay.audioMismatchSig = null;
-          const volDiff = typeof m.st.volume === 'number' && Math.abs(Number(m.st.volume) - cmd.volume) > 0.02;
+          const volAgrees = !(typeof m.st.volume === 'number' && Math.abs(Number(m.st.volume) - cmd.volume) > 0.02);
+          if (m.st.muted === cmd.muted && volAgrees) {
+            overlay.audioDisagreeSince = 0;
+            overlay.audioStaleLogged = false;
+            overlay.audioMismatchLogged = false;
+            // HOW LONG the swap was actually silent is the number the owner
+            // asked for, and the old log could not give it: the disagreement
+            // row named a report that might predate the command. One row per
+            // command, from the command to the first report that agrees.
+            if (inSwap && !overlay.audioAgreedAt) {
+              overlay.audioAgreedAt = Date.now();
+              adLog('audio-agreed', {
+                ms: overlay.audioAgreedAt - (overlay.audioSentAt || overlay.audioAgreedAt),
+                wantMuted: !!cmd.muted,
+                wantVol: +Number(cmd.volume).toFixed(2),
+                sends: overlay.audioSends || 0,
+              });
+            }
+          }
+          const volDiff = !volAgrees;
           if (m.st.muted !== cmd.muted || volDiff) {
-            const inSwap = Date.now() < (overlay.audioAssertUntil || 0);
-            // ONE LINE PER DISTINCT DISAGREEMENT, never one per heartbeat. The
+            // ONE ROW PER DISAGREEMENT STREAK, never one per heartbeat. The
             // owner's rule for this log is transition-only ("teus logs nao e pra
             // ter dump inutil"), and this site broke it: his own 2026-11-13 ring
             // held 77 `audio-mismatch` rows of which 70 were the SAME `late`
             // signature ({wantMuted:true, frameMuted:false, both 0.76}) repeated
             // on every 1 Hz `st`. A repeated late disagreement is stable state,
             // not news, and 70 copies of it evicted the pod chronology he needed.
-            // Recorded once, and logged again only after it CLEARS (a real change
-            // of mind by the frame or by us).
-            const sig = [inSwap ? 'swap' : 'late', !!cmd.muted, !!m.st.muted,
-              +Number(cmd.volume).toFixed(2),
-              typeof m.st.volume === 'number' ? +Number(m.st.volume).toFixed(2) : 'n'].join('|');
-            // NOT a `return`: this block sits inside the `st` handler, and
-            // returning would skip the health gate, the drift check and the
-            // reveal that follow. Only the LOG is deduped; the reconciliation
-            // below still runs.
-            const firstOfKind = sig !== overlay.audioMismatchSig;
-            overlay.audioMismatchSig = sig;
-            if (firstOfKind) adLog('audio-mismatch', {
+            //
+            // `sentAge` alone cannot classify a disagreement: a re-send inside the
+            // swap window resets it, so a real remute arriving 30 ms after a
+            // re-send was excused forever — the arm "a swap disagreement the frame
+            // had time to heed is still a mismatch" caught exactly that on 0.8.101.
+            // The streak clock measures from the FIRST disagreeing report: one that
+            // survives `AUDIO_REPORT_LAG_MS` is a mute, one that does not is a
+            // report that never saw the command.
+            const now = Date.now();
+            if (!overlay.audioDisagreeSince) overlay.audioDisagreeSince = now;
+            const held = now - overlay.audioDisagreeSince;
+            const row = {
               phase: inSwap ? 'swap' : 'late',
               wantMuted: !!cmd.muted,
               frameMuted: !!m.st.muted,
@@ -2813,10 +2843,24 @@
               // NO write from us in between is the frame's own doing, and that
               // is the only way the owner's 0.93 -> 0.80 -> 0.65 -> 0.63 ramp in
               // 500 ms can be attributed.
-              sentAgeMs: overlay.audioSentAt ? Date.now() - overlay.audioSentAt : null,
+              sentAgeMs: sentAge,
+              heldMs: held,
               sends: overlay.audioSends || 0,
               asserted: inSwap,
-            });
+            };
+            // The lag excuse is for the SWAP only: it exists because a command of
+            // ours is racing the frame's own 1 Hz report. Outside that window no
+            // command is pending, so a disagreement is real on its first report
+            // (the "late" arm has always asserted exactly that).
+            if (inSwap && held < AUDIO_REPORT_LAG_MS) {
+              if (!overlay.audioStaleLogged) {
+                overlay.audioStaleLogged = true;
+                adLog('audio-stale-report', row);
+              }
+            } else if (!overlay.audioMismatchLogged) {
+              overlay.audioMismatchLogged = true;
+              adLog('audio-mismatch', row);
+            }
             if (inSwap) {
               overlay.audioSent = null; // force the next apply to re-send
               applyOverlayAudio();

@@ -1884,3 +1884,27 @@ Three changes, each with its own row and its own arm:
 
 The verdict tool prints two new sections, `DISPLAY` and `REPEATS`, plus `display: last=… lat=… repeats=N
 freezes=N` in `ANSWER`, and a repeat is a finding — a run that shows one exits 1.
+
+### 0.8.100/0.8.101: the reveal gate has two sides, and the swap's "silence" was a report older than our write
+
+`content-fix` and `ad-time-continuity` were green on 0.8.99 while the reveal gate had been widened to every
+frame; the arm named the overreach before a live run could (`catch-up fired 2x on an edge the buffer already
+reaches`, state `revealed:true`). The gate is `wasStandby || (overlay.lastSt && !overlay.revealed)`: an
+unrevealed frame is pulled to the sync target before it is shown, a revealed one is never re-seeked — the
+0.8.84 jump-cut is the same defect from the other side (`p = s/overlay.lastSt && Number(overlay.lastSt.lat) >
+cleanLatTarget() + 1.5/p` was the mutant that produced it, and it is the arm's own RED).
+
+The second correction is a reader's defect, not the product's: `audio-mismatch {phase:"swap",
+frameMuted:true, sends:1, sentAgeMs:34}` cannot be a real mute, because the frame publishes `st` once a
+second and the first report after a reveal still carries the mute it had BEFORE the command. The
+classification is a STREAK CLOCK, not `sentAge`: `sentAge` resets on every re-send inside the swap window,
+so a real remute arriving 30 ms after one was excused forever — the arm "a swap disagreement the frame had
+time to heed is still a mismatch" caught exactly that on its first run (83 checks, 1 failed). A disagreement
+is now `audio-stale-report {sentAgeMs, heldMs}` — SWAP only, because that is the one place a command of ours
+races the frame's own report; a `late` disagreement is real on its first report — until it survives
+`AUDIO_REPORT_LAG_MS = 400` measured from
+the FIRST disagreeing report (`overlay.audioDisagreeSince`, cleared by agreement), and only then becomes a
+real `audio-mismatch {phase:"swap", heldMs}` with its re-send; one row per streak, whichever it is. The
+number he asked for is its own transition: `audio-agreed {ms}`, from our command to the first report that
+matches it, once per command (`audioAgreedAt` reset by `applyOverlayAudio`). Answer gains
+`swap audio: N agreement(s), worst=Ms staleReports=N`.

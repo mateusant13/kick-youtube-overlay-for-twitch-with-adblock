@@ -994,10 +994,36 @@ async function main() {
     const before = page.muteSent().filter((m) => m === false).length;
     page.frameMsg(healthySt({ pos: 100, lat: 3, muted: true })); // element remuted underneath
     await settle(10);
-    check('a frame that reports itself muted during the swap is corrected at once', () => {
+    check('a report that cannot have seen our command is named as lag, and corrected at once', () => {
+      const lag = page.logsOf('audio-stale-report');
+      assert(lag.length === 1, `stale-report rows=${lag.length}`);
+      assert(lag[0].d.sentAgeMs != null && lag[0].d.sentAgeMs < 400, `sentAgeMs=${lag[0].d.sentAgeMs}`);
+      assert(page.logsOf('audio-mismatch').length === 0, 'a lagging report was logged as a real disagreement');
+      assert(page.muteSent().filter((m) => m === false).length > before, 'the unmute was not re-sent');
+    });
+  }
+  {
+    // The other half of the same bound: a disagreement the frame had time to
+    // act on IS a real swap mute, and it keeps its own name and its re-send.
+    const page = makeWorld();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    page.bypass({ type: 'ad-hold' });
+    page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+    await settle(20);
+    page.frameMsg({ t: 'ready' });
+    for (let i = 0; i < 3; i++) page.frameMsg(healthySt({ pos: 100, lat: 3, muted: false }));
+    await settle(500); // inside AUDIO_ASSERT_MS, past AUDIO_REPORT_LAG_MS for the streak
+    const before = page.muteSent().filter((m) => m === false).length;
+    page.frameMsg(healthySt({ pos: 101, lat: 3, muted: true })); // first report of the streak: lag
+    await settle(500);
+    page.frameMsg(healthySt({ pos: 102, lat: 3, muted: true })); // it survived a report: a mute
+    await settle(10);
+    check('a swap disagreement the frame had time to heed is still a mismatch', () => {
       const mm = page.logsOf('audio-mismatch');
-      assert(mm.length >= 1, 'no mismatch was detected');
+      assert(mm.length >= 1, 'a real swap disagreement was excused as lag');
       assert(mm[0].d.phase === 'swap', `mismatch classified as ${mm[0].d.phase}`);
+      assert(mm[0].d.heldMs >= 400, `heldMs=${mm[0].d.heldMs}`);
+      assert(page.logsOf('audio-stale-report').length === 1, 'the streak did not start as a lag row');
       assert(page.muteSent().filter((m) => m === false).length > before, 'the unmute was not re-sent');
     });
   }
