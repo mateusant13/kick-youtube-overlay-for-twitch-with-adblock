@@ -1963,3 +1963,11 @@ Two more lessons, both paid for in this wave:
   `node _tools/ko-reload-persistent.mjs --port=9222` after `rsync` into the installed copy; the tab that
   was running 0.8.102 heals itself once hidden (0.8.82's `recoverStale`), which is why the fix has to be
   installed before it can be observed.
+
+**The guest falsifier, measured on 0.8.103 before the guest was closed** (`G:/Temp/ko-harness`, one guest,
+twitch.tv/rodil, `player=twitch`, two minutes of a HEALTHY live): **14** `display-clock` samples with `buf`
+1.09-1.22 and `delta` 0.99-1.00 (`verdict:LIVE`) and **ZERO** `native-stall` rows - those are precisely the
+samples 0.8.102 named as stalls. In the same ring one real page park appears and closes itself:
+`native-stall {why:"page-pause-starved", buf:0, rs:1, paused:true, movedMs:4001}` ->
+`native-stall-resume {step:1}` -> `native-stall-recovered {tries:1, ms:1000, ct:0.67, rs:4}`. `stop` killed
+pid 3732 and the guest is down; the tab was never his.
