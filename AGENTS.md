@@ -31,6 +31,18 @@ design redoes work is the worst available answer.
   batch spent working), not a tighter loop with a CPU cap.
 - **Measure, then say it.** A performance claim names process id (or job), measured CPU/RSS before and
   after, and the instrument. `CANNOT-MEASURE` is an acceptable answer; an unqualified "otimizado" is not.
+- **Scratch and measurement output never land on `I:`** (owner-side measurement 2026-11-18, relayed by
+  the watcher lane: that volume is a 4 TB SMR platter with a write backlog, `99 ms` to `10 930 ms` per
+  operation and `WriteLatencyMax 31.5 s`, reads fine). Every probe script, log dump and generated file
+  goes to the declared store `G:/Temp/ko-scratch` (add it to the census with `--own "G:/Temp/ko-scratch*"`
+  the same day you create it), and the files a run created are deleted by exact path, never by wildcard.
+- **The guest marker is `G:/Temp/ko-harness/guest.json`, and the filename is not a contract.**
+  Measured 2026-11-18: a guest launched with `KO_MARKER=…/guest-9447.json` read as "no guest" while the
+  browser lived, and `stop` printed `stopped` having killed nothing (15 procs / 1582.9 MB stayed up).
+  Both launchers now scan every `guest*.json` in that directory: `ko-guest.mjs stop` kills the tree for each
+  port a LIVE marker names and deletes every marker, printing `killed pid N on port P (file)` or
+  `stale marker … (pid … not running)`; `ko-harness.mjs` uses the same scan for `guestUp()` and for the
+  second-guest guard. A marker whose pid is dead is deleted, never left to name a process that is gone.
 
 ## Owner rule — every report is answered FROM THE LOG, never from the code (2026-11-15)
 
@@ -61,7 +73,7 @@ owner already applies to the spectacle of a claim being repeated back to him.
 
 ## Disk: this project measures its own bytes (owner order 2026-11-08)
 
-`python I:/!watcher/tools/artifact-census.py --project I:/kicktwitchyoutube_instagram --own "G:/Temp/ko-harness*" --budget-gib 0.4 --gate` — only **rc 0** is a measurement: 2 = above the ceiling, 3 = the walk was cut, 4 = a declared pattern resolved to nothing (a half declaration, and no `OK` is printed beside it). A `du` of the checkout cannot answer this: on 2026-11-08 the repo read 41 MiB while 1424 MiB of guest Chrome profiles sat in fifteen `G:/Temp/ko-harness-*` directories. Every profile this project creates lives under the declared root `G:/Temp/ko-harness` (`KO_PROFILE_ROOT`), `ko-harness.mjs start --fresh` keeps the last run plus one previous (an older profile silently serves the previous build), and any new store (download, model, cache) MUST be created under a declared path and added here with `--own`. Measured after the cleanup: 123 MiB owned, 82 MiB of it the declared store, 0 UNPROVEN.
+`python I:/!watcher/tools/artifact-census.py --project I:/kicktwitchyoutube_instagram --own "G:/Temp/ko-harness*" --own "G:/Temp/ko-scratch*" --budget-gib 0.4 --gate` — only **rc 0** is a measurement: 2 = above the ceiling, 3 = the walk was cut, 4 = a declared pattern resolved to nothing (a half declaration, and no `OK` is printed beside it). A `du` of the checkout cannot answer this: on 2026-11-08 the repo read 41 MiB while 1424 MiB of guest Chrome profiles sat in fifteen `G:/Temp/ko-harness-*` directories. Every profile this project creates lives under the declared root `G:/Temp/ko-harness` (`KO_PROFILE_ROOT`), `ko-harness.mjs start --fresh` keeps the last run plus one previous (an older profile silently serves the previous build), and any new store (download, model, cache) MUST be created under a declared path and added here with `--own`. Measured after the cleanup: 123 MiB owned, 82 MiB of it the declared store, 0 UNPROVEN.
 
 ## Skill routing (mandatory)
 
@@ -1908,3 +1920,46 @@ real `audio-mismatch {phase:"swap", heldMs}` with its re-send; one row per strea
 number he asked for is its own transition: `audio-agreed {ms}`, from our command to the first report that
 matches it, once per command (`audioAgreedAt` reset by `applyOverlayAudio`). Answer gains
 `swap audio: N agreement(s), worst=Ms staleReports=N`.
+
+### 0.8.102/0.8.103: the watchdog that reloaded a HEALTHY live, and the fixture that hid it
+
+Owner, verbatim: *"to vendo uma live. travou do nada e nao quer destravar. com certeza destrava se eu
+clicar pause despause."* His 0.8.101 ring answered it (`player=kick` on `alanzoka`, `kick:null`, so the
+PAGE's own element was the surface): `display-frozen {ms:3049, pos:29.88}` -> `video-pause {ct:30, rs:1,
+paused:true}` -> **2m11s** of `display-clock ... verdict PAUSED pos=29.98 buf=0.05` with no `native-*`
+row at all. The clock was already being measured, and nothing consumed the measurement: `stall`/`reconnect`
+existed only for OUR frame, and `resumeNative`/`nudgeNativeToBuffer` only on the ad path's hand-back.
+
+**0.8.102 added the consumer, and it shipped a worse defect than the one it cured.** The stall trigger was
+the forward buffer (`runway < NATIVE_STALL_BUFFER_SEC = 1.5`), and 1.5 s is the HEALTHY steady state of a
+Twitch live: hls.js keeps the playhead `liveSyncDuration` (3 s) behind the playlist edge. His own ring on
+the installed 0.8.102 shows it four times, on a picture that was advancing:
+
+|ms|row|what it says|
+|---|---|---|
+|827741|`native-stall {buf:1.49, rs:4, movedMs:0, why:"clock-frozen"}`|nothing is frozen: `rs:4`, `movedMs:0`|
+|890738|`native-stall {buf:1.43, from:71.17, to:77.15}`|the clock advanced 5.98 s in that same row|
+|946850|`native-stall-reload {buf:1.32, step:2}`|**the source of a healthy live was reloaded**|
+|947674|`boot {href:…/alanzoka, version:0.8.102}`|that reload is the page restarting under him|
+
+So a live he was watching was named a stall every ~10 s, `play()` was called on an element already playing,
+and the second step reloaded it. **0.8.103 makes the CLOCK the trigger** (`advancing = sample.movedMs <
+DISP_FROZEN_MS`), and `starved` is gone from the playing branch entirely: `runway` remains the number the
+paused branch and the nudge use, never a stall by itself.
+
+**The arm was green because the fixture was not his row.** Limb (a) built a `buffered.end` 3 s ahead of the
+playhead, so `runway < 1.5` could never fire there; his live measures 1.32-1.63 s. Limb (a2) now builds
+exactly his numbers and asserts nothing is touched, and the RED (restoring the 0.8.102 pair) reproduces his
+row byte for byte: `native-stall [{"why":"clock-frozen","from":77.15,"rs":4,"buf":1.43,"playing":true,
+"movedMs":0}]`. Limb (a2) also had to seed an OLD episode (`KO.nat.since`) - `nativeStallWatch` correctly
+declines to act within the same millisecond, and without the seed the arm passed with the defect restored.
+
+Two more lessons, both paid for in this wave:
+- **A guest fixture only proves the arm, and an arm written from the code proves the code.** The first guest
+  measurement ("the page-parked element ran 41 s with no attempt, with the fix `native-stall` ->
+  `native-stall-resume` -> `native-stall-recovered`") was true and still shipped the reload, because it
+  used the parked shape and never the healthy one.
+- **A build already loaded in his Chrome is a defect to retire, not to leave.** `after=0.8.103` came from
+  `node _tools/ko-reload-persistent.mjs --port=9222` after `rsync` into the installed copy; the tab that
+  was running 0.8.102 heals itself once hidden (0.8.82's `recoverStale`), which is why the fix has to be
+  installed before it can be observed.

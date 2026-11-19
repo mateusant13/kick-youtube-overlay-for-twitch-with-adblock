@@ -252,6 +252,31 @@ const DISP_FROZEN_MS = 2500; // a playing surface that has not moved this long i
 const DISP_REPEAT_SEC = 1; // a backwards step this large is a repeat of what he saw
 const DISP_BEHIND_SEC = 8; // CLEAN_LAT_MAX: past this the picture is not live
 
+// ---- the PAGE's own player: a bounded recovery from a stall ---------------
+// Owner report 2026-11-18, verbatim: "to vendo uma live. travou do nada e nao
+// quer destravar. com certeza destrava se eu clicar pause despause."
+// His own ring (0.8.101, twitch.tv/alanzoka, `player=kick` with NO kick mirror:
+// `kick:null`, `wrapShown:false` for the whole load):
+//
+//   39.7s  video-waiting {ct:29.9, rs:2, paused:false}  <- the segment stream stopped
+//   42.8s  display-frozen {ms:3049, pos:29.88}          <- the clock he can see is stuck
+//   45.6s  video-pause   {ct:30, rs:1, paused:true}     <- the PAGE parked its own element
+//  +2m11s  display-clock ... PAUSED pos=29.98 buf=0.05  <- nothing of ours tried anything
+//  +2m13s  (his own pause/unpause) ct:0 -> ct:0.1 rs:4  <- the cure he named
+//
+// The pause was not ours: no `native-pause`, no `ad-ui-hold`, no `ad-hold`, no
+// ownership (there was no layer at all), and the element was `rs:1` with 0.05 s
+// in front of the playhead. The extension had MEASURED the freeze since 0.8.98
+// and had nothing to do with it: `stall`/`reconnect` only ever existed for OUR
+// frame, and the native recovery only ever ran on the ad path's hand-back.
+// This is that recovery for the page's own surface, driven by the sample that
+// was already being taken once a second.
+const NATIVE_STALL_MS = 4000; // a stalled episode this long is the "travou" he reports
+const NATIVE_STALL_BUFFER_SEC = 1.5; // less forward media than this is not a re-buffer
+const NATIVE_USER_PAUSE_MS = 2000; // a pause this soon after real input is HIS
+const NATIVE_RECOVER_GAP_MS = 10000; // between attempts: a loop here is the defect
+const NATIVE_RECOVER_MAX = 2; // resume inside held media, then ONE source refresh
+
 // Which surface is on screen right now, and where it is. `player=twitch` means
 // the page's own element; anything else means our frame, and in that mode the
 // native is paused BY DESIGN, so reading it would answer the wrong question.
@@ -280,6 +305,8 @@ function dispSample() {
     let latSrc = null;
     let playing = false;
     let buf = null;
+    let pageVideo = null;
+    let rs = null;
     if (srf === 'kick' || srf === 'youtube') {
       const st = (srf === 'kick' ? KO.kickState : KO.ytState) || {};
       pos = Number(srf === 'kick' ? st.pos : st.ct);
@@ -288,8 +315,10 @@ function dispSample() {
       playing = st.state === 'Playing';
     } else {
       const v = twitchVideo();
+      pageVideo = v;
       if (v) {
         pos = Number(v.currentTime);
+        rs = Number(v.readyState);
         playing = !v.paused && v.readyState >= 2;
         // Twitch reports the live edge as the literal 2^30 sentinel on most
         // loads, and then the distance to it is NOT-MEASURABLE - which the row
@@ -358,6 +387,7 @@ function dispSample() {
         lat: lat == null ? null : +lat.toFixed(2),
         latSrc,
         buf: buf == null ? null : +buf.toFixed(2),
+        rs,
         playing,
         verdict,
         movedMs: d.movedAt ? now - d.movedAt : null,
@@ -385,10 +415,291 @@ function dispSample() {
     // The CURRENT answer, readable without a row: two identical samples inside
     // DISP_SAMPLE_MS emit nothing by design, and "what does the display say right
     // now" must still be answerable (the suites read it, and so can a probe).
-    d.last = { srf, pos: +pos.toFixed(2), delta: delta == null ? null : +delta.toFixed(2), lat: lat == null ? null : +lat.toFixed(2), latSrc, buf: buf == null ? null : +buf.toFixed(2), playing, verdict };
+    d.last = { srf, pos: +pos.toFixed(2), delta: delta == null ? null : +delta.toFixed(2), lat: lat == null ? null : +lat.toFixed(2), latSrc, buf: buf == null ? null : +buf.toFixed(2), rs, playing, verdict };
+    // The page's own element gets the same second of attention. It runs AFTER
+    // the row, so the log always holds the state that caused the attempt before
+    // the attempt itself.
+    if (srf === 'twitch') {
+      try {
+        nativeStallWatch(pageVideo, now, { frozen: verdict === 'FROZEN', movedMs: d.movedAt ? now - d.movedAt : 0 });
+      } catch {
+        /* a recovery must never break the sampler */
+      }
+    } else {
+      nativeStallIdle();
+    }
   } catch {
     /* a diag line must never break the overlay */
   }
+}
+
+// ---- the recovery itself ---------------------------------------------------
+// Rows are transitions with their numbers, never per tick: one `native-stall`
+// when an episode is named, one row per attempt, one row when the clock comes
+// back or when the budget is spent.
+function nativeStallIdle() {
+  const nat = KO.nat;
+  if (!nat) return;
+  nat.since = 0;
+  nat.why = '';
+  nat.logged = false;
+  nat.failed = false;
+  nat.tries = 0;
+  nat.lastAt = 0;
+  nat.from = null;
+}
+
+// A pause is not a user pause by itself. Two facts decide: WHEN it happened
+// relative to real input, and what the element looked like. A trusted click or
+// key lands in INPUT_FRESH_MS of the pause it causes (measured: the owner's own
+// pause/unpause at 2m13 of his ring), while the page pausing its own frozen
+// element lands with no input at all. The per-element stamp is the record, the
+// same rule `KO.twPaused` already applies to the elements we paused ourselves.
+function installNativeStamp() {
+  if (KO.natStamp) return;
+  KO.natStamp = true;
+  const mark = (ev) => {
+    KO.lastInputAt = Date.now();
+    KO.lastInputWhat = String((ev && ev.type) || '');
+  };
+  for (const t of ['pointerdown', 'mousedown', 'keydown', 'touchstart', 'click']) {
+    try {
+      document.addEventListener(t, mark, { capture: true, passive: true });
+    } catch {
+      /* an engine without capture must not break the sampler */
+    }
+  }
+  try {
+    document.addEventListener(
+      'pause',
+      (e) => {
+        const t = e && e.target;
+        if (!t || t.tagName !== 'VIDEO') return;
+        KO.natPause = {
+          el: t,
+          at: Date.now(),
+          ct: +Number(t.currentTime || 0).toFixed(2),
+          rs: t.readyState,
+          hidden: !!document.hidden,
+          inputAgeMs: KO.lastInputAt ? Date.now() - KO.lastInputAt : null,
+          input: KO.lastInputWhat || null,
+          ours: KO.twPaused.has(t),
+        };
+      },
+      true,
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
+// Forward media in hand AT THE PLAYHEAD. `buf` on the clock row is the distance
+// to the newest downloaded frame, which can be a later range entirely; the
+// runway that decides whether play() can start is the one the playhead sits in.
+function nativeRunway(v) {
+  try {
+    const ct = Number(v.currentTime || 0);
+    let ahead = 0;
+    const b = v.buffered;
+    for (let i = 0; i < (b ? b.length : 0); i++) {
+      if (ct >= b.start(i) - 0.1 && ct <= b.end(i) + 0.1) ahead = Math.max(ahead, b.end(i) - ct);
+    }
+    return ahead;
+  } catch {
+    return 0;
+  }
+}
+
+// "No overlay owns the picture" has to include the AD PATH, which mounts its own
+// frame (#ko-adfix) over the same element. The ad path owns the hand-back itself
+// (native-resume / native-nudge / native-recover), and two recoveries on one
+// element would fight - the defect 0.8.78 already paid for.
+//
+// PRESENCE IS NOT OWNERSHIP. Measured on the guest 2026-11-18 (twitch.tv/rodil,
+// 0.8.102): `#ko-adfix` AND `#ko-adfix-cover` were both mounted with NO pod
+// running (the standby preload sits at 1% opacity; the cover is `display:none`),
+// `data-ko-audio-vis` was `twitch`, and a presence test blocked the recovery of
+// an element the page had parked at `rs:1, ct:0` - the exact defect this fixes.
+// So the test is what the ad path PUBLISHES about the picture:
+//  - `data-ko-audio-vis="ad"`: the audio authority says the clean player is the
+//    visible surface (the claim covers the pre-reveal hold, when the native is
+//    parked and the cover is not painted yet);
+//  - the cover is painted (a pod must not be watched);
+//  - the frame is above 1% opacity (it mounts at 0.01 and is switched to 1 the
+//    moment it takes the picture).
+function adPathOwnsScreen() {
+  try {
+    const root = document.documentElement;
+    if (String(root.getAttribute('data-ko-audio-vis') || '') === 'ad') return true;
+    const cover = document.getElementById('ko-adfix-cover');
+    if (cover && cover.isConnected && getComputedStyle(cover).display !== 'none') return true;
+    const frame = document.getElementById('ko-adfix');
+    if (frame && frame.isConnected) {
+      const op = parseFloat(String(getComputedStyle(frame).opacity || '0'));
+      if (Number.isFinite(op) && op > 0.05) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+// A live element reports an infinite (or 2^30 sentinel) duration; a rewind or a
+// VOD reports a real one. The refresh below jumps to whatever the source's
+// timeline starts at, which is the live edge for a live element and the USER'S
+// POSITION for anything else - so it is never applied to the latter.
+function nativeIsLive(v) {
+  try {
+    const d = Number(v.duration);
+    return !isFinite(d) || d <= 0;
+  } catch {
+    return false;
+  }
+}
+
+// Rewind INSIDE the range the playhead already sits in, and only when that
+// range cannot start playing on its own. Never the "range ended before the
+// playhead" branch: that position is a fresh forward seek into media not yet
+// downloaded, and moving it back is the jump-cut the owner reports as repetition.
+function nudgeInsideHeldMedia(v) {
+  try {
+    const ct = Number(v.currentTime || 0);
+    const b = v.buffered;
+    let ahead = 0;
+    let target = null;
+    for (let i = 0; i < (b ? b.length : 0); i++) {
+      if (!(ct >= b.start(i) - 0.1 && ct <= b.end(i) + 0.1)) continue;
+      ahead = Math.max(ahead, b.end(i) - ct);
+      if (b.end(i) - b.start(i) >= NATIVE_STALL_BUFFER_SEC + 0.5 && b.end(i) - ct < NATIVE_STALL_BUFFER_SEC) {
+        target = Math.max(target === null ? -Infinity : target, Math.max(b.start(i), b.end(i) - NATIVE_STALL_BUFFER_SEC));
+      }
+    }
+    if (target === null || !(target < ct - 0.25)) return null;
+    v.currentTime = target;
+    return { from: +ct.toFixed(2), to: +target.toFixed(2), ahead: +ahead.toFixed(2) };
+  } catch {
+    return null;
+  }
+}
+
+// One second of judgement over the page's element. Never a hidden tab (the
+// sampler does not even run there), never a user pause, never while an overlay
+// owns the picture, never on a DVR/VOD position, never a loop.
+function nativeStallWatch(v, now, sample) {
+  const nat = (KO.nat = KO.nat || { since: 0, tries: 0, lastAt: 0, why: '', logged: false, failed: false, from: null });
+  if (!KO.enabled || !v || !v.isConnected) return nativeStallIdle();
+  if (overlayOwnsPicture() || coldHoldActive() || adPathOwnsScreen() || KO.twPaused.has(v)) return nativeStallIdle();
+  const rs = Number(v.readyState || 0);
+  const ct = +Number(v.currentTime || 0).toFixed(2);
+  const runway = +nativeRunway(v).toFixed(2);
+  const starved = runway < NATIVE_STALL_BUFFER_SEC;
+  // A THIN FORWARD BUFFER IS THE HEALTHY STATE OF A TWITCH LIVE, not a stall.
+  // hls.js keeps the playhead `liveSyncDuration` behind the edge, so his own
+  // ring measures 1.32-1.63 s of runway on a picture that is advancing 1.00 s
+  // per second. 0.8.102 used `runway < 1.5` as a stall trigger and fired on
+  // exactly that: `native-stall {why:"clock-frozen", rs:4, buf:1.43,
+  // movedMs:0}` on a `display-clock ... delta:5.99 verdict:LIVE` one ms earlier,
+  // then `play()` on an element already playing and, on the second step, a
+  // source RELOAD of a healthy player (955 s of his ring). A stall is now the
+  // CLOCK not advancing: `movedMs` past `DISP_FROZEN_MS`, or a page pause.
+  const advancing = sample.movedMs != null && sample.movedMs < DISP_FROZEN_MS;
+  const healthy = !v.paused && rs >= 3 && advancing;
+  if (healthy) {
+    if (nat.tries && !nat.failed) {
+      // The transition that answers the report: it came back, and how long the
+      // frozen picture lasted after the first attempt.
+      diag('native-stall-recovered', { tries: nat.tries, ms: nat.lastAt ? now - nat.lastAt : null, ct, rs, buf: runway });
+    }
+    return nativeStallIdle();
+  }
+  if (v.paused) {
+    const p = KO.natPause && KO.natPause.el === v ? KO.natPause : null;
+    if (!p) return nativeStallIdle(); // no stamp: not provably a stall-pause
+    const fresh = p.inputAgeMs != null && p.inputAgeMs <= NATIVE_USER_PAUSE_MS;
+    if (fresh || p.hidden || p.ours) return nativeStallIdle(); // his pause, ours, or a hidden tab
+    if (!starved) return nativeStallIdle(); // a healthy parked player stays parked
+    if (now - p.at < NATIVE_STALL_MS) return; // give the page's own reload a beat
+  } else if (!(rs < 3 || sample.frozen)) {
+    // `starved` deliberately absent: a thin forward buffer on an ADVANCING
+    // element is hls.js's steady state, and poking it is the jump-cut. Only a
+    // clock that stopped (`sample.frozen`) or an element that cannot play
+    // forward (`rs < 3`) is a stall.
+    return nativeStallIdle();
+  }
+  if (!nat.since) {
+    nat.since = now - Math.max(0, Math.min(Number(sample.movedMs) || 0, 600000));
+    nat.from = ct;
+  }
+  if (now - nat.since < NATIVE_STALL_MS) return;
+  if (!nat.logged) {
+    nat.logged = true;
+    nat.why = v.paused ? 'page-pause-starved' : rs < 3 ? 'no-future-data' : 'clock-frozen';
+    // NAMES ITSELF. "Was it the page, us, or him" is answered here: `inputAgeMs`
+    // is the distance from the last real input to the pause, `ours` is whether
+    // this extension had parked the element, and `owner` is who the extension
+    // believed owned the picture (empty = nobody).
+    diag('native-stall', {
+      why: nat.why,
+      from: nat.from,
+      to: ct,
+      rs,
+      buf: runway,
+      playing: !v.paused,
+      paused: !!v.paused,
+      movedMs: sample.movedMs == null ? null : +sample.movedMs,
+      inputAgeMs: KO.natPause && KO.natPause.el === v ? KO.natPause.inputAgeMs : null,
+      owner: KO.ownerAttr || null,
+    });
+  }
+  if (nat.lastAt && now - nat.lastAt < NATIVE_RECOVER_GAP_MS) return;
+  if (nat.tries >= NATIVE_RECOVER_MAX) {
+    if (!nat.failed) {
+      nat.failed = true;
+      diag('native-stall-failed', { tries: nat.tries, ct, rs, buf: runway, why: nat.why });
+    }
+    return;
+  }
+  nat.tries += 1;
+  nat.lastAt = now;
+  if (nat.tries === 1) {
+    const nudged = nudgeInsideHeldMedia(v);
+    try {
+      const p = v.play();
+      if (p && p.catch) p.catch(() => {});
+    } catch {
+      /* detached */
+    }
+    diag('native-stall-resume', {
+      step: 1,
+      from: nudged ? nudged.from : ct,
+      to: nudged ? nudged.to : ct,
+      rs,
+      buf: runway,
+      nudged: nudged ? nudged.to : null,
+      why: nat.why,
+    });
+    return;
+  }
+  // Still stalled with the resume spent: reload the source once. Measured in the
+  // guest 2026-11-18 (`_evidence/KO-20261118-01-guest.txt`, 0.8.102): the page
+  // parked its own element at `{paused:true, rs:1, ct:0}` and the resume step
+  // took it back to `{paused:false, rs:4, buf:1.63}` in one second. Never on a
+  // DVR/VOD: there the rebuild lands at the START of the timeline, not at the
+  // edge, which is the jump he reports.
+  if (!nativeIsLive(v)) {
+    diag('native-stall-skipped', { why: 'not-live', ct, rs, buf: runway, dur: Number.isFinite(Number(v.duration)) ? Math.round(Number(v.duration)) : 'inf' });
+    nat.tries = NATIVE_RECOVER_MAX;
+    nat.failed = true;
+    return;
+  }
+  try {
+    v.load();
+    const p = v.play();
+    if (p && p.catch) p.catch(() => {});
+  } catch {
+    /* detached */
+  }
+  diag('native-stall-reload', { step: nat.tries, ct, rs, buf: runway });
 }
 
 // The audio authority cannot write the log itself (it has no message channel and
@@ -460,7 +771,7 @@ const NOT_CHANNEL = new Set([
 
 // Build marker for the diag stream — lets us tell which code a tab runs
 // (content scripts of pre-reload tabs survive extension reloads).
-const KO_VER = '0.8.101';
+const KO_VER = '0.8.103';
 // How long a lost picture may last before the native player is allowed to
 // reclaim the screen (owner 2026-11-11: an ad and the player fighting).
 const OWNER_GRACE_MS = 6000;
@@ -3376,6 +3687,9 @@ function startWatchers() {
   // with no kick mirror, or `player=twitch`), which is exactly the case where
   // "is the display live" needs an answer.
   if (!KO.dispTimer) KO.dispTimer = setInterval(dispSample, 1000);
+  // The input/pause stamps the native recovery reasons about: a pause a human
+  // caused and a pause the page caused look identical on the element.
+  installNativeStamp();
   // The boot probe can race the Twitch player's start — re-probe the
   // moment the player starts playing, throttled. Video events don't
   // bubble; capture catches them.

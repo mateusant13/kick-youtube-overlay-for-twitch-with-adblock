@@ -1082,6 +1082,29 @@
         "Arms: 'a volume drop after a key that cannot change a volume is refused', 'ArrowDown IS a volume key', RED with the gate disarmed"
       ],
       "owner_validation": "pending: a pod on his Chrome must show `audio-refused {why:\"not-volume-control\", dir:\"drop\"}` instead of an accepted 0.32"
+    },
+    {
+      "id": "KO-20261118-01",
+      "state": "recurrence-watch",
+      "author": "lane",
+      "reported": "2026-11-18",
+      "fixed_in": "0.8.103",
+      "commit": null,
+      "verified": false,
+      "title": "The page's own Twitch player stalled and nothing in the extension could recover it",
+      "hypothesis": "`display-clock`/`display-frozen` (0.8.98) detected the freeze but no consumer existed: every `native-*` recovery lived on the ad path's hand-back, and the stall/reconnect machinery belonged to the kick/yt overlay frame only. In his 0.8.101 ring the page parked its own starved element (`video-pause {ct:30, rs:1}` at 45.6 s, `buf:0.05`) with no `native-pause`, no `ad-ui-hold`, no ownership at all, and nothing attempted a resume/nudge/reload for the following 2m11s; the cure he named was his own pause/unpause, which is exactly `play()` on the same element.",
+      "falsifier": "With a starved element that is not user-paused the sampler must name the stall once, attempt `play()` (and a rewind inside held media when the playhead has no runway), then one source refresh, and log `native-stall-recovered`; with a user pause (input within 2 s), a hidden tab, an overlay or ad-path owner, or a DVR/VOD position it must attempt nothing - otherwise the arm goes red.",
+      "evidence": [
+        "Owner report 2026-11-18, verbatim: \"to vendo uma live. travou do nada e nao quer destravar. com certeza destrava se eu clicar pause despause.\"",
+        "His own ring (0.8.101, twitch.tv/alanzoka, `player=kick`, `kick:null`): `273762 display-frozen {ms:3049, pos:29.88}` -> `276670 video-pause {ct:30, rs:1, paused:true}` -> 2m11s of `display-clock ... verdict PAUSED pos=29.98 buf=0.05` with zero recovery rows",
+        "Guest measurement 2026-11-18, `_evidence/KO-20261118-01-guest.txt` (G:/Temp/ko-harness, one guest, twitch.tv/rodil, 0.8.102): the page-parked element ran 41 s with no attempt before the fix; `worker-hook` x2 with no `worker-playlist` at all, and `audio-refused {why:'stale-input'}` while the element kept playing rs:4 (the arbiter refuses a volume write, it never pauses) - so the defect is (b); with the fix the same park produced `native-stall {why:'page-pause-starved', rs:1, buf:0}` -> `native-stall-resume` -> `content-play` -> `native-stall-recovered {tries:1, ms:1000, ct:0.67, rs:4}`",
+        "The same guest corrected the first guard: `#ko-adfix`/`#ko-adfix-cover` are mounted with NO pod (standby preload), so presence blocked the recovery in the defect state; the guard now reads `data-ko-audio-vis`, the painted cover or a frame above 1% opacity",
+        "W3's lesson is kept: the reload never runs on a DVR/VOD position (`native-stall-skipped {why:\"not-live\"}`), because the rebuild lands at the START of the timeline there",
+        "Arms: 'N1 native stall: page pause, freeze, user pause, hidden tab, ownership and DVR' + RED with the watch call removed, with the user-pause guards removed, with the hidden-tab guard removed, with the ownership guard removed, and with the DVR refusal removed",
+        "REGRESSION the installed 0.8.102 then produced in his own Chrome (twitch.tv/alanzoka, ring version=0.8.102): `native-stall {buf:1.49, rs:4, movedMs:0, why:\"clock-frozen\"}` at 827741, `{buf:1.43, from:71.17, to:77.15}` at 890738 (the clock had just advanced 5.98 s in that same row), and `native-stall-reload {buf:1.32, step:2}` at 946850 followed by `boot {version:0.8.102}` at 947674 - a healthy live was reloaded by the watchdog. Cause: the stall trigger used the forward BUFFER (`runway < NATIVE_STALL_BUFFER_SEC = 1.5`), and hls.js holds the playhead ~3 s behind the edge, so a healthy Twitch live measures 1.32-1.63 s of runway by design. 0.8.103 makes the clock the trigger (`advancing = movedMs < DISP_FROZEN_MS`) and drops `starved` from the playing-element branch; `runway` remains the paused branch's and the nudge's number only.",
+        "Arm a2 in `kick-overlay/content-fix-test.cjs` reproduces the row above byte for byte, and the RED restores the 0.8.102 pair (`healthy = rs>=3 && !starved` plus `starved` in the trigger): `AssertionError: a THIN BUFFER on an advancing live element was named a stall: [{\"why\":\"clock-frozen\",\"from\":77.15,\"to\":77.15,\"rs\":4,\"buf\":1.43,\"playing\":true,\"paused\":false,\"movedMs\":0,\"inputAgeMs\":null,\"owner\":null}]`. The arm seeds an OLD episode (`KO.nat.since`) because `nativeStallWatch` correctly declines to act within the same millisecond - without the seed the arm passed with the defect restored."
+      ],
+      "owner_validation": "pending: KO-20261118-01's own cure shipped a REGRESSION in 0.8.102 (a healthy live reloaded, table in AGENTS.md 0.8.102/0.8.103) and was retired from his Chrome the same day; 0.8.103 is installed (`ko-reload-persistent` -> after=0.8.103). The live half now owed is: a real stall on 0.8.103 in his Chrome shows `native-stall {why:\"clock-frozen|page-pause-starved|no-future-data\", from, to, rs, buf, movedMs}` -> `native-stall-resume`/`-reload` -> `native-stall-recovered`, AND no `native-stall` row on a healthy playing element (`movedMs` under 2500, `rs` at 3-4) and no `native-stall-reload` inside 10 minutes of ordinary viewing."
     }
   ]
 }

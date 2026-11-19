@@ -72,18 +72,41 @@ function pruneProfiles(keep = KEEP_PROFILES) {
 }
 
 const GUEST_MARKER = process.env.KO_MARKER || 'G:/Temp/ko-harness/guest.json';
+const MARKER_DIR = path.dirname(GUEST_MARKER);
+
+// The marker's FILENAME is not a contract: a launcher may write
+// `guest-<port>.json` (measured 2026-11-18: a guest launched with
+// `KO_MARKER=.../guest-9447.json` read as "no guest" here while the browser
+// lived, and `stop` reported success having killed nothing). Every marker beside
+// the default one is read, the pid must still be alive, and a marker naming a
+// dead pid is deleted instead of left to name a process that is gone.
+function markerFiles() {
+  if (process.env.KO_MARKER) return [GUEST_MARKER];
+  try {
+    return readdirSync(MARKER_DIR).filter((n) => /^guest.*\.json$/.test(n)).map((n) => path.join(MARKER_DIR, n));
+  } catch { return []; }
+}
+
+function liveMarkers() {
+  const out = [];
+  for (const file of markerFiles()) {
+    let j;
+    try { j = JSON.parse(readFileSync(file, 'utf8')); } catch { continue; }
+    try { process.kill(Number(j.pid), 0); } catch {
+      try { rmSync(file, { force: true }); } catch { /* another lane may hold it */ }
+      continue;
+    }
+    out.push({ ...j, file, port: Number(j.port) });
+  }
+  return out;
+}
 
 // A live CDP port is not enough to call something a guest: the owner's Chrome
 // answers on its relay port too, and treating that as a guest drove his browser
 // (measured 2026-11-11: nine of his tabs closed). The marker is written by the
 // guest launcher and deleted by its stop, and the pid must still be alive.
 function guestMarker() {
-  try {
-    const j = JSON.parse(readFileSync(GUEST_MARKER, 'utf8'));
-    if (Number(j.port) !== PORT) return null;
-    try { process.kill(Number(j.pid), 0); } catch { return null; }
-    return j;
-  } catch { return null; }
+  return liveMarkers().find((j) => j.port === Number(PORT)) || null;
 }
 
 async function guestUp(timeout = 1500) {
@@ -156,6 +179,11 @@ const GUEST_PORTS = [9444, 9445, 9446, 9447, 9448, 9449];
 const flagsAllowSecondGuest = process.argv.includes('--second-guest');
 
 async function otherGuestAlive() {
+  // A marker with a live pid is stronger evidence than a port probe: a guest
+  // launched on a port outside GUEST_PORTS (or holding the port while its devtools
+  // server is still coming up) is invisible to the probe and a second guest used
+  // to start (measured 2026-11-18, marker name `guest-9447.json`).
+  for (const j of liveMarkers()) if (j.port !== Number(PORT)) return j.port;
   for (const port of GUEST_PORTS) {
     if (port === PORT) continue;
     try {

@@ -8,7 +8,7 @@
 //        node ko-guest.mjs stop
 //        node ko-guest.mjs status
 import { spawn, spawnSync } from 'node:child_process';
-import { rmSync, writeFileSync, appendFileSync, mkdirSync } from 'node:fs';
+import { rmSync, writeFileSync, appendFileSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 
 const CHROME = process.env.KO_CHROME || 'C:/Program Files/Google/Chrome/Application/chrome.exe';
 // Under the harness's declared profile root (see ko-harness.mjs) so the disk
@@ -31,7 +31,7 @@ function log(...a) {
   console.log(s.trimEnd());
 }
 
-function killTree() {
+function killTree(port = PORT) {
   // Match BOTH profile families (ko-guest*, ko-harness-*) but only the browser
   // that owns OUR debug port. Leaving an old harness Chrome alive kept port
   // 9333 and served STALE extension files; killing by profile name instead
@@ -39,7 +39,7 @@ function killTree() {
   // lanes lost their guest and one lost a running parity protocol to a `stop`
   // issued for an unrelated port).
   const ps = 'Get-CimInstance Win32_Process -Filter "Name=\'chrome.exe\'" | ' +
-    `Where-Object { $_.CommandLine -like '*--remote-debugging-port=${PORT}*' } | ` +
+    `Where-Object { $_.CommandLine -like '*--remote-debugging-port=${port}*' } | ` +
     'ForEach-Object { taskkill /PID $($_.ProcessId) /T /F 2>&1 | Out-Null }';
   try {
     // windowsHide: a console-subsystem child spawned from a console-less parent
@@ -54,9 +54,31 @@ function killTree() {
 }
 
 if (process.argv[2] === 'stop') {
-  try { rmSync(process.env.KO_MARKER || 'G:/Temp/ko-harness/guest.json', { force: true }); } catch {}
-  killTree();
-  log('stopped');
+  // A marker FILENAME is not a contract (measured 2026-11-18): a guest launched
+  // with `KO_MARKER=.../guest-9447.json` was invisible to this command, which
+  // deleted the DEFAULT marker, killed nobody, and printed `stopped` while the
+  // browser lived. Read every marker beside the default one, kill the tree for
+  // each port a live marker names, delete every marker, and say what it did.
+  const MK_DIR = 'G:/Temp/ko-harness';
+  const found = [];
+  try {
+    for (const name of readdirSync(MK_DIR)) if (/^guest.*\.json$/.test(name)) found.push(`${MK_DIR}/${name}`);
+  } catch { /* no marker directory is a fact to report, not a crash */ }
+  if (process.env.KO_MARKER && !found.includes(process.env.KO_MARKER)) found.push(process.env.KO_MARKER);
+  const ports = new Set([Number(PORT)]);
+  const said = [];
+  for (const file of found) {
+    let j = null;
+    try { j = JSON.parse(readFileSync(file, 'utf8')); } catch { /* unreadable marker: delete and say so */ }
+    let alive = false;
+    if (j?.pid) { try { process.kill(Number(j.pid), 0); alive = true; } catch { /* dead pid */ } }
+    if (alive) { ports.add(Number(j.port)); said.push(`killed pid ${j.pid} on port ${j.port} (${file})`); }
+    else said.push(`stale marker ${file} (pid ${j?.pid ?? 'none'} not running)`);
+    try { rmSync(file, { force: true }); } catch {}
+  }
+  for (const p of ports) killTree(p);
+  for (const s of said) log(s);
+  log(said.length ? 'stopped' : `nothing to stop: no guest marker in ${MK_DIR} and port ${PORT} freed`);
   process.exit(0);
 }
 

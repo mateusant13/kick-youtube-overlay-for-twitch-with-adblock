@@ -2557,6 +2557,252 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     console.log('D1 display clock: LIVE, REPEAT, FROZEN and PAUSED are named per sample - OK');
   }
 
+  // ---- N1: the page's own player gets a bounded recovery --------------------
+  // Owner 2026-11-18: *"travou do nada e nao quer destravar. com certeza destrava
+  // se eu clicar pause despause."* His ring shows the page pausing its own
+  // starved element and the extension doing nothing (0.8.101). These limbs drive
+  // the REAL sampler and the REAL recovery over a fake page element, one
+  // boundary each: healthy, frozen, page-pause-starved, user pause, hidden tab,
+  // overlay ownership, ad-path ownership, and a DVR it must never reload.
+  {
+    const mkVideo = () => {
+      const v = videoEl('nativeStall');
+      v.paused = false;
+      v.readyState = 4;
+      v.currentTime = 100;
+      v.duration = Infinity;
+      v.playCount = 0;
+      v.loadCount = 0;
+      v.buffered = { length: 1, start: () => 90, end: (i) => (i === 0 ? 103 : 0) };
+      v.play = function () { this.playCount += 1; this.paused = false; return Promise.resolve(); };
+      v.load = function () { this.loadCount += 1; this.readyState = 1; this.currentTime = 0; };
+      fakeVideos.length = 0;
+      fakeVideos.push(v);
+      return v;
+    };
+    let armBase = 0;
+    const rows = (ev) => swCalls.slice(armBase).filter((m) => m && m.__koDiag && m.__koDiag.ev === ev).map((m) => m.__koDiag.data);
+    const reset = () => {
+      armBase = swCalls.length;
+      KO.nat = null;
+      KO.disp = null;
+      KO.natPause = null;
+      KO.lastInputAt = 0;
+      KO.ownerAttr = null;
+      KO.wrap = null;
+      KO.enabled = true;
+      doc.hidden = false;
+      KO.player = 'kick';
+    };
+    const frozen = (v, ms) => {
+      KO.disp = { srf: 'twitch', pos: v.currentTime, movedAt: Date.now() - ms, verdict: 'LIVE', loggedAt: 0, last: null };
+    };
+
+    // (a) healthy: nothing to say and nothing to touch
+    reset();
+    let v = mkVideo();
+    api.dispSample();
+    assert.strictEqual(rows('native-stall').length, 0, 'a healthy playing element was named a stall');
+    assert.strictEqual(v.playCount, 0, 'a healthy playing element was played again');
+
+    // (a2) HIS MEASURED HEALTHY ROW, which the fixture above did not reproduce.
+    // hls.js keeps the playhead 3 s behind the edge, so a live Twitch element
+    // runs at 1.3-1.6 s of forward runway while advancing 1.00 s per second.
+    // 0.8.102 read that thin buffer as a stall: `display-clock {delta:5.99,
+    // verdict:LIVE}` then `native-stall {why:"clock-frozen", rs:4, buf:1.43}` in
+    // the same millisecond, `play()` on a playing element, and a source reload
+    // on the second step. The buffer alone may never be the trigger.
+    reset();
+    v = mkVideo();
+    v.currentTime = 77.15;
+    v.buffered = { length: 1, start: () => 77.15, end: () => 78.58 }; // 1.43 s, exactly his reading
+    frozen(v, 0); // the clock JUST advanced: this is the picture he is watching
+    // Seed an OLD episode, as the (h) limb does: `nativeStallWatch` legitimately
+    // declines to act on a stall that started this millisecond, and an arm that
+    // cannot reach the decision would pass with the defect restored. `KO.nat` is
+    // created by the first sample, so the episode is backdated on the second.
+    api.dispSample();
+    KO.nat.since = Date.now() - 60000;
+    KO.nat.tries = 0;
+    KO.nat.lastAt = Date.now() - 60000;
+    api.dispSample();
+    const a2Rows = rows('native-stall');
+    assert.strictEqual(a2Rows.length, 0, `a THIN BUFFER on an advancing live element was named a stall: ${JSON.stringify(a2Rows)}`);
+    assert.strictEqual(v.playCount, 0, 'a healthy live element was play()ed again because its buffer was thin');
+    v.buffered = { length: 1, start: () => 0, end: () => 100.1 };
+    for (let i = 0; i < 3; i++) {
+      v.currentTime += 1;
+      KO.disp.movedAt = Date.now();
+      KO.nat.lastAt = Date.now() - 60000; // past the recovery gap: a re-trigger would act now
+      api.dispSample();
+    }
+    assert.strictEqual(rows('native-stall-reload').length, 0, 'a healthy live element had its source reloaded');
+    assert.strictEqual(v.loadCount, 0, 'the source of a healthy live element was reloaded');
+
+    // (b) the freeze he reports: claims to play, the clock has not moved, and the
+    //     forward runway is gone. This is 42.8s of his ring.
+    reset();
+    v = mkVideo();
+    v.readyState = 2;
+    v.buffered = { length: 1, start: () => 90, end: () => 100.15 };
+    frozen(v, 5000);
+    api.dispSample();
+    const bRows = rows('native-stall');
+    assert.strictEqual(bRows.length, 1, `a starved frozen element did not name itself: ${JSON.stringify(bRows)}`);
+    assert.strictEqual(bRows[0].why, 'no-future-data', `the stall row named the wrong cause: ${JSON.stringify(bRows[0])}`);
+    assert.ok(bRows[0].rs < 3 && bRows[0].buf < 1.5, `the stall row did not carry rs/buf: ${JSON.stringify(bRows[0])}`);
+    const bResume = rows('native-stall-resume');
+    assert.strictEqual(bResume.length, 1, `the first recovery step did not run: ${JSON.stringify(bResume)}`);
+    assert.strictEqual(v.playCount, 1, 'the recovery did not attempt play()');
+    // the clock comes back: one transition row, and the episode closes
+    v.currentTime = 104;
+    v.readyState = 4;
+    v.buffered = { length: 1, start: () => 90, end: () => 106 };
+    api.dispSample();
+    assert.strictEqual(rows('native-stall-recovered').length, 1, 'the recovery did not say the picture came back');
+
+    // (c) his exact state at 45.6s: the PAGE parked a starved element, no input
+    reset();
+    v = mkVideo();
+    v.paused = true;
+    v.readyState = 1;
+    v.currentTime = 29.98;
+    v.buffered = { length: 1, start: () => 29.9, end: () => 30.03 };
+    KO.natPause = { el: v, at: Date.now() - 6000, ct: 30, rs: 1, hidden: false, inputAgeMs: null, input: null, ours: false };
+    frozen(v, 11000);
+    api.dispSample();
+    const cRows = rows('native-stall');
+    assert.strictEqual(cRows.length, 1, `a page-parked starved element was not recovered: ${JSON.stringify(cRows)}`);
+    assert.strictEqual(cRows[0].why, 'page-pause-starved', `the row did not name the PAGE as the parker: ${JSON.stringify(cRows[0])}`);
+    assert.strictEqual(v.playCount, 1, 'the stalled element was never resumed');
+
+    // (d) a USER pause: a trusted key just before it, even on a starved element
+    reset();
+    v = mkVideo();
+    v.paused = true;
+    v.readyState = 4;
+    v.buffered = { length: 1, start: () => 0, end: () => 100.1 };
+    KO.lastInputAt = Date.now() - 200;
+    KO.lastInputWhat = 'keydown';
+    KO.natPause = { el: v, at: Date.now() - 6000, ct: 100, rs: 4, hidden: false, inputAgeMs: 200, input: 'keydown', ours: false };
+    frozen(v, 12000);
+    api.dispSample();
+    assert.strictEqual(rows('native-stall').length, 0, 'a pause the owner made was treated as a stall');
+    assert.strictEqual(v.playCount, 0, 'the owner\'s own pause was overridden');
+
+    // (e) hidden tab: the sampler must not even run
+    reset();
+    v = mkVideo();
+    v.paused = true;
+    v.readyState = 1;
+    v.buffered = { length: 1, start: () => 0, end: () => 100.1 };
+    KO.natPause = { el: v, at: Date.now() - 9000, ct: 1, rs: 1, hidden: false, inputAgeMs: null, ours: false };
+    doc.hidden = true;
+    frozen(v, 12000);
+    api.dispSample();
+    doc.hidden = false;
+    assert.strictEqual(rows('native-stall').length, 0, 'a hidden tab was recovered (that is the alt-tab sound he reported)');
+    assert.strictEqual(v.playCount, 0, 'a hidden tab had play() called on it');
+
+    // (f) an overlay owns the picture
+    reset();
+    v = mkVideo();
+    v.paused = true;
+    v.readyState = 1;
+    KO.wrap = { style: {} };
+    KO.kickState = { state: 'Playing', pos: 500, lat: 3, ts: Date.now() };
+    KO.natPause = { el: v, at: Date.now() - 9000, ct: 1, rs: 1, hidden: false, inputAgeMs: null, ours: false };
+    api.dispSample();
+    assert.strictEqual(rows('native-stall').length, 0, 'the native was recovered while our layer owned the picture');
+    assert.strictEqual(v.playCount, 0, 'the native was played while our layer owned the picture');
+
+    // (g) the ad path owns the screen only when it SHOWS it. Measured on the
+    //     guest 2026-11-18: both nodes stay mounted with no pod (standby preload
+    //     at 1% opacity, cover `display:none`), so presence must not block.
+    const parkStarved = () => {
+      reset();
+      v = mkVideo();
+      v.paused = true;
+      v.readyState = 1;
+      v.buffered = { length: 1, start: () => 0, end: () => 100.1 };
+      KO.natPause = { el: v, at: Date.now() - 9000, ct: 1, rs: 1, hidden: false, inputAgeMs: null, ours: false };
+      frozen(v, 12000);
+    };
+    const withDom = (nodes, vis, fn) => {
+      const prevGet = doc.getElementById;
+      const prevGcs = global.getComputedStyle;
+      doc.getElementById = (id) => nodes[id] || null;
+      global.getComputedStyle = (n) => ({ display: (n && n.__disp) || 'block', opacity: (n && n.__op) || '0.01', height: '', maxHeight: '', position: 'static' });
+      const prevVis = doc.documentElement.getAttribute('data-ko-audio-vis');
+      if (vis == null) doc.documentElement.attrs['data-ko-audio-vis'] = '';
+      else doc.documentElement.attrs['data-ko-audio-vis'] = vis;
+      try {
+        fn();
+      } finally {
+        doc.getElementById = prevGet;
+        global.getComputedStyle = prevGcs;
+        if (prevVis == null) delete doc.documentElement.attrs['data-ko-audio-vis'];
+        else doc.documentElement.attrs['data-ko-audio-vis'] = prevVis;
+      }
+    };
+    // g1: the standby preload exists but nothing is shown: recover.
+    parkStarved();
+    {
+      const frame = el('iframe');
+      frame.__op = '0.01';
+      const cover = el('div');
+      cover.__disp = 'none';
+      withDom({ 'ko-adfix': frame, 'ko-adfix-cover': cover }, '', () => api.dispSample());
+    }
+    assert.strictEqual(rows('native-stall').length, 1, 'a mounted standby frame blocked the recovery (measured guest defect)');
+    assert.strictEqual(v.playCount, 1, 'the native was left parked because a hidden frame existed');
+    // g2: the ad frame is revealed: do not touch the native.
+    parkStarved();
+    {
+      const frame = el('iframe');
+      frame.__op = '1';
+      withDom({ 'ko-adfix': frame }, '', () => api.dispSample());
+    }
+    assert.strictEqual(rows('native-stall').length, 0, 'the native was recovered while the clean player was on screen');
+    assert.strictEqual(v.playCount, 0, 'the native was played under the clean player');
+    // g3: the cover is painted: a pod must not be watched, so no recovery.
+    parkStarved();
+    {
+      const cover = el('div');
+      cover.__disp = 'flex';
+      withDom({ 'ko-adfix-cover': cover }, '', () => api.dispSample());
+    }
+    assert.strictEqual(rows('native-stall').length, 0, 'the native was recovered under a painted ad cover');
+    // g4: the authority says the clean player is the visible surface.
+    parkStarved();
+    withDom({}, 'ad', () => api.dispSample());
+    assert.strictEqual(rows('native-stall').length, 0, 'the native was recovered while the audio authority had the ad surface visible');
+    assert.strictEqual(v.playCount, 0, 'the native was played while ad was the visible surface');
+
+    // (h) a DVR position is never reloaded: the rebuild lands at the start of the
+    //     timeline, not at the edge, so the second step must refuse and say why.
+    reset();
+    v = mkVideo();
+    v.paused = true;
+    v.readyState = 1;
+    v.duration = 3600;
+    v.buffered = { length: 1, start: () => 0, end: () => 100.1 };
+    KO.natPause = { el: v, at: Date.now() - 9000, ct: 1, rs: 1, hidden: false, inputAgeMs: null, ours: false };
+    frozen(v, 12000);
+    api.dispSample();
+    KO.nat.lastAt = Date.now() - 60000; // the resume is spent and its gap has passed
+    KO.nat.tries = 1;
+    KO.nat.since = Date.now() - 60000;
+    api.dispSample();
+    const hSkip = rows('native-stall-skipped');
+    assert.strictEqual(hSkip.length, 1, `a DVR position was not refused with a reason: ${JSON.stringify(hSkip)}`);
+    assert.strictEqual(hSkip[0].why, 'not-live', 'the refusal did not name the reason');
+    assert.strictEqual(v.loadCount, 0, 'a DVR position was reloaded to the live edge (that is the jump he reports)');
+
+    reset();
+    console.log('N1 native stall: page pause, freeze, user pause, hidden tab, ownership and DVR - OK');
+  }
+
   // ANTI-VACUITY. Every arm above prints one "<label> - OK" line, and a suite
   // whose arms silently stopped running still exits 0 today (that is how a
   // regression gets a green receipt). The expected labels are listed HERE, in
@@ -2564,7 +2810,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   // rather than a quieter green. Appending an arm means appending its label.
   const ARMS = [
     'P1b2', 'P2e', 'P2f', 'P2g', 'P2h', 'P2i', 'P2k', 'P2n', 'P2o', 'P2p', 'P3', 'W1', 'W2', 'W3', 'W4', 'W5', 'W6',
-    'U mute', 'V quality', 'X per-player', 'X2 manual sw', 'X3 stale liv', 'Z hover', 'D1',
+    'U mute', 'V quality', 'X per-player', 'X2 manual sw', 'X3 stale liv', 'Z hover', 'D1', 'N1',
   ];
   const printed = armLog.map((l) => String(l).trim());
   const missing = ARMS.filter((a) => !printed.some((l) => l.startsWith(a)));

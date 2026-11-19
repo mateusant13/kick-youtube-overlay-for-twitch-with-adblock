@@ -52,6 +52,12 @@ const SCREEN = new Set([
   'ad-hold',
   'worker-hook',
   'worker-hook-fail',
+  'native-stall',
+  'native-stall-resume',
+  'native-stall-reload',
+  'native-stall-skipped',
+  'native-stall-recovered',
+  'native-stall-failed',
 ]);
 const SOUND = new Set([
   'audio-intent',
