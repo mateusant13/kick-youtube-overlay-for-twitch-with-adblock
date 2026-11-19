@@ -1253,6 +1253,8 @@
   // native is the black screen he photographed), and resuming is the release.
   let adUiHeldAt = 0;
   let adUiReasserts = 0;
+  // One `ad-skip {reason:'hidden-tab'}` per detected episode, not one per tick.
+  let adUiHiddenLogged = false;
   // A banner or a squeezeback is not a playing ad and must never cost the user
   // his picture: the hold needs the ad surface to cover most of the player, or
   // the countdown label (which only exists while one is running).
@@ -1295,7 +1297,17 @@
     if (!AD_OVERLAY_ENABLED) return;
     if (overlay.adActive || overlay.standby || overlay.frame) return; // the pod owns it now
     if (overlayOwnsPlayback()) return; // the overlay player is the picture: no ad here
-    if (document.visibilityState && document.visibilityState !== 'visible') return;
+    if (document.visibilityState && document.visibilityState !== 'visible') {
+      // A REFUSAL IS NAMED, ONCE PER EPISODE. The tick retries this every 500 ms
+      // (see the tick's own comment), so the tab coming back inside a pod gets
+      // its hold; without the row, a pod the ring shows no attempt for is
+      // indistinguishable from one that was never detected.
+      if (!adUiHiddenLogged) {
+        adUiHiddenLogged = true;
+        adLog('ad-skip', { reason: 'hidden-tab', adUi: detail ? detail.kind : null, hidden: true });
+      }
+      return;
+    }
     const v = mainVideo();
     if (!v || !v.isConnected) return;
     if (!adHoldWorthy(detail, v)) return;
@@ -3508,9 +3520,29 @@
         // toca por uns 4 segundos até finalmente ser defendido". Pausing here
         // costs nothing when the pod arrives a moment later (it pauses the
         // same element) and covers the window where nothing else knew.
+        //
+        // AND IT IS RETRIED, BECAUSE THE DETECTION AND THE HOLD DISAGREE ABOUT
+        // HIDDEN TABS (measured 2026-11-19). `adUiDetail()` reads the DOM, which
+        // a background tab keeps updating; `adUiHold` refuses to pause a page
+        // the user is not looking at. So when a pod's whole UI appears while the
+        // tab is in the background, the ONE transition that could hold it is the
+        // one moment the hold is not allowed to - and nothing ever asked again.
+        // His ring (0.8.100, twitch.tv/alanzoka, 30.0 s of a whole pod): the ad
+        // went `ad-ui-on` at 188911 with `hidden:true` on the very next row, the
+        // same line at 200850 and 203141, and the slate cleared at 218566
+        // (`ad-ui-off {adSec:29.7}`) - `ad-ui-hold` was NEVER written, and no
+        // `ad-skip` existed to say why. `adUiHoldTick` already re-asserts a pause
+        // every tick for a tab that IS visible; the same tick now gets the
+        // chance to take it the moment the tab comes back inside the episode.
+        adUiHiddenLogged = false;
         if (ad) adUiHold(adDetail);
         else adUiRelease();
         if (!ad) rec.adSince = 0;
+      } else if (ad) {
+        // The episode is still running and the hold has not taken yet: this is
+        // the retry. Both callees early-return on "already held", so a tick that
+        // has nothing to do costs nothing.
+        adUiHold(adDetail);
       }
       const v = sampleVideo();
       const playing = !!(v && !v.paused && v.w > 0 && v.rs >= 2);

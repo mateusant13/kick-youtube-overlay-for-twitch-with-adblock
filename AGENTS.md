@@ -1971,3 +1971,79 @@ samples 0.8.102 named as stalls. In the same ring one real page park appears and
 `native-stall {why:"page-pause-starved", buf:0, rs:1, paused:true, movedMs:4001}` ->
 `native-stall-resume {step:1}` -> `native-stall-recovered {tries:1, ms:1000, ct:0.67, rs:4}`. `stop` killed
 pid 3732 and the guest is down; the tab was never his.
+
+### 0.8.104: one pause stamped while HIDDEN disqualified the element for the whole page load
+
+Found while answering the same 2026-11-18 report the section above covers, and it is the reason 0.8.103
+could not have helped him: `nativeStallWatch` refuses a page pause whose stamp says `hidden:true` (a
+throttled tab pauses everything, so that pause is no evidence of a stall) - and the stamp was written once
+by the element's `pause` listener with nothing to clear it.
+
+|his ring (0.8.101, twitch.tv/alanzoka, `player=kick`, `kick:null`)|row|
+|---|---|
+|271725|`hb {tw:{ct:29, rs:2}}` - the forward buffer draining|
+|273762|`display-clock {buf:0.15, delta:0, movedMs:3049, pos:29.88, verdict:FROZEN}`|
+|276670|`video-pause {"hidden":true, ct:30, rs:1, paused:true}` - the only stamp the element ever got|
+|276750|`content-stop`|
+|276731 -> 343703|70+ s of `hb {ct:2511, paused:true, rs:1}` and `display-clock {verdict:PAUSED, buf:0.05}`, **zero** recovery rows|
+
+The visibility boundary now clears **only** `KO.natPause.hidden`, never the record: `at`/`ct`/`rs` are what
+let the watchdog judge the element at all, and `now - p.at < NATIVE_STALL_MS` still gives the page its own
+beat before anything touches a picture the user is watching. Limb of the `N1 native stall` arm fails with
+the fix removed (`a pause from a hidden tab was never recovered after the tab came back: []`), and the whole
+arm plus its six REDs stays green (`ALL CONTENT.JS FIX CHECKS PASSED`, `ARMS 26/26 present`).
+
+**The ledger was corrupt in HEAD, and that is a lesson about this repo's tooling, not about JSON.** A
+whole-file reformat was committed as `+1129 of +1129 -1135` (the drafter selected the additions but only
+part of the removals), so the committed blob did not parse (`Expecting ':' delimiter: line 3 column 270`)
+while the worktree copy did. A whole-file rewrite must go through the journaled `write`, never a
+partial-line `take`; `0b908b9` lands the valid 56-row document, and `KO-20261119-02` is the 57th.
+
+**Owed, and named:** a session of his whose tab goes to the background once must still show `native-stall`
+-> `native-stall-resume` -> `native-stall-recovered` when the picture parks in the foreground. An extension
+reload does not re-inject into open tabs, so the next Twitch page load is what carries 0.8.104.
+
+### 0.8.104 (later): a pod that began in a BACKGROUND tab was never held, and the fix was not in the browser
+
+Owner report 2026-11-19, verbatim: *"tomou um anuncio INTEIRO de 30s"*. His own ring
+(`ko-adlog-window.mjs 9222 1200`, twitch.tv/alanzoka, `player=kick`, `kick_offline` so no layer exists):
+
+|ms|row|what it says|
+|---|---|---|
+|184685|`hb {hidden:true, tw:{ct:2378, paused:false, rs:4}}`|the pod is already buffering in the background|
+|188911|`ad-ui-on {match:{kind:"slate", label:"alanzoka está fazendo um intervalo comercial…"}}`|detection fired, and the tab was `hidden`|
+|189587|`visibility {state:"visible"}`|he came back 0.7 s later|
+|189928 → 217408|30 s of `ad-tick {video:{paused:false, rs:4}}`|the native kept playing: no hold, ever|
+|218566|`ad-ui-off {adSec:29.7}`|the whole pod|
+
+No `ad-ui-hold`, no `ad-skip`, no `ad-hold`: the refusal was silent and nothing asked again.
+
+**The two signals disagree by construction.** `adUiDetail()` reads the DOM, which a background tab
+keeps updating; `adUiHold` refuses a page the user is not looking at (correctly: a hidden tab pauses
+everything). The tick asked for a hold only on the `ad -> true` EDGE, so a pod that began while the tab
+was hidden spent its one and only transition at the single moment the hold may not act, and the return
+to the tab produced no new edge. `adUiHoldTick` already re-asserts every 500 ms for a visible tab; the
+take had no equivalent second chance.
+
+Two changes: the tick's `else if (ad)` branch calls `adUiHold(adDetail)` on every tick of a running
+episode (both callees early-return on "already held", so a busy tick costs nothing), and `adUiHold`
+writes one `ad-skip {reason:"hidden-tab"}` per episode, so a refusal is never indistinguishable from
+nothing having been detected.
+
+Arms (section 8 of `ad-detect-test.cjs`) run the **real** tick body and the **real** `adUiHold` with the
+tab's visibility flipped, not a regex over source text: hidden -> no pause and one refusal row; visible
+-> paused, one `ad-ui-hold`; next tick -> not re-paused; a second pod -> its own refusal. The mutation
+that deletes the `else if (ad)` branch goes red on the visible-tab limb (`RED: without the retry the pod
+runs its whole length unheld (his 30.0 s)`); `ARMS 32/32 present`, gate `RESULT PASS checks=23 failed=0`.
+
+**And the fix was not in the browser, which is the part worth keeping.** `deploy.mjs status` said
+`loaded=0.8.104 staged=0.8.104 changed-since-last-load=no`, while the staged file had neither the retry
+nor the refusal (`grep -c 'else if (ad)'` -> 0). A version comparison cannot see a rebuild under the same
+version, and this tree was mid-wave when it was synced. After `rsync -a --delete` the byte check is the
+instrument: 37 files compared by sha256, no diffs outside `_metadata/generated_indexed_rulesets` and the
+vendored CRLF copies. `I:` had **33 MB free of 3.7 TB** during this wave, which is why a half-copy was
+possible at all, and it is the same disk the checkout lives on.
+
+**Owed:** the next pod that begins while his tab is in the background must show `ad-skip
+{reason:"hidden-tab"}` followed by `ad-ui-hold` in the tick he returns to. An extension reload does not
+re-inject into open tabs; the next Twitch page load carries it.

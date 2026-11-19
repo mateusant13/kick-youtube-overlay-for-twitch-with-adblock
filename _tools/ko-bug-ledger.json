@@ -1126,6 +1126,48 @@
     "Gate `RESULT PASS checks=23 failed=0`; `ALL CONTENT.JS FIX CHECKS PASSED`, `ARMS 26/26 present`."
    ],
    "owner_validation": "pending: a live session he watches on a channel with no kick mirror must show no `data-ko-owner` value once the layer is gone, and the ad path may then act on a pod there (`ad-hold` rows appear where the frozen attribute used to block them). Unit + live-page evidence for both limbs exists on 0.8.104; only his own pod on such a channel is unobserved."
+  },
+  {
+   "id": "KO-20261119-02",
+   "state": "fixed",
+   "author": "main",
+   "reported": "2026-11-18",
+   "fixed_in": "0.8.104",
+   "commit": "f74e2b6a86",
+   "verified": false,
+   "title": "One pause stamped while the tab was hidden disqualified the native element for the whole page load",
+   "hypothesis": "`nativeStallWatch` (0.8.103) refuses a page pause whose stamp says `hidden:true`, and it is right to: a throttled tab pauses everything, so that pause is no evidence of a stall. But the stamp is written once by the element's `pause` listener and nothing cleared it, so after ONE background pause the watchdog took that early return on every later sample and never attempted anything again for the rest of the load - the recovery added in 0.8.103 could not fire on the element he was actually watching.",
+   "falsifier": "After a pause stamped while hidden, a later freeze in a visible tab must still be named and recovered: one `native-stall` row, then `native-stall-resume`, then `native-stall-recovered`. If the watchdog stays silent for the rest of the page load, the arm is red; if a user pause inside the last 2 s, a hidden tab, an overlay owner or a DVR position is recovered, the same arm is red from the other side.",
+   "evidence": [
+    "Owner report 2026-11-18, verbatim: \"veja logs. to vendo uma live. travou do nada e nao quer destravar. com certeza destrava se eu clicar pause despause.\"",
+    "His own ring, 0.8.101, twitch.tv/alanzoka (`player=kick`, `kick_offline`, so no layer exists): `271725 hb {tw:{ct:29, rs:2}}` -> `273762 display-clock {buf:0.15, delta:0, movedMs:3049, pos:29.88, verdict:FROZEN}` -> `276670 video-pause {\"hidden\":true, ct:30, rs:1, paused:true}` -> `276750 content-stop` -> then 70+ s of `hb {ct:2511 ... paused:true, rs:1}` and `display-clock {verdict:PAUSED, buf:0.05}` with NO recovery row of any kind. `ko-adlog-verdict --episodes=3` on the same ring: `1 frozen display period(s)`.",
+    "Fix: the visibility boundary clears `KO.natPause.hidden` only, never the record - `at`/`ct`/`rs` are what let the watchdog judge the element, and `now - p.at < NATIVE_STALL_MS` still gives the page its own beat before anything touches a picture the user is watching. `content.js:4319` (0.8.104).",
+    "Arm `N1 native stall` in `kick-overlay/content-fix-test.cjs` covers page pause, freeze, user pause, hidden tab, ownership and DVR; its hidden-tab limb fails with the fix removed: `AssertionError: a pause from a hidden tab was never recovered after the tab came back: []`. `ALL CONTENT.JS FIX CHECKS PASSED`, `ARMS 26/26 present`.",
+    "Gate on the shipped build: `RESULT PASS checks=23 failed=0`; installed copy `loaded=0.8.104 expected=0.8.104`, `KO_VER` and `manifest.json` agree."
+   ],
+   "owner_validation": "pending: on his own Chrome, a session whose tab goes to the background once must still show `native-stall` -> `native-stall-resume` -> `native-stall-recovered` when the picture parks in the foreground. The arm and the ring evidence both exist; only his session after a real alt-tab is unobserved. Note the extension reload does not re-inject into open tabs: the next Twitch page load is what carries 0.8.104."
+  },
+  {
+   "id": "KO-20261119-03",
+   "state": "fixed",
+   "author": "main",
+   "reported": "2026-11-19",
+   "fixed_in": "0.8.104",
+   "commit": null,
+   "verified": false,
+   "title": "A pod detected while the tab was hidden was never held, because detection reads the DOM and the hold refuses a hidden page",
+   "hypothesis": "The ad tick asked for a hold only on the `ad -> true` transition. `adUiDetail()` reads the DOM, which a background tab keeps updating, so a pod that began while the tab was in the background produced its one and only `ad-ui-on` at a moment `adUiHold` refuses by design (`document.visibilityState !== 'visible'`). When the tab came back inside the same episode no transition existed to re-ask, and the whole pod played. `adUiHoldTick` already re-asserts a pause every 500 ms for a VISIBLE tab; the tick had no equivalent second chance to TAKE the hold.",
+   "falsifier": "A pod whose entire UI appears while the tab is hidden, and whose tab returns mid-episode, must still be paused in the tick the tab becomes visible, with exactly one `ad-ui-hold` row. If the second tick takes no hold the arm is red; if a hold is re-paused on a later tick of the same episode, or a second pod in the same page load logs no refusal of its own, the same arm is red from the other side.",
+   "evidence": [
+    "Owner report 2026-11-19, verbatim: \"veja logs. to vendo uma live. travou do nada e nao quer destravar.\" and \"tomou um anuncio INTEIRO de 30s\".",
+    "His own ring, 0.8.100/0.8.101, twitch.tv/alanzoka (`player=kick`, `kick_offline`, so no layer exists): `188911 ad-ui-on {match:{kind:'slate', label:'alanzoka esta fazendo um intervalo comercial...'}}` -> `189587 visibility {state:visible}` -> 30 s of `ad-tick` rows with `video.paused:false, rs:4` -> `218566 ad-ui-off {adSec:29.7}`. No `ad-ui-hold`, no `ad-skip`, no `ad-hold`: the refusal was silent and nothing retried.",
+    "The tab was `hidden:true` in the heartbeat 4.2 s before `ad-ui-on` and `hidden:false` 0.7 s after it, so the pod began in the background and the tab returned mid-episode - the exact shape the retry is for.",
+    "Fix: the tick's `else if (ad)` branch calls `adUiHold(adDetail)` on every tick of a running episode (both callees early-return on 'already held'), and `adUiHold` now writes `ad-skip {reason:'hidden-tab'}` once per episode so a refusal is never silent.",
+    "Arms in `kick-overlay/ad-detect-test.cjs` (section 8) run the REAL tick body and the REAL `adUiHold`, with the tab's visibility flipped: hidden -> no pause and one `ad-skip:hidden-tab`; visible -> paused with one `ad-ui-hold`; next tick -> not re-paused; second pod -> its own refusal row. The retry mutation (the `else if (ad)` branch deleted) turns the visible-tab limb red: `RED: without the retry the pod runs its whole length unheld (his 30.0 s)`. `ARMS 32/32 present`.",
+    "Gate on the shipped tree: `RESULT PASS checks=23 failed=0`.",
+    "THE FIX WAS NOT IN THE BROWSER when the report was read: the staged copy at `...\\vendor\\kick-overlay\\twitch-adblock.js` had neither the retry nor the refusal row (`grep -c 'else if (ad)'` -> 0), so the defect he hit was the pre-fix file. Re-synced and reloaded: `deploy.mjs reload -> loaded=0.8.104 staged=0.8.104 changed-since-last-load=no`."
+   ],
+   "owner_validation": "pending: the next pod that begins while his tab is in the background must show `ad-skip {reason:'hidden-tab'}` and then `ad-ui-hold` in the tick he returns to. An extension reload does not re-inject into open tabs, so the next Twitch page load is what carries the retry."
   }
  ]
 }

@@ -434,6 +434,144 @@ check(
   }
 }
 
+// ---- 8. the hold is RETRIED while the episode runs -----------------------
+// Owner report 2026-11-19, verbatim: "tomou um anuncio INTEIRO de 30s". His
+// 0.8.100 ring, twitch.tv/alanzoka: `ad-ui-on` at 188911 with `hidden:true` on
+// the very next row, `ad-ui-off {adSec:29.7}` at 218566, and `ad-ui-hold` was
+// NEVER written. Detection reads the DOM (a background tab keeps updating it);
+// the hold refuses a page the user is not looking at. So the pod's whole UI
+// appeared while the tab was hidden, the ONE transition that could pause it was
+// the one moment it could not, and nothing asked again.
+//
+// THE ARMS RUN THE REAL TICK, not a regex over source text: this repo already
+// paid for source-text assertions that stayed green while the handler was
+// never called (the 0.8.88 freeze). The tick body is extracted by brace
+// matching and executed against a document whose visibility we control.
+{
+  const tickSrc = (() => {
+    const marker = 'setInterval(() => {';
+    // The tick that owns the ad is the one whose body reads the DOM. Exactly one
+    // interval may, so a second reader appearing is a failure and not a guess.
+    const hits = [...SRC.matchAll(/setInterval\(\(\) => \{/g)].map((m) => m.index);
+    const owning = hits.filter((at) => {
+      let depth = 0;
+      for (let i = at + marker.length - 1; i < SRC.length; i++) {
+        if (SRC[i] === '{') depth++;
+        else if (SRC[i] === '}') {
+          depth--;
+          if (!depth) return /adUiDetail\(\)/.test(SRC.slice(at, i));
+        }
+      }
+      return false;
+    });
+    if (owning.length !== 1) return null;
+    const open = owning[0] + marker.length - 1;
+    let depth = 0;
+    for (let i = open; i < SRC.length; i++) {
+      if (SRC[i] === '{') depth++;
+      else if (SRC[i] === '}') {
+        depth--;
+        if (!depth) return SRC.slice(open, i + 1);
+      }
+    }
+    return null;
+  })();
+  check('the ad tick body is extractable', !!tickSrc);
+
+  // One world. The REAL `adUiHold` runs here, not a stub: the refusal this arm
+  // is about lives in that function, and a stand-in would prove the stand-in.
+  const freshRec = () => ({ ad: false, adSince: 0, playing: false, lastTick: 0 });
+  const makeVideo = () => ({ paused: false, isConnected: true, currentTime: 100, readyState: 4, w: 2560, rs: 4, pause() { this.paused = true; } });
+  const HOLD = grab('adUiHold');
+  const makeTick = (src) => new Function(
+    'ctx',
+    `const { rec, page, video, log } = ctx;
+     let adUiHeldAt = 0;
+     let adUiReasserts = 0;
+     let adUiHiddenLogged = false;
+     const AD_OVERLAY_ENABLED = true;
+     const AD_UI_HOLD_MAX_MS = 12000;
+     const overlay = { adActive: false, standby: false, frame: null, selfPausedAt: 0 };
+     const overlayOwnsPlayback = () => false;
+     const adUiDetail = () => ({ kind: 'slate' });
+     const adHoldWorthy = () => true;
+     const mainVideo = () => video;
+     const sampleVideo = () => video;
+     const requestStandby = () => log.push('standby');
+     const resumeNative = () => log.push('resume');
+     const recLog = (n) => log.push(n);
+     const adLog = (n, f) => log.push(n + ':' + (f && f.reason ? f.reason : ''));
+     const adLogState = (n) => log.push(n);
+     const adUiRelease = () => log.push('ad-ui-release');
+     const adUiHoldTick = () => {};
+     const document = { get visibilityState() { return page.visible ? 'visible' : 'hidden'; } };
+     ${HOLD}
+     ${src}`,
+  );
+  // (a) the pod is detected while the tab is hidden: the hold is refused and
+  //     SAID, not silent. One world, three ticks: hidden, visible, visible.
+  const rec = freshRec();
+  const video = makeVideo();
+  const log = [];
+  const ctx = { rec, page: { visible: false }, video, log, hiddenLogged: false };
+  const tick = makeTick(tickSrc);
+  tick(ctx);
+  check(
+    'a pod detected in a HIDDEN tab is refused AND named',
+    ctx.log.includes('ad-skip:hidden-tab') && !ctx.video.paused,
+    JSON.stringify(ctx.log),
+  );
+  // (b) the tab comes back inside the same pod: the retry takes the hold.
+  ctx.page.visible = true;
+  tick(ctx);
+  check(
+    'the tab coming back inside the pod still takes the hold (his 30.0 s of ad)',
+    ctx.video.paused && ctx.log.includes('ad-ui-hold'),
+    JSON.stringify(ctx.log),
+  );
+  // (c) and the adopted hold is not re-paused on every later tick.
+  const held = ctx.log.filter((l) => l === 'ad-ui-hold').length;
+  tick(ctx);
+  check('an adopted hold is not re-paused on the next tick', ctx.log.filter((l) => l === 'ad-ui-hold').length === held);
+
+  // (c2) a SECOND pod logs its own refusal: the flag is per episode.
+  const rec3 = freshRec();
+  const video3 = makeVideo();
+  const ctx3 = { rec: rec3, page: { visible: false }, video: video3, log: [], hiddenLogged: false };
+  const tick3 = makeTick(tickSrc);
+  tick3(ctx3); // pod 1, taken once the tab comes back
+  ctx3.page.visible = true;
+  tick3(ctx3);
+  // pod ends, pod 2 begins while hidden again
+  ctx3.rec.ad = false;
+  ctx3.video.paused = false;
+  ctx3.page.visible = false;
+  tick3(ctx3);
+  check(
+    'a SECOND pod logs its own hidden refusal (the flag is per episode)',
+    ctx3.log.filter((l) => l === 'ad-skip:hidden-tab').length === 2,
+    JSON.stringify(ctx3.log),
+  );
+
+  // (d) RED: the pre-fix tick asked once and stopped asking.
+  const mutantTick = tickSrc.replace(/\} else if \(ad\) \{[\s\S]*?adUiHold\(adDetail\);\n      \}/, '}');
+  check('the retry mutation applied to the shipped tick', mutantTick !== tickSrc);
+  if (mutantTick !== tickSrc) {
+    const rec2 = freshRec();
+    const video2 = makeVideo();
+    const ctx2 = { rec: rec2, page: { visible: false }, video: video2, log: [], hiddenLogged: false };
+    const tick2 = makeTick(mutantTick);
+    tick2(ctx2);
+    ctx2.page.visible = true;
+    tick2(ctx2);
+    check(
+      'RED: without the retry the pod runs its whole length unheld (his 30.0 s)',
+      ctx2.log.includes('ad-skip:hidden-tab') && !video2.paused && !ctx2.log.includes('ad-ui-hold'),
+      JSON.stringify(ctx2.log),
+    );
+  }
+}
+
 // ---- anti-vacuity --------------------------------------------------------
 const expected = [
   'a wrapper that is 0x0 with a permanent __wrapper-hidden class is still an ad when its container paints',
@@ -461,6 +599,13 @@ const expected = [
   'a DOM-detected ad asks for a clean source in the SAME tick (immediate=true, no delay)',
   'the standby-request mutation applied to the shipped file',
   'RED: the pre-fix hold pauses the ad and warms nothing, which IS the 4 s of ad',
+  'the ad tick body is extractable',
+  'a pod detected in a HIDDEN tab is refused AND named',
+  'the tab coming back inside the pod still takes the hold (his 30.0 s of ad)',
+  'an adopted hold is not re-paused on the next tick',
+  'a SECOND pod logs its own hidden refusal (the flag is per episode)',
+  'the retry mutation applied to the shipped tick',
+  'RED: without the retry the pod runs its whole length unheld (his 30.0 s)',
 ];
 const missing = expected.filter((l) => !arms.includes(l));
 if (missing.length) {
