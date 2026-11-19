@@ -2799,8 +2799,113 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     assert.strictEqual(hSkip[0].why, 'not-live', 'the refusal did not name the reason');
     assert.strictEqual(v.loadCount, 0, 'a DVR position was reloaded to the live edge (that is the jump he reports)');
 
+    // (i) a pause stamped while HIDDEN must not disqualify the element for the
+    //     rest of the page load. His 0.8.101 ring: `video-pause {..., "hidden":
+    //     true}` at ms 938668, then 70+ s of `hb {ct:2511, paused:true, rs:1}`
+    //     and NOT ONE recovery row, cured by hand ("destrava se eu clicar pause
+    //     despause"). The stamp is written once by the `pause` listener and used
+    //     to be permanent, so the watchdog took its early return forever.
+    reset();
+    v = mkVideo();
+    v.paused = true;
+    v.readyState = 1;
+    v.buffered = { length: 1, start: () => 0, end: () => 100.1 };
+    KO.natPause = { el: v, at: Date.now() - 9000, ct: 1, rs: 1, hidden: true, inputAgeMs: null, ours: false };
+    doc.hidden = false;
+    fireDoc('visibilitychange');
+    frozen(v, 12000);
+    api.dispSample();
+    const iRows = rows('native-stall');
+    assert.strictEqual(iRows.length, 1, `a pause from a hidden tab was never recovered after the tab came back: ${JSON.stringify(iRows)}`);
+    assert.strictEqual(v.playCount, 1, 'the element stayed parked for the rest of the page load');
+    // ...and the STAMP survives: clearing it whole would drop the `at` that still
+    // owes the page its own beat before we touch a picture he is watching.
+    assert.ok(KO.natPause && KO.natPause.el === v, 'the pause record was destroyed instead of its hidden flag');
+
     reset();
     console.log('N1 native stall: page pause, freeze, user pause, hidden tab, ownership and DVR - OK');
+  }
+
+  // ---- O1: the DEATH PATH publishes the loss of the picture ----------------
+  // Measured 2026-11-19 in the owner's own Chrome, twitch.tv/alanzoka (a
+  // channel with NO kick counterpart, so the layer dies on the first offline
+  // probe): his ring holds ONE `owner` row for the whole 1200-entry window -
+  // `{pick:"kick", pic:true, to:"kick"}` - and `ad-ui-on` fires 29.7 s later
+  // with `ad-ui-hold` nowhere. The live page still reads
+  // `data-ko-owner="kick"` while `#ko-wrap` is absent. `syncOwner()` publishes
+  // from `syncMute()`, which the rect loop only reaches below `if (!KO.wrap)`,
+  // so nulling the wrap here froze the attribute at `kick` forever: the MAIN
+  // world's `overlayOwnsPlayback()` (twitch-adblock.js:1301) read "the native
+  // is covered" on a page whose picture was Twitch's, and `adUiHold` returned
+  // at line 1297 before it ever looked at the ad.
+  {
+    const owner = (D) => D.documentElement.attrs['data-ko-owner'] || '';
+    const mk = (source) => new Function('window', 'document', 'location', 'navigator', source
+      + '\n;return {KO, teardown, syncMute, overlayOwnsPicture};')(global, doc, global.location, global.navigator);
+    // The state the layer is in when it dies: selected, playing, published.
+    const seed = (K) => {
+      K.player = 'kick';
+      K.wrap = el('div');
+      K.wrap.style.display = 'block';
+      K.kickState = { state: 'Playing', paused: false, muted: false, pos: 10, lat: 2, dur: 120, ts: Date.now() };
+      K.picSeenAt = Date.now();
+      K.picLostAt = 0;
+      K.bootAt = performance.now() - 10000;
+      K.ownerAttr = undefined;
+    };
+    const shipped = mk(src);
+    seed(shipped.KO);
+    fakeVideos.length = 0;
+    shipped.syncMute();
+    assert.strictEqual(owner(doc), 'kick', 'O1 setup: a playing layer publishes data-ko-owner=kick');
+    assert.strictEqual(shipped.overlayOwnsPicture(), true, 'O1 setup: the layer owns the picture before it dies');
+    shipped.teardown();
+    assert.strictEqual(shipped.KO.wrap, null, 'O1: teardown drops the wrap');
+    assert.strictEqual(owner(doc), '', 'O1: the death path publishes data-ko-owner="" (a dead layer must not keep claiming the screen)');
+    assert.strictEqual(shipped.overlayOwnsPicture(), false, 'O1: no wrap means no ownership, so the ad path may hold again');
+    // The reachability half, in the shape the ring recorded: the attribute was
+    // published and the wrap vanished, and the ONLY writer must still be able
+    // to clear it with no wrap and no rect loop running.
+    doc.documentElement.attrs['data-ko-owner'] = 'kick'; // the frozen state measured live
+    shipped.KO.ownerAttr = 'kick';
+    shipped.syncMute();
+    assert.strictEqual(owner(doc), '', 'O1: syncMute with no wrap republishes the loss (this is what the rect loop never reached)');
+    // RED: the pre-fix file, with the death-path call removed. The attribute
+    // must stay `kick` - that IS the defect the ring measured.
+    const pre = src.replace(
+      `  syncOwner();\n  // the frame dies with the removed iframe; no ytCmd('destroy') exists\n`,
+      `  // the frame dies with the removed iframe; no ytCmd('destroy') exists\n`,
+    );
+    assert.notStrictEqual(pre, src, 'O1 RED: the mutation (drop the death-path syncOwner call) applied to the shipped file');
+    const before = mk(pre);
+    seed(before.KO);
+    fakeVideos.length = 0;
+    before.syncMute();
+    assert.strictEqual(owner(doc), 'kick', 'O1 RED setup: the pre-fix layer publishes kick too');
+    before.teardown();
+    assert.strictEqual(before.KO.wrap, null, 'O1 RED: the pre-fix teardown also drops the wrap');
+    assert.strictEqual(
+      owner(doc),
+      'kick',
+      'O1 RED: without the death-path call the attribute is frozen at kick with no layer (the measured defect)',
+    );
+    fakeVideos.length = 0;
+    // O1b: the writer's BASELINE is the published value, so a cold page that
+    // tears down before any picture publishes nothing and logs nothing. With
+    // `undefined` here the new unconditional publish reads as a transition and
+    // every cold teardown writes `owner {from:null, to:null}` into his ring.
+    const cold = mk(src);
+    doc.documentElement.attrs['data-ko-owner'] = ''; // a cold page: nothing was ever published
+    assert.strictEqual(cold.KO.ownerAttr, '', 'O1b: the attribute writer starts at the value a page actually publishes');
+    cold.teardown();
+    assert.strictEqual(owner(doc), '', 'O1b: a cold teardown publishes nothing (the page already said "")');
+    const coldPre = mk(src.replace("  ownerAttr: '', // last value published to data-ko-owner\n", ''));
+    assert.strictEqual(
+      coldPre.KO.ownerAttr,
+      undefined,
+      'O1b RED: without the declared baseline the first publish is a phantom transition',
+    );
+    console.log('O1 owner death: teardown publishes the loss (RED: the attribute stays kick with no wrap) - OK');
   }
 
   // ANTI-VACUITY. Every arm above prints one "<label> - OK" line, and a suite
@@ -2810,7 +2915,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   // rather than a quieter green. Appending an arm means appending its label.
   const ARMS = [
     'P1b2', 'P2e', 'P2f', 'P2g', 'P2h', 'P2i', 'P2k', 'P2n', 'P2o', 'P2p', 'P3', 'W1', 'W2', 'W3', 'W4', 'W5', 'W6',
-    'U mute', 'V quality', 'X per-player', 'X2 manual sw', 'X3 stale liv', 'Z hover', 'D1', 'N1',
+    'U mute', 'V quality', 'X per-player', 'X2 manual sw', 'X3 stale liv', 'Z hover', 'D1', 'N1', 'O1 owner death',
   ];
   const printed = armLog.map((l) => String(l).trim());
   const missing = ARMS.filter((a) => !printed.some((l) => l.startsWith(a)));

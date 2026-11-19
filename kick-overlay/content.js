@@ -866,6 +866,12 @@ const KO = {
   hideTicks: 0,
   stallTicks: 0,
   ownerPos: 0, // playback position at the last owner publish (regression guard)
+  // The baseline of the ONE attribute writer. `undefined` would make the first
+  // publish look like a transition (syncOwner compares against this), and the
+  // death path now publishes unconditionally: a cold page that tears down
+  // before any picture would log `owner {from:null, to:null}`. '' is the truth
+  // for a page with no layer on screen.
+  ownerAttr: '', // last value published to data-ko-owner
   picLostAt: 0, // epoch ms when the overlay last stopped having a picture
   picSeenAt: 0, // epoch ms of the last picture it DID have (gate for the grace)
   lastTickT: 0,
@@ -2854,6 +2860,21 @@ function teardown() {
     KO.wrap.remove();
     KO.wrap = null;
   }
+  // THE DEATH PATH MUST PUBLISH THE LOSS, OR THE ATTRIBUTE OUTLIVES THE LAYER.
+  // `data-ko-owner` is written by syncOwner() alone, and the only thing that
+  // calls it is syncMute() — which the rect loop reaches below `if (!KO.wrap)`.
+  // So this function used to null the wrap and stop the loop with `kick` still
+  // on the element: a dead layer kept telling `twitch-adblock.js`
+  // (`overlayOwnsPlayback`, twitch-adblock.js:2389) that the native was
+  // covered, and `adUiHold` returned at line 1297 on a page whose picture was
+  // Twitch's own. Measured 2026-11-19 on twitch.tv/alanzoka (no kick channel at
+  // all, so the layer dies on the first offline probe): his ring has
+  // `ad-ui-on` at 3020767 with the `owner:"kick"` row as the ONLY owner row in
+  // 1200 entries, and the live page still reads
+  // `data-ko-owner="kick"` with `#ko-wrap` absent. Publish the loss HERE, where
+  // the wrap dies, instead of adding a second writer: null already answers
+  // `overlayOwnsPicture()===false`, so syncOwner() emits `''` on its own.
+  syncOwner();
   // the frame dies with the removed iframe; no ytCmd('destroy') exists
   KO.ytState = freshYtState();
   KO.ytUnlock = false;
@@ -4298,6 +4319,21 @@ function domReady() {
         KO.lastYtSt = 0;
         KO.stallTicks = 0;
         KO.hideTicks = 0;
+        // A PAUSE STAMPED WHILE HIDDEN IS ABOUT THE OLD TAB, NOT THIS ELEMENT.
+        // `nativeStallWatch` refuses a pause whose stamp says `hidden:true`, and
+        // it is right to: a throttled tab pauses everything, so that pause is no
+        // evidence of a stall. But the stamp is written once by the `pause`
+        // listener and nothing cleared it, so ONE background pause disqualified
+        // the element for the rest of the page load - the watchdog took the early
+        // return on every later sample and the picture never came back without a
+        // hand pause/play. His ring (0.8.101, twitch.tv/alanzoka):
+        // `video-pause {..., "hidden":true}`, then 70+ s of `hb {ct:2511,
+        // paused:true, rs:1}` with no recovery row of any kind.
+        // Only the hidden FLAG is cleared, never the record: `at`/`ct`/`rs` are
+        // what lets the watchdog judge this element at all, and `now - p.at <
+        // NATIVE_STALL_MS` is what still gives the page its own beat before we
+        // touch a picture the user is watching.
+        if (KO.natPause) KO.natPause.hidden = false;
         if (KO.ownerAttr) {
           KO.picSeenAt = Date.now();
           KO.picLostAt = 0;
