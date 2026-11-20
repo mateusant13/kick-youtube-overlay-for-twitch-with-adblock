@@ -528,7 +528,14 @@ function reportEpisode(ep, idx) {
     findings.push('no ad signal at all in this page load (ad-ui-on=0 ad-hold=0 worker-playlist=0)');
   }
   if (!defence.hooks.length) {
-    lines.push('    worker-hooked=NONE: the media fetcher was never patched on this load, so a clean playlist could not be proven');
+    // `worker-hook` is written WHEN the constructor is patched, so an empty list
+    // has two causes this reader cannot separate: the player started no worker
+    // at all, or the rows were evicted before this episode was read (the ring
+    // holds 1200 entries and a busy load evicts the first seconds). The line
+    // used to assert "never patched", which was wrong on every long ring.
+    lines.push(
+      '    worker-hooked=NONE: no patch row survived in this episode (the player started no worker, or the row was evicted) - a clean playlist could not be proven',
+    );
   }
   const ramps = collapsed.filter((c) => /RAMP/.test(c.text));
   if (ramps.length) findings.push(`${ramps.length} volume ramp(s) accepted as intent (${ramps[0].text})`);
