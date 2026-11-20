@@ -927,7 +927,7 @@ const NOT_CHANNEL = new Set([
 
 // Build marker for the diag stream — lets us tell which code a tab runs
 // (content scripts of pre-reload tabs survive extension reloads).
-const KO_VER = '0.8.106';
+const KO_VER = '0.8.107';
 // How long a lost picture may last before the native player is allowed to
 // reclaim the screen (owner 2026-11-11: an ad and the player fighting).
 const OWNER_GRACE_MS = 6000;
@@ -4401,6 +4401,62 @@ function domReady() {
   });
 }
 
+// Heartbeat: full overlay state every 8s. A HEADLESS RE-RUN OF IT IS THE ARM
+// (`koHbTick`), because a `setInterval` inside `init()` is unreachable from the
+// suite: the module is evaluated, never booted, so the one tick that has to ask
+// "is this page still running the code that is installed" could not be driven.
+const koHbTick = () => {
+  const tv = twitchVideo();
+  // A TAB THAT WAS ALREADY HIDDEN WHEN THE UPDATE LANDED NEVER SAW AN EDGE.
+  // `recoverStale()` runs at boot and on `visibilitychange`, and a
+  // visibilitychange only fires when visibility CHANGES - so the tab the owner
+  // leaves in the background is exactly the one that never re-checks, which is
+  // the opposite of the intent (hidden is the only state it may heal in).
+  // Measured 2026-11-19: his `ko.adlog` carried `boot {version:"0.8.104"}` and
+  // `hb {ver:"0.8.104"}` for 226 s while the installed manifest was 0.8.106,
+  // every heartbeat `hidden:true`. The heartbeat is the tick that already runs
+  // on the page's own clock, so it asks the same question - the same predicate,
+  // not a second one - and `recoverStale` keeps both guards (one reload per
+  // version, hidden tabs only).
+  recoverStale();
+  diag('hb', {
+    ver: KO_VER,
+    slug: KO.slug,
+    player: KO.player,
+    wrapShown: !!(KO.wrap && KO.wrap.style.display !== 'none'),
+    hidden: document.hidden,
+    focused: document.hasFocus(),
+    tw: tv
+      ? { rs: tv.readyState, paused: tv.paused, ct: Math.floor(tv.currentTime || 0), muted: tv.muted, err: tv.error ? tv.error.code : 0 }
+      : null,
+    kick: KO.kickState
+      ? {
+          state: KO.kickState.state,
+          paused: KO.kickState.paused,
+          ct: Math.floor(KO.kickState.pos || 0),
+          muted: KO.kickState.muted,
+          q: (KO.kickState.q && KO.kickState.q.name) || '',
+          err: 0,
+        }
+      : null,
+    yt: { ...KO.ytState },
+    twLive: KO.twLive,
+    bar: KO.wrap
+      ? {
+          mode: KO.kickOnDvr ? 'dvr' : 'live',
+          cur: (KO.wrap.querySelector('#ko-cur') || {}).textContent || '',
+          total: (KO.wrap.querySelector('#ko-total') || {}).textContent || '',
+          fillPct: Math.round(parseFloat((KO.wrap.querySelector('#ko-fill') || {}).style?.width || '0')),
+          vol: Math.round(((KO.kickMuted || KO.kickVol === 0) ? 0 : KO.kickVol) * 100),
+          dur: Math.round(KO.kickDur || 0),
+          hot: KO.wrap.classList.contains('ko-hot'),
+        }
+      : null,
+    wr: KO.wrap ? { w: Math.round(KO.wrap.offsetWidth), h: Math.round(KO.wrap.offsetHeight) } : null,
+    vr: tv ? { w: Math.round(tv.getBoundingClientRect().width), h: Math.round(tv.getBoundingClientRect().height) } : null,
+  });
+};
+
 (async function init() {
   // Navigation -> this line is the floor of the cold-open swap: at
   // document_idle it is where the mint can first start (owner 2026-11-11).
@@ -4502,45 +4558,6 @@ function domReady() {
   } catch {
     /* a diag listener must never break boot */
   }
-  // Heartbeat: full overlay state every 8s while the page is open.
-  setInterval(() => {
-    const tv = twitchVideo();
-    diag('hb', {
-      ver: KO_VER,
-      slug: KO.slug,
-      player: KO.player,
-      wrapShown: !!(KO.wrap && KO.wrap.style.display !== 'none'),
-      hidden: document.hidden,
-      focused: document.hasFocus(),
-      tw: tv
-        ? { rs: tv.readyState, paused: tv.paused, ct: Math.floor(tv.currentTime || 0), muted: tv.muted, err: tv.error ? tv.error.code : 0 }
-        : null,
-      kick: KO.kickState
-        ? {
-            state: KO.kickState.state,
-            paused: KO.kickState.paused,
-            ct: Math.floor(KO.kickState.pos || 0),
-            muted: KO.kickState.muted,
-            q: (KO.kickState.q && KO.kickState.q.name) || '',
-            err: 0,
-          }
-        : null,
-      yt: { ...KO.ytState },
-      twLive: KO.twLive,
-      bar: KO.wrap
-        ? {
-            mode: KO.kickOnDvr ? 'dvr' : 'live',
-            cur: (KO.wrap.querySelector('#ko-cur') || {}).textContent || '',
-            total: (KO.wrap.querySelector('#ko-total') || {}).textContent || '',
-            fillPct: Math.round(parseFloat((KO.wrap.querySelector('#ko-fill') || {}).style?.width || '0')),
-            vol: Math.round(((KO.kickMuted || KO.kickVol === 0) ? 0 : KO.kickVol) * 100),
-            dur: Math.round(KO.kickDur || 0),
-            hot: KO.wrap.classList.contains('ko-hot'),
-          }
-        : null,
-      wr: KO.wrap ? { w: Math.round(KO.wrap.offsetWidth), h: Math.round(KO.wrap.offsetHeight) } : null,
-      vr: tv ? { w: Math.round(tv.getBoundingClientRect().width), h: Math.round(tv.getBoundingClientRect().height) } : null,
-    });
-  }, 8000);
+  setInterval(koHbTick, 8000);
   fire(apply);
 })().catch((e) => diag('guard', { err: String((e && e.message) || e).slice(0, 120) }));
