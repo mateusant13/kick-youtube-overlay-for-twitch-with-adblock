@@ -447,6 +447,29 @@ check('ad-detect', () => {
   return 'wrapper measured by paint not class token, countdown/slate text read, SharedWorker hooked; 2 pre-fix arms go RED';
 });
 
+// ---- 6b. silent-decision census ------------------------------------------
+// A GUARD THAT RETURNS WITHOUT A ROW IS THE CLASS EVERY SURPRISE CAME FROM.
+// Measured 2026-11-20: `adUiHoldTick()` bailed out on `overlay.standby` with no
+// log line and a 62.6 s ad played; three freeze defects of 0.8.88 sat behind a
+// green suite for the same reason. The ring cannot say a silent guard happened,
+// so the only way to find one was to read the source — which is exactly the
+// surprise the owner asked about. This check does not demand that all 119 exits
+// log; it pins the measured count and refuses GROWTH, so a new silent guard has
+// to be argued for in the budget file instead of sneaking in.
+check('silent-census', () => {
+  const tool = path.join(ROOT, '_tools/ko-census.mjs');
+  assert(existsSync(tool), 'missing _tools/ko-census.mjs');
+  const r = spawnSync(process.execPath, [tool, '--gate'], {
+    cwd: ROOT,
+    encoding: 'utf8',
+  });
+  const out = String(r.stdout || '') + String(r.stderr || '');
+  assert(r.status === 0, `census refused:\n${out.trim().slice(-500)}`);
+  const m = /RESULT PASS\s+guardShaped=(\d+)\s+unexercisedState=(\d+)/.exec(out);
+  assert(m, `census printed no verdict:\n${out.trim().slice(-400)}`);
+  return `guard-shaped silent exits=${m[1]}, ad-path state fields no arm touches=${m[2]}; a planted silent guard makes this check FAIL`;
+});
+
 // ---- 7. bug ledger -------------------------------------------------------
 // States are explicit. `fixed` is allowed; `verified` needs an independent
 // verifier, and `arm-verified` is the narrower claim: the negative arm was

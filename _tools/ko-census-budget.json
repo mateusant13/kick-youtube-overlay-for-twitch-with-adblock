@@ -1,0 +1,9 @@
+{
+  "_comment": "Measured 2026-11-20 by `node _tools/ko-census.mjs --json` on build 0.8.107. The gate refuses growth of one class: a DECISION that returns with no row of its own. Every defect this project spent a wave on had that shape (adUiHoldTick bailing out silently while a 62.6 s ad played; three freeze defects behind a green suite). Counts are a CEILING: lower them as a silent guard gets its row or its arm; never raise one without a ruling in AGENTS.md naming which new silence is acceptable.",
+  "guardShaped": {
+    "kick-overlay/content.js": 54,
+    "kick-overlay/twitch-adblock.js": 65,
+    "kick-overlay/player-bridge.js": 0
+  },
+  "unexercisedState": 39
+}
