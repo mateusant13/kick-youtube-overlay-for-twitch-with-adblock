@@ -158,6 +158,16 @@ function makeWorld(opts, extra) {
   docEl.setAttribute('data-ko-adblock', '1');
   docEl.setAttribute('data-ko-ext-id', 'test');
 
+  // THE LAYER NODE. `getElementById` used to answer null for everything, so every
+  // predicate that asks whether a layer EXISTS measured a page with no layer at
+  // all: `overlayOwnsPlayback()` now requires #ko-wrap (the stale publish of
+  // 2026-11-19), and an id-blind stub would make the healthy case read as a
+  // stale one. The healthy page has a wrap; a test that wants Twitch's real
+  // stale publish removes it with `page.dropWrap()`.
+  const koWrap = node('div');
+  koWrap.id = 'ko-wrap';
+  let wrapPresent = true;
+
   const body = node('body');
   const frameWindow = {
     postMessage: (payload) => sent.push(payload && payload.__koKick),
@@ -220,7 +230,7 @@ function makeWorld(opts, extra) {
       return n;
     },
     querySelectorAll: (sel) => (sel === 'video' ? (extraVideos.length ? [video, ...extraVideos] : [video]) : []),
-    getElementById: () => null,
+    getElementById: (id) => (id === 'ko-wrap' && wrapPresent ? koWrap : null),
     dispatchEvent(ev) {
       if (ev && (ev.type === 'ko-adlog' || ev.type === 'ko-audio-log')) {
         try {
@@ -342,6 +352,14 @@ function makeWorld(opts, extra) {
     video,
     document,
     docEl,
+    // The layer leaving the document (Twitch's real stale publish on a channel
+    // with no kick mirror). Ownership must stop the moment this is called.
+    dropWrap() {
+      wrapPresent = false;
+    },
+    addWrap() {
+      wrapPresent = true;
+    },
     bcInstances,
     get frame() {
       return createdFrame;

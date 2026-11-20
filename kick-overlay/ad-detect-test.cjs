@@ -486,27 +486,36 @@ check(
   const makeTick = (src) => new Function(
     'ctx',
     `const { rec, page, video, log } = ctx;
-     let adUiHeldAt = 0;
-     let adUiReasserts = 0;
-     let adUiHiddenLogged = false;
+     // The three episode flags are MODULE state in the shipped file, so they are
+     // carried on ctx here: a harness that re-initialised them per call would let
+     // a per-episode row fire on every tick and then report that as correct.
+     const state = ctx.state || (ctx.state = { heldAt: 0, reasserts: 0, hiddenLogged: false, ownerLogged: false });
      const AD_OVERLAY_ENABLED = true;
      const AD_UI_HOLD_MAX_MS = 12000;
      const overlay = { adActive: false, standby: false, frame: null, selfPausedAt: 0 };
-     const overlayOwnsPlayback = () => false;
+     const ownerAttr = () => page.owner || '';
+     const overlayOwnsPlayback = () => !!page.owns;
      const adUiDetail = () => ({ kind: 'slate' });
-     const adHoldWorthy = () => true;
+     // Controllable: an episode ENDS when this goes false, which is the only
+     // way adUiRelease() runs (and the only way a second pod is a second pod).
+     const adHoldWorthy = () => page.ad !== false;
      const mainVideo = () => video;
      const sampleVideo = () => video;
      const requestStandby = () => log.push('standby');
      const resumeNative = () => log.push('resume');
-     const recLog = (n) => log.push(n);
+     const recLog = (n) => log.push(n + '@ad=' + rec.ad);
      const adLog = (n, f) => log.push(n + ':' + (f && f.reason ? f.reason : ''));
      const adLogState = (n) => log.push(n);
-     const adUiRelease = () => log.push('ad-ui-release');
+     // The shipped release clears the hold stamp (that is how a pod ending frees
+     // the next one); the stub must do the same or a second pod early-returns.
+     const adUiRelease = () => { state.heldAt = 0; state.reasserts = 0; log.push('ad-ui-release'); };
      const adUiHoldTick = () => {};
-     const document = { get visibilityState() { return page.visible ? 'visible' : 'hidden'; } };
-     ${HOLD}
-     ${src}`,
+     const document = {
+       get visibilityState() { return page.visible ? 'visible' : 'hidden'; },
+       getElementById: (id) => (id === 'ko-wrap' && page.wrap !== false ? {} : null),
+     };
+     ${HOLD.replace(/\badUiHeldAt\b/g, 'state.heldAt').replace(/\badUiReasserts\b/g, 'state.reasserts').replace(/\badUiHiddenLogged\b/g, 'state.hiddenLogged').replace(/\badUiOwnerLogged\b/g, 'state.ownerLogged')}
+     ${src.replace(/\badUiHeldAt\b/g, 'state.heldAt').replace(/\badUiHiddenLogged\b/g, 'state.hiddenLogged').replace(/\badUiOwnerLogged\b/g, 'state.ownerLogged')}`,
   );
   // (a) the pod is detected while the tab is hidden: the hold is refused and
   //     SAID, not silent. One world, three ticks: hidden, visible, visible.
@@ -543,14 +552,31 @@ check(
   ctx3.page.visible = true;
   tick3(ctx3);
   // pod ends, pod 2 begins while hidden again
-  ctx3.rec.ad = false;
-  ctx3.video.paused = false;
+  ctx3.page.ad = false; // the slate clears: `ad-ui-off` + `adUiRelease()`
   ctx3.page.visible = false;
+  tick3(ctx3);
+  ctx3.page.ad = true; // pod 2 begins while the tab is hidden again
   tick3(ctx3);
   check(
     'a SECOND pod logs its own hidden refusal (the flag is per episode)',
     ctx3.log.filter((l) => l === 'ad-skip:hidden-tab').length === 2,
     JSON.stringify(ctx3.log),
+  );
+
+  // (c3) THE SILENT RETURN THAT COST A POD. A page the overlay really owns must
+  //      abstain, and now says so once; a page whose attribute is stale (no
+  //      layer node) must not abstain at all - that is the 30 s slate.
+  const recOwn = freshRec();
+  const videoOwn = makeVideo();
+  const ctxOwn = { rec: recOwn, page: { visible: true, owns: true, owner: 'kick', wrap: false }, video: videoOwn, log: [] };
+  const tickOwn = makeTick(tickSrc);
+
+  tickOwn(ctxOwn);
+  tickOwn(ctxOwn);
+  check(
+    'an owned page refuses the hold and NAMES it (once per episode)',
+    ctxOwn.log.filter((l) => l === 'ad-skip:overlay-owns').length === 1 && !ctxOwn.video.paused,
+    JSON.stringify(ctxOwn.log),
   );
 
   // (d) RED: the pre-fix tick asked once and stopped asking.
@@ -570,6 +596,78 @@ check(
       JSON.stringify(ctx2.log),
     );
   }
+}
+
+// ---- the ownership READER (the stale publish that cost a whole pod) ------
+// Measured 2026-11-19 on twitch.tv/alanzoka (no kick channel): `ad-ui-on` at
+// 188911 and `ad-ui-off {adSec:29.7}` at 218566 with `visible {own:"kick"}` in
+// between, while every heartbeat said `kick:null wrapShown:false` and a live
+// probe read `#ko-wrap` absent. The ad path abstained for the whole slate on an
+// attribute no layer backed. These arms run the REAL `overlayOwnsPlayback()`.
+{
+  const OWNER = grab('overlayOwnsPlayback');
+  const makeOwn = (attr, wrapNode, opts = {}) => new Function(
+    'document',
+    `const OWNER_CLEAR_MS = ${opts.clearMs ?? 4000};
+     const overlay = { ownerSeenAt: ${opts.seenAt ?? 0}, ownerClearAt: 0 };
+     function ownerAttr() { return String(document.documentElement.getAttribute('data-ko-owner') || ''); }
+     ${OWNER}
+     return () => ({ owns: overlayOwnsPlayback(), seenAt: overlay.ownerSeenAt });`,
+  );
+  const docWith = (attr, wrapNode) => ({
+    documentElement: { getAttribute: (k) => (k === 'data-ko-owner' ? attr : null) },
+    getElementById: (id) => (id === 'ko-wrap' ? wrapNode : null),
+  });
+  // makeOwn builds the world; calling the result with the document runs the
+  // predicate and calling THAT returns the observation.
+  const run = (world, doc) => world(doc)();
+  const WRAP = { id: 'ko-wrap' };
+
+  // (1) the shipped file requires the node at all.
+  check('the ownership reader consults #ko-wrap, not the attribute alone', /getElementById\('ko-wrap'\)/.test(OWNER));
+
+  // (2) THE MEASURED CASE: attribute says kick, no layer in the document.
+  const stale = run(makeOwn('kick', null, { seenAt: Date.now() }), docWith('kick', null));
+  check(
+    'an attribute with NO layer node does not own playback (the 30 s pod)',
+    stale.owns === false && stale.seenAt === 0,
+    JSON.stringify(stale),
+  );
+
+  // (3) A real layer with the attribute still owns: the guard cannot cost the
+  //     ad protection on the pages the overlay is actually serving.
+  const live = run(makeOwn('kick', WRAP), docWith('kick', WRAP));
+  check('an attribute WITH a live layer node still owns playback', live.owns === true, JSON.stringify(live));
+
+  // (4) The latch still covers a re-buffer: attribute empty, node present,
+  //     the page owned once already.
+  const latched = run(makeOwn('', WRAP, { seenAt: Date.now() }), docWith('', WRAP));
+  check('the latch still holds a re-buffer after the attribute empties', latched.owns === true, JSON.stringify(latched));
+
+  // (4b) ...and it RELEASES the moment the node is gone, because on that page
+  //      there is no screen left to protect. Keeping the latch for a layer that
+  //      no longer exists would abstain for OWNER_CLEAR_MS on the very page the
+  //      guard was added for: his alanzoka tab published "kick" with no layer.
+  const released = run(makeOwn('kick', null, { seenAt: Date.now() }), docWith('kick', null));
+  check(
+    'a stale publish with no node clears the latch instead of holding it',
+    released.owns === false && released.seenAt === 0,
+    JSON.stringify(released),
+  );
+
+  // (5) RED: the pre-fix reader (attribute alone) abstains on the measured page.
+  const preFix = new Function(
+    'document',
+    `const OWNER_CLEAR_MS = 4000;
+     const overlay = { ownerSeenAt: 0, ownerClearAt: 0 };
+     function ownerAttr() { return String(document.documentElement.getAttribute('data-ko-owner') || ''); }
+     function overlayOwnsPlayback() { const o = ownerAttr(); if (o) { overlay.ownerSeenAt = overlay.ownerSeenAt || 1; return true; } return false; }
+     return () => overlayOwnsPlayback();`,
+  );
+  check(
+    'RED: the attribute alone reports ownership on a page with no layer (his pod)',
+    preFix(docWith('kick', null))() === true,
+  );
 }
 
 // ---- anti-vacuity --------------------------------------------------------
@@ -604,8 +702,15 @@ const expected = [
   'the tab coming back inside the pod still takes the hold (his 30.0 s of ad)',
   'an adopted hold is not re-paused on the next tick',
   'a SECOND pod logs its own hidden refusal (the flag is per episode)',
+  'an owned page refuses the hold and NAMES it (once per episode)',
   'the retry mutation applied to the shipped tick',
   'RED: without the retry the pod runs its whole length unheld (his 30.0 s)',
+  'the ownership reader consults #ko-wrap, not the attribute alone',
+  'an attribute with NO layer node does not own playback (the 30 s pod)',
+  'an attribute WITH a live layer node still owns playback',
+  'the latch still holds a re-buffer after the attribute empties',
+  'a stale publish with no node clears the latch instead of holding it',
+  'RED: the attribute alone reports ownership on a page with no layer (his pod)',
 ];
 const missing = expected.filter((l) => !arms.includes(l));
 if (missing.length) {

@@ -3177,7 +3177,14 @@
           !overlay.adActive &&
           overlay.lastEndAt &&
           Date.now() - overlay.lastEndAt < AD_REOPEN_COOLDOWN_MS &&
-          !adUiDetail()
+          // THE ESCAPE HATCH ASKS THE SAME QUESTION THE HOLD ASKS. A bare
+          // `adUiDetail()` is truthy for Twitch's PERMANENT squeezeback shell
+          // (0x0, `__wrapper-hidden`, measured 2026-11-15), so the cooldown that
+          // exists to stop a second cover could be unlocked by a node that is not
+          // an ad at all - his "tomou anuncio DE NOVO" after our player came in.
+          // `adHoldWorthy` is what decides an ad everywhere else in this file;
+          // the cooldown reads the same verdict or it reads nothing.
+          !adHoldWorthy(adUiDetail(), mainVideo())
         ) {
           // The playlist marker that produced the pod we just closed is still
           // there, and the page itself shows no ad. Refusing is the whole fix:

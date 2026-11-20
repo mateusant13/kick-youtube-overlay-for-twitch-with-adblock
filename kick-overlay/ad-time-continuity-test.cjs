@@ -1207,6 +1207,54 @@ async function main() {
     });
   }
 
+  // ---- 10d. the cooldown's escape hatch asks the same question the hold does
+  // Owner report 2026-11-19, verbatim: "tomou outro anuncio agora - ~4-5s de
+  // anuncio, nosso player entrou, e depois de mais alguns segundos tomou anuncio
+  // DE NOVO". `AD_REOPEN_COOLDOWN_MS` exists exactly to refuse that second cover:
+  // a playlist marker outlives the break that produced it. Its escape hatch was
+  // a bare `adUiDetail()`, and Twitch keeps a squeezeback shell in the DOM
+  // PERMANENTLY (0x0, `__wrapper-hidden`, measured 2026-11-15), so the hatch was
+  // open on a node that is not an ad - the second pod walked straight through.
+  //
+  // The two predicates are driven directly, because that is where the decision
+  // lives: `adUiDetail()` returns the shell and `adHoldWorthy()` refuses it, and
+  // the cooldown must read the second. Driving them through the DOM walk would
+  // test `adSurfaceRect`, which is a different question with its own arms.
+  {
+    const api = makeWorld().stats();
+    const permanentShell = { kind: 'wrapper', w: 0, h: 0 };
+    const measuredAd = { kind: 'wrapper', w: 1236, h: 695 };
+    check('the permanent squeezeback shell is what adUiDetail() answers', () => {
+      assert(api.adHoldWorthy(permanentShell, makeWorld().video) === false,
+        'a 0x0 wrapper was hold-worthy: the shell would pause the player');
+    });
+    check('a measured ad surface IS hold-worthy (the control)', () => {
+      assert(api.adHoldWorthy(measuredAd, makeWorld().video) === true,
+        'a full-player surface was refused, so the cooldown can never reopen');
+    });
+    // The cooldown's clause, exactly as shipped: refuse while a pod just ended
+    // AND the page does not show a hold-worthy ad right now.
+    check('the cooldown reads adHoldWorthy, not a bare adUiDetail()', () => {
+      const src = fs.readFileSync('twitch-adblock.js', 'utf8');
+      // Find the clause by its CONDITION, not by the constant: the comment
+      // above it is long enough to eat any fixed-size window.
+      const at = src.indexOf('!adHoldWorthy(adUiDetail(), mainVideo())');
+      assert(at > 0, 'the cooldown hatch is not the strong predicate in this file');
+      // ...and it must sit inside the cooldown clause, not somewhere else.
+      const cool = src.lastIndexOf('AD_REOPEN_COOLDOWN_MS &&', at);
+      assert(cool > 0 && at - cool < 900,
+        `the strong predicate is ${at - cool} chars from the cooldown clause`);
+    });
+    // RED: the pre-fix hatch, evaluated over the shell the page really carries.
+    const weak = (detail) => !detail;
+    check('RED: the weak hatch is open on the permanent shell', () => {
+      // The shell is truthy, so `!adUiDetail()` is false and the cooldown is
+      // skipped: the second pod starts. That is the defect, stated as data.
+      assert(weak(permanentShell) === false,
+        'the weak hatch refused the shell, so the arm above is not measuring it');
+    });
+  }
+
   // ---- 11. "AM I IN REAL TIME?" IS A LOG FIELD ---------------------------
   {
     const page = makeWorld();
