@@ -297,7 +297,15 @@ function dispSurface() {
 // chronology (0.8.90).
 function dispSample() {
   try {
-    if (document.hidden) return; // a throttled tab measures the throttle, not the product
+    if (document.hidden) {
+      // A THROTTLED TAB MEASURES THE THROTTLE, NOT THE PRODUCT (AGENTS.md, the
+      // alt-tab wave record), so nothing is measured and nothing is acted on.
+      // The decision still gets its row: "nothing happened because the tab was
+      // hidden" is the answer a report needs, and it is one row per hidden
+      // episode, not one per throttled tick.
+      nativeStallHiddenRefuse();
+      return;
+    }
     const now = Date.now();
     const srf = dispSurface();
     let pos = null;
@@ -426,7 +434,11 @@ function dispSample() {
         /* a recovery must never break the sampler */
       }
     } else {
-      nativeStallIdle();
+      // The layer owns the picture, so `dispSurface()` never routes the page's
+      // element here at all - and a native parked in a stall SHAPE under our
+      // picture is exactly the case the layer's own watchdog owns. Say so once,
+      // or a ring cannot tell "the layer had it" from "nothing ran".
+      nativeStallOwnedRefuse();
     }
   } catch {
     /* a diag line must never break the overlay */
@@ -447,6 +459,101 @@ function nativeStallIdle() {
   nat.tries = 0;
   nat.lastAt = 0;
   nat.from = null;
+  nat.refuse = '';
+}
+
+// A REFUSAL IS A DECISION, AND EVERY REPORT IS ANSWERED FROM THE LOG. This
+// watchdog refuses far more often than it acts - the owner's own pause, a hidden
+// tab, a layer or the ad path owning the picture, a spent budget - and until now
+// every one of those returns was SILENT, which is why a ring can read as "the
+// extension did nothing" when it in fact chose not to. One row per reason per
+// episode (`nat.refuse` is the dedupe key, cleared when the element is healthy
+// again or the surface changes), never one per tick: a site that can fire on an
+// unchanged state is the defect this repo already paid for.
+//
+// The reason vocabulary:
+//   user-paused    real input landed within NATIVE_USER_PAUSE_MS of the pause
+//   hidden         the pause was stamped while the tab was hidden (the throttle)
+//   overlay-owned  a layer of ours has the picture; its watchdog owns the native
+//   ad-owned       the ad path has the screen (clean player or painted cover)
+//   cold-hold      our own cold cover is up: there is no picture to protect
+//   budget-spent   `native-stall-failed` carries this one, with the ceiling
+function nativeStallRefuse(why, data) {
+  const nat = (KO.nat = KO.nat || { since: 0, tries: 0, lastAt: 0, why: '', logged: false, failed: false, from: null, refuse: '' });
+  const first = nat.refuse !== why;
+  // The attempt state does not survive a refusal: whoever takes over next (the
+  // layer, the user, a visible tab) starts the episode from zero, or a stale
+  // `since` would make the first sample after the hand-back act immediately.
+  nat.since = 0;
+  nat.tries = 0;
+  nat.lastAt = 0;
+  nat.logged = false;
+  nat.failed = false;
+  nat.from = null;
+  if (!first) return;
+  nat.refuse = why;
+  diag('native-stall-refused', Object.assign({ why }, data || {}));
+}
+
+// The SHAPE of a stall, for the two sites that refuse WITHOUT running the full
+// judgement (a hidden tab, a layer that owns the picture). Same rule the
+// watchdog applies, and the same reason for it: `rs < 3` alone or a thin buffer
+// alone is NOT a stall - hls.js keeps a healthy live element at 1.3-1.6 s of
+// runway while it advances 1.00 s per second (0.8.102 fired on exactly that).
+// Only an element that is parked, or cannot play forward, with nothing in front
+// of the playhead is a shape worth a row.
+function nativeStallShape(v) {
+  const rs = Number(v.readyState || 0);
+  const buf = +nativeRunway(v).toFixed(2);
+  return {
+    paused: !!v.paused,
+    rs,
+    buf,
+    ct: +Number(v.currentTime || 0).toFixed(2),
+    actionable: (!!v.paused || rs < 3) && buf < NATIVE_STALL_BUFFER_SEC,
+  };
+}
+
+// A HIDDEN TAB DECIDES NOTHING (the alt-tab wave record in AGENTS.md): the
+// sampler returns before it measures anything, and the watchdog never runs, so
+// the refusal has to be written from here or it is not answerable at all. Gated
+// on the shape and on `nat.refuse`, so a throttled tab writes ONE row per hidden
+// episode instead of one per minute.
+function nativeStallHiddenRefuse() {
+  try {
+    if (!KO.enabled) return;
+    const v = twitchVideo();
+    if (!v || !v.isConnected) return;
+    if (KO.twPaused.has(v)) return; // we parked it for a layer: by design, not a refusal
+    const s = nativeStallShape(v);
+    if (!s.actionable) return nativeStallIdle();
+    // NO script code above reads ownership here: `overlayOwnsPicture()` writes
+    // the picture clocks, and a hidden tab deciding the hysteresis it will see
+    // when the user comes back is exactly the "a hidden tab decides nothing"
+    // defect. The published owner travels as context instead.
+    nativeStallRefuse('hidden', { ct: s.ct, rs: s.rs, buf: s.buf, paused: s.paused, owner: KO.ownerAttr || null });
+  } catch {
+    /* a refusal row must never break the sampler */
+  }
+}
+
+// The layer owns the picture, so `dispSurface()` never routes this element to
+// the watchdog at all. The refusal is written from the sampler's layer branch:
+// the native is in a stall shape while our picture is on screen, which is the
+// case the layer's own watchdog owns.
+function nativeStallOwnedRefuse() {
+  try {
+    const v = twitchVideo();
+    if (!v || !v.isConnected) return nativeStallIdle();
+    // `KO.twPaused` is what we do on purpose when a layer takes over: not a
+    // refusal, and it must not be a row on every kick session.
+    if (KO.twPaused.has(v)) return nativeStallIdle();
+    const s = nativeStallShape(v);
+    if (!s.actionable) return nativeStallIdle();
+    nativeStallRefuse('overlay-owned', { ct: s.ct, rs: s.rs, buf: s.buf, paused: s.paused });
+  } catch {
+    /* a refusal row must never break the sampler */
+  }
 }
 
 // A pause is not a user pause by itself. Two facts decide: WHEN it happened
@@ -586,13 +693,33 @@ function nudgeInsideHeldMedia(v) {
 // sampler does not even run there), never a user pause, never while an overlay
 // owns the picture, never on a DVR/VOD position, never a loop.
 function nativeStallWatch(v, now, sample) {
-  const nat = (KO.nat = KO.nat || { since: 0, tries: 0, lastAt: 0, why: '', logged: false, failed: false, from: null });
+  const nat = (KO.nat = KO.nat || { since: 0, tries: 0, lastAt: 0, why: '', logged: false, failed: false, from: null, refuse: '' });
   if (!KO.enabled || !v || !v.isConnected) return nativeStallIdle();
-  if (overlayOwnsPicture() || coldHoldActive() || adPathOwnsScreen() || KO.twPaused.has(v)) return nativeStallIdle();
   const rs = Number(v.readyState || 0);
   const ct = +Number(v.currentTime || 0).toFixed(2);
   const runway = +nativeRunway(v).toFixed(2);
   const starved = runway < NATIVE_STALL_BUFFER_SEC;
+  // The SHAPE that would have been actionable if nothing else owned the screen:
+  // parked with nothing in front of the playhead, or unable to play forward. A
+  // refusal row is only written for a stall that WOULD have been acted on -
+  // otherwise a healthy native under an ad window writes a row per ad, and a
+  // row that fires on unchanged healthy state is the defect this repo paid for.
+  const stalledShape = v.paused ? starved : rs < 3 || !!sample.frozen;
+  // Every guard below is a DECISION, so it says so (see `nativeStallRefuse`).
+  // The order is the order the pictures are protected in: ours first, then the
+  // page's own park, then the surfaces.
+  if (KO.twPaused.has(v)) {
+    // We parked it ourselves for a layer: by design, no episode, no row.
+    return nativeStallIdle();
+  }
+  // Which surface holds the screen right now, asked ONCE: each predicate stamps
+  // the picture clocks, and asking twice inside one tick is a decision made on
+  // state this tick changed.
+  const screenOwner = coldHoldActive() ? 'cold-hold' : overlayOwnsPicture() ? 'overlay-owned' : adPathOwnsScreen() ? 'ad-owned' : '';
+  if (screenOwner) {
+    if (!stalledShape) return nativeStallIdle();
+    return nativeStallRefuse(screenOwner, { ct, rs, buf: runway, paused: !!v.paused });
+  }
   // A THIN FORWARD BUFFER IS THE HEALTHY STATE OF A TWITCH LIVE, not a stall.
   // hls.js keeps the playhead `liveSyncDuration` behind the edge, so his own
   // ring measures 1.32-1.63 s of runway on a picture that is advancing 1.00 s
@@ -614,9 +741,24 @@ function nativeStallWatch(v, now, sample) {
   }
   if (v.paused) {
     const p = KO.natPause && KO.natPause.el === v ? KO.natPause : null;
-    if (!p) return nativeStallIdle(); // no stamp: not provably a stall-pause
+    if (!p) {
+      // A pause nobody stamped is NOT attributable: the `pause` listener may have
+      // been attached after it, or a page script parked the element before boot.
+      // Resuming it can undo the user's own pause, so a starved one is refused
+      // with a row - and a parked element with media in front of it is simply
+      // parked, which is not an episode at all.
+      if (!starved) return nativeStallIdle();
+      return nativeStallRefuse('unattributed-pause', { ct, rs, buf: runway });
+    }
     const fresh = p.inputAgeMs != null && p.inputAgeMs <= NATIVE_USER_PAUSE_MS;
-    if (fresh || p.hidden || p.ours) return nativeStallIdle(); // his pause, ours, or a hidden tab
+    if (fresh) {
+      // HIS PAUSE, and it stays paused: the same distinction `resumeRefusedByUser`
+      // makes on the pod path, for the same reason (a 30 s pause of his own must
+      // not be undone by a watchdog that thinks it knows better).
+      return nativeStallRefuse('user-paused', { ct, rs, buf: runway, inputAgeMs: p.inputAgeMs, input: p.input || null });
+    }
+    if (p.hidden) return nativeStallRefuse('hidden', { ct, rs, buf: runway });
+    if (p.ours) return nativeStallIdle(); // we parked it: by design
     if (!starved) return nativeStallIdle(); // a healthy parked player stays parked
     if (now - p.at < NATIVE_STALL_MS) return; // give the page's own reload a beat
   } else if (!(rs < 3 || sample.frozen)) {
@@ -655,14 +797,27 @@ function nativeStallWatch(v, now, sample) {
   if (nat.tries >= NATIVE_RECOVER_MAX) {
     if (!nat.failed) {
       nat.failed = true;
-      diag('native-stall-failed', { tries: nat.tries, ct, rs, buf: runway, why: nat.why });
+      // The row that closes the episode AND names the ceiling it was stopped by:
+      // "the budget is spent, here is the number, nothing more will be tried
+      // until the element changes state". A retry loop that never stops is the
+      // defect this repo already paid for (the `stall`/`reconnect` wave in
+      // AGENTS.md: three reconnects on a picture frozen at the same position).
+      diag('native-stall-failed', { tries: nat.tries, max: NATIVE_RECOVER_MAX, ct, rs, buf: runway, why: nat.why });
     }
     return;
   }
   nat.tries += 1;
   nat.lastAt = now;
   if (nat.tries === 1) {
-    const nudged = nudgeInsideHeldMedia(v);
+    // THE CHEAPEST ACTION THAT CAN WORK, in this order and no other:
+    //  1. the element merely PAUSED: `play()` - one call, no position moved;
+    //  2. it is short of runway INSIDE media it already holds: move the playhead
+    //     back to the start of that range, which is a local seek in downloaded
+    //     data, not a fetch;
+    //  3. only then anything heavier (`load()`), and never on a DVR position.
+    // `v.load()` on Twitch's own element loses the DVR offset and can trigger a
+    // preroll, so it is never the first move.
+    const nudged = v.paused ? null : nudgeInsideHeldMedia(v);
     try {
       const p = v.play();
       if (p && p.catch) p.catch(() => {});
@@ -671,6 +826,7 @@ function nativeStallWatch(v, now, sample) {
     }
     diag('native-stall-resume', {
       step: 1,
+      action: nudged ? 'nudge+play' : 'play',
       from: nudged ? nudged.from : ct,
       to: nudged ? nudged.to : ct,
       rs,
@@ -699,7 +855,7 @@ function nativeStallWatch(v, now, sample) {
   } catch {
     /* detached */
   }
-  diag('native-stall-reload', { step: nat.tries, ct, rs, buf: runway });
+  diag('native-stall-reload', { step: nat.tries, action: 'reload+play', from: ct, to: 0, rs, buf: runway, why: nat.why });
 }
 
 // The audio authority cannot write the log itself (it has no message channel and
@@ -771,7 +927,7 @@ const NOT_CHANNEL = new Set([
 
 // Build marker for the diag stream — lets us tell which code a tab runs
 // (content scripts of pre-reload tabs survive extension reloads).
-const KO_VER = '0.8.105';
+const KO_VER = '0.8.106';
 // How long a lost picture may last before the native player is allowed to
 // reclaim the screen (owner 2026-11-11: an ad and the player fighting).
 const OWNER_GRACE_MS = 6000;
