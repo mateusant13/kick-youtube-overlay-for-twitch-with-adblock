@@ -2597,6 +2597,13 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     const frozen = (v, ms) => {
       KO.disp = { srf: 'twitch', pos: v.currentTime, movedAt: Date.now() - ms, verdict: 'LIVE', loggedAt: 0, last: null };
     };
+    // The episode object is created by the first sample, and a pre-fix copy of
+    // the file may never create it at all - then the arm would crash on a null
+    // fixture instead of failing on the assertion it guards.
+    const seedNat = () => {
+      KO.nat = Object.assign({ since: 0, tries: 0, lastAt: 0, why: '', logged: false, failed: false, from: null, refuse: '' }, KO.nat || {});
+      return KO.nat;
+    };
 
     // (a) healthy: nothing to say and nothing to touch
     reset();
@@ -2622,6 +2629,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     // cannot reach the decision would pass with the defect restored. `KO.nat` is
     // created by the first sample, so the episode is backdated on the second.
     api.dispSample();
+    seedNat();
     KO.nat.since = Date.now() - 60000;
     KO.nat.tries = 0;
     KO.nat.lastAt = Date.now() - 60000;
@@ -2633,7 +2641,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     for (let i = 0; i < 3; i++) {
       v.currentTime += 1;
       KO.disp.movedAt = Date.now();
-      KO.nat.lastAt = Date.now() - 60000; // past the recovery gap: a re-trigger would act now
+      seedNat().lastAt = Date.now() - 60000; // past the recovery gap: a re-trigger would act now
       api.dispSample();
     }
     assert.strictEqual(rows('native-stall-reload').length, 0, 'a healthy live element had its source reloaded');
@@ -2790,7 +2798,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     KO.natPause = { el: v, at: Date.now() - 9000, ct: 1, rs: 1, hidden: false, inputAgeMs: null, ours: false };
     frozen(v, 12000);
     api.dispSample();
-    KO.nat.lastAt = Date.now() - 60000; // the resume is spent and its gap has passed
+    seedNat().lastAt = Date.now() - 60000; // the resume is spent and its gap has passed
     KO.nat.tries = 1;
     KO.nat.since = Date.now() - 60000;
     api.dispSample();
@@ -2824,6 +2832,296 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
 
     reset();
     console.log('N1 native stall: page pause, freeze, user pause, hidden tab, ownership and DVR - OK');
+  }
+
+  // ---- N2: the DECISION is in the log, and the budget is a number -----------
+  // The watchdog refuses far more often than it acts (his pause, a hidden tab, a
+  // layer that owns the picture, a spent budget). Every one of those returns used
+  // to be silent, so a ring could read as "the extension did nothing" when it had
+  // chosen not to - and the report could only be answered by reading this file.
+  // These limbs drive the REAL sampler and a REAL mutated copy of the file, one
+  // boundary each, and each mutation restores the pre-fix behaviour it guards.
+  {
+    const mkVideo = () => {
+      const v = videoEl('nativeStall2');
+      v.paused = false;
+      v.readyState = 4;
+      v.currentTime = 100;
+      v.duration = Infinity;
+      v.playCount = 0;
+      v.loadCount = 0;
+      v.buffered = { length: 1, start: () => 90, end: (i) => (i === 0 ? 103 : 0) };
+      v.play = function () { this.playCount += 1; this.paused = false; return Promise.resolve(); };
+      v.load = function () { this.loadCount += 1; this.readyState = 1; this.currentTime = 0; };
+      fakeVideos.length = 0;
+      fakeVideos.push(v);
+      return v;
+    };
+    let base = 0;
+    const rows = (ev) => swCalls.slice(base).filter((m) => m && m.__koDiag && m.__koDiag.ev === ev).map((m) => m.__koDiag.data);
+    const refuses = () => rows('native-stall-refused');
+    const seedKo = (K) => {
+      K.nat = null;
+      K.disp = null;
+      K.natPause = null;
+      K.lastInputAt = 0;
+      K.lastInputWhat = '';
+      K.ownerAttr = null;
+      K.wrap = null;
+      K.enabled = true;
+      K.player = 'kick';
+      K.kickState = null;
+      K.twPaused.clear();
+    };
+    const reset = () => {
+      base = swCalls.length;
+      seedKo(KO);
+      doc.hidden = false;
+    };
+    // The measured state, one field from his ring each: `{ct:30, rs:1,
+    // paused:true}`, 0.05 s of forward media, and a pause nobody claimed. `K` is
+    // the module's OWN `KO`: a mutated copy of the file has its own state, and
+    // seeding the outer one would test a module that was never driven.
+    const parkStarvedMeasured = (v, K = KO) => {
+      v.paused = true;
+      v.readyState = 1;
+      v.currentTime = 29.98;
+      v.buffered = { length: 1, start: () => 29.9, end: () => 30.03 };
+      K.natPause = { el: v, at: Date.now() - 9000, ct: 30, rs: 1, hidden: false, inputAgeMs: null, input: null, ours: false };
+      K.disp = { srf: 'twitch', pos: v.currentTime, movedAt: Date.now() - 12000, verdict: 'LIVE', loggedAt: 0, last: null };
+    };
+    // A REAL mutated copy of the file: the same harness globals, one string
+    // replaced. Behaviour is then observed by driving its own sampler. Its
+    // timers are disabled: a mutated module must not sample this suite's page
+    // on its own thousandth millisecond and turn a later arm's numbers into
+    // someone else's.
+    const mk = (source) => {
+      const realSetInterval = global.setInterval;
+      global.setInterval = () => 0;
+      try {
+        return new Function('window', 'document', 'location', 'navigator', source
+          + '\n;return {KO, dispSample, twitchVideo};')(global, doc, global.location, global.navigator);
+      } finally {
+        global.setInterval = realSetInterval;
+      }
+    };
+    const red = (from, to) => {
+      assert.ok(src.includes(from), `N2 RED: the mutation target is not in the source any more: ${from.slice(0, 60)}`);
+      return mk(src.replace(from, to));
+    };
+    const redSample = (mod) => {
+      const b = swCalls.length;
+      mod.dispSample();
+      return swCalls.slice(b).filter((m) => m && m.__koDiag).map((m) => m.__koDiag);
+    };
+    const evOf = (calls, ev) => calls.filter((c) => c.ev === ev).map((c) => c.data);
+    // Red limbs run a mutated copy: seed ITS state, park the measured element and
+    // sample it, with the population swapped so only that element is visible.
+    const prep = (mod, over) => {
+      const mv = mkVideo();
+      seedKo(mod.KO);
+      if (over) over(mv, mod.KO);
+      fakeVideos.length = 0;
+      fakeVideos.push(mv);
+      return { v: mv, calls: redSample(mod) };
+    };
+
+    // N2a: the measured case - the PLAYER parked its own element after a buffer
+    //      drain, and the cheapest action that can work is `play()`.
+    reset();
+    let v = mkVideo();
+    parkStarvedMeasured(v);
+    api.dispSample();
+    const aStall = rows('native-stall');
+    assert.strictEqual(aStall.length, 1, `the measured park was not named: ${JSON.stringify(aStall)}`);
+    assert.strictEqual(aStall[0].why, 'page-pause-starved', `wrong cause: ${JSON.stringify(aStall[0])}`);
+    assert.ok(aStall[0].rs === 1 && aStall[0].buf < 0.1, `the decision row lost the numbers that justified it: ${JSON.stringify(aStall[0])}`);
+    const aAct = rows('native-stall-resume');
+    assert.strictEqual(aAct.length, 1, `the measured park was not recovered: ${JSON.stringify(aAct)}`);
+    assert.strictEqual(aAct[0].action, 'play', `a merely parked element got the heavier action: ${JSON.stringify(aAct[0])}`);
+    assert.strictEqual(aAct[0].from, aAct[0].to, 'a paused element had its playhead moved (not the cheapest action)');
+    assert.strictEqual(v.playCount, 1, 'the measured park was never resumed');
+    assert.strictEqual(v.loadCount, 0, 'the measured park had its source reloaded (the preroll/jump risk)');
+    {
+      // Pre-fix: the sampler never handed the page's element to any recovery.
+      const m = red(
+        "        nativeStallWatch(pageVideo, now, { frozen: verdict === 'FROZEN', movedMs: d.movedAt ? now - d.movedAt : 0 });",
+        '        /* RED: no recovery of the page element */',
+      );
+      const r = prep(m, (mv, K) => parkStarvedMeasured(mv, K));
+      assert.strictEqual(evOf(r.calls, 'native-stall').length, 0, 'N2a RED: the pre-fix sampler named no stall at all');
+      assert.strictEqual(r.v.playCount, 0, 'N2a RED: without the watchdog the parked element stays parked (pre-fix)');
+    }
+
+    // N2b: HIS pause is not a stall, and the refusal says which of the two it
+    //      was - the same distinction `resumeRefusedByUser` makes on the pod path.
+    reset();
+    v = mkVideo();
+    v.paused = true;
+    v.readyState = 4;
+    v.buffered = { length: 1, start: () => 0, end: () => 100.1 };
+    KO.natPause = { el: v, at: Date.now() - 30000, ct: 100, rs: 4, hidden: false, inputAgeMs: 300, input: 'pointerdown', ours: false };
+    KO.disp = { srf: 'twitch', pos: 100, movedAt: Date.now() - 30000, verdict: 'LIVE', loggedAt: 0, last: null };
+    api.dispSample();
+    assert.strictEqual(v.playCount, 0, "the owner's own 30 s pause was overridden");
+    let bRef = refuses();
+    assert.strictEqual(bRef.length, 1, `the user-pause refusal is not in the log: ${JSON.stringify(bRef)}`);
+    assert.strictEqual(bRef[0].why, 'user-paused', `the refusal named the wrong reason: ${JSON.stringify(bRef[0])}`);
+    assert.strictEqual(bRef[0].inputAgeMs, 300, `the refusal did not carry the input distance: ${JSON.stringify(bRef[0])}`);
+    api.dispSample();
+    api.dispSample();
+    assert.strictEqual(refuses().length, 1, 'the refusal was written once per tick (a site that fires on unchanged state)');
+    {
+      const m = red('    const fresh = p.inputAgeMs != null && p.inputAgeMs <= NATIVE_USER_PAUSE_MS;', '    const fresh = false; // RED: pre-fix');
+      const r = prep(m, (mv, K) => {
+        mv.paused = true;
+        mv.readyState = 4;
+        mv.buffered = { length: 1, start: () => 0, end: () => 100.1 };
+        K.natPause = { el: mv, at: Date.now() - 30000, ct: 100, rs: 4, hidden: false, inputAgeMs: 300, input: 'pointerdown', ours: false };
+        K.disp = { srf: 'twitch', pos: 100, movedAt: Date.now() - 30000, verdict: 'LIVE', loggedAt: 0, last: null };
+      });
+      assert.strictEqual(r.v.playCount, 1, "N2b RED: ignoring the input distance resumes the owner's own pause (pre-fix)");
+      assert.strictEqual(evOf(r.calls, 'native-stall-refused').length, 0, 'N2b RED: no refusal row when the guard is gone');
+    }
+
+    // N2c: a hidden tab resumes nothing - and says so. The sampler returns before
+    //      it MEASURES anything there, so the row has to come from its own guard;
+    //      a pause stamped while hidden is refused by the watchdog.
+    reset();
+    v = mkVideo();
+    parkStarvedMeasured(v);
+    v.paused = true;
+    KO.natPause.hidden = false;
+    doc.hidden = true;
+    api.dispSample();
+    doc.hidden = false;
+    assert.strictEqual(v.playCount, 0, 'a hidden tab had play() called on it');
+    let cRef = refuses();
+    assert.strictEqual(cRef.length, 1, `the hidden-tab refusal is not in the log: ${JSON.stringify(cRef)}`);
+    assert.strictEqual(cRef[0].why, 'hidden', `the refusal named the wrong reason: ${JSON.stringify(cRef[0])}`);
+    {
+      const m = red('      nativeStallHiddenRefuse();\n      return;', '      return; // RED: pre-fix');
+      doc.hidden = true;
+      let calls;
+      let mv;
+      try {
+        const r = prep(m, (x, K) => parkStarvedMeasured(x, K));
+        mv = r.v;
+        calls = r.calls;
+      } finally {
+        doc.hidden = false;
+      }
+      assert.strictEqual(mv.playCount, 0, 'N2c RED: a hidden tab still resumes nothing (the guard is the row)');
+      assert.strictEqual(evOf(calls, 'native-stall-refused').length, 0, 'N2c RED: a hidden tab decides silently again (pre-fix)');
+    }
+    // ...and the stamp written HIDDEN is the other entry: the tab is visible now,
+    // so the sampler runs, and the watchdog must still refuse that pause.
+    reset();
+    v = mkVideo();
+    parkStarvedMeasured(v);
+    KO.natPause.hidden = true;
+    api.dispSample();
+    assert.strictEqual(v.playCount, 0, 'a pause stamped while hidden was resumed on the first visible tick');
+    cRef = refuses();
+    assert.strictEqual(cRef.length, 1, `the hidden-stamp refusal is not in the log: ${JSON.stringify(cRef)}`);
+    assert.strictEqual(cRef[0].why, 'hidden', `the hidden-stamp refusal named the wrong reason: ${JSON.stringify(cRef[0])}`);
+    {
+      const m = red("    if (p.hidden) return nativeStallRefuse('hidden', { ct, rs, buf: runway });", '    if (false) return nativeStallRefuse(\'hidden\', { ct, rs, buf: runway }); // RED');
+      const r = prep(m, (mv, K) => {
+        parkStarvedMeasured(mv, K);
+        K.natPause.hidden = true;
+      });
+      assert.strictEqual(r.v.playCount, 1, 'N2c RED: without the hidden check the throttle pause is resumed (pre-fix)');
+    }
+
+    // N2d: a layer owns the picture - the layer's own watchdog owns the native.
+    reset();
+    v = mkVideo();
+    parkStarvedMeasured(v);
+    KO.natPause = { el: v, at: Date.now() - 9000, ct: 30, rs: 1, hidden: false, inputAgeMs: null, input: null, ours: false };
+    KO.wrap = { style: {} };
+    KO.kickState = { state: 'Playing', pos: 500, lat: 3, ts: Date.now() };
+    api.dispSample();
+    assert.strictEqual(v.playCount, 0, 'the native was played while our layer owned the picture');
+    assert.strictEqual(v.loadCount, 0, 'the native source was reloaded while our layer owned the picture');
+    const dRef = refuses();
+    assert.strictEqual(dRef.length, 1, `the overlay-owned refusal is not in the log: ${JSON.stringify(dRef)}`);
+    assert.strictEqual(dRef[0].why, 'overlay-owned', `the refusal named the wrong reason: ${JSON.stringify(dRef[0])}`);
+    api.dispSample();
+    assert.strictEqual(refuses().length, 1, 'the overlay-owned refusal repeats on every tick');
+    {
+      // Two guards hold this case: the surface predicate, and the watchdog's own
+      // ownership check. Removing both is what restores the pre-fix recovery.
+      const src2 = src
+        .replace("  if (overlayOwnsPicture()) return KO.player === 'youtube' ? 'youtube' : 'kick';", "  if (false && overlayOwnsPicture()) return KO.player === 'youtube' ? 'youtube' : 'kick'; // RED")
+        .replace("  const screenOwner = coldHoldActive() ? 'cold-hold' : overlayOwnsPicture() ? 'overlay-owned' : adPathOwnsScreen() ? 'ad-owned' : '';", "  const screenOwner = ''; // RED: surface guards removed")
+        .replace("  if (KO.twPaused.has(v)) {\n    // We parked it ourselves for a layer: by design, no episode, no row.\n    return nativeStallIdle();\n  }", '')
+        .replace("      nativeStallOwnedRefuse();", '      nativeStallIdle(); // RED');
+      assert.notStrictEqual(src2, src, 'N2d RED: the ownership guards are not in the source any more');
+      assert.ok(!src2.includes('We parked it ourselves'), 'N2d RED: the twPaused guard is still in the source');
+      const m2 = mk(src2);
+      const r = prep(m2, (mv, K) => {
+        parkStarvedMeasured(mv, K);
+        K.wrap = { style: {} };
+        K.kickState = { state: 'Playing', pos: 500, lat: 3, ts: Date.now() };
+        // The layer has painted (the ticket's page: the picture is the layer's),
+        // so the cold hold is closed and ownership is the only guard left.
+        K.picSeenAt = Date.now();
+        K.picLostAt = 0;
+      });
+      assert.strictEqual(r.v.playCount, 1, 'N2d RED: without the ownership guards the native is recovered under our layer');
+      assert.strictEqual(evOf(r.calls, 'native-stall-refused').length, 0, 'N2d RED: no refusal row under an owned picture');
+    }
+
+    // N2e: THE CEILING. Two actions per episode, then a row that names the
+    //      number it stopped at - and no further attempt, ever, for that episode.
+    reset();
+    v = mkVideo();
+    parkStarvedMeasured(v);
+    const ladder = () => {
+      KO.nat.lastAt = Date.now() - 60000; // the 10 s gap has passed
+      KO.disp.movedAt = Date.now() - 12000;
+      api.dispSample();
+    };
+    api.dispSample();
+    assert.strictEqual(v.playCount, 1, 'the first step did not run');
+    ladder();
+    assert.strictEqual(v.loadCount, 1, 'the second step did not refresh the source');
+    const eReload = rows('native-stall-reload');
+    assert.strictEqual(eReload.length, 1, `the reload step was not named: ${JSON.stringify(eReload)}`);
+    assert.strictEqual(eReload[0].step, 2, `the reload row named the wrong step: ${JSON.stringify(eReload[0])}`);
+    // The reload step also calls play() on the fresh source; from here on NOTHING
+    // may act again.
+    const acted = { play: v.playCount, load: v.loadCount };
+    ladder();
+    ladder();
+    ladder();
+    const eFail = rows('native-stall-failed');
+    assert.strictEqual(eFail.length, 1, `the spent budget is not in the log, once: ${JSON.stringify(eFail)}`);
+    assert.strictEqual(eFail[0].tries, 2, `the ceiling row carried the wrong count: ${JSON.stringify(eFail[0])}`);
+    assert.strictEqual(eFail[0].max, 2, `the ceiling row must NAME the ceiling it stopped at: ${JSON.stringify(eFail[0])}`);
+    assert.strictEqual(v.playCount, acted.play, 'an attempt ran after the budget was spent');
+    assert.strictEqual(v.loadCount, acted.load, 'the source was reloaded after the budget was spent');
+    {
+      const m = red('const NATIVE_RECOVER_MAX = 2; // resume inside held media, then ONE source refresh', 'const NATIVE_RECOVER_MAX = 99; // RED: unbounded');
+      const b = swCalls.length;
+      const mv = mkVideo();
+      seedKo(m.KO);
+      parkStarvedMeasured(mv, m.KO);
+      fakeVideos.length = 0;
+      fakeVideos.push(mv);
+      m.dispSample();
+      for (let i = 0; i < 3; i++) {
+        m.KO.nat.lastAt = Date.now() - 60000;
+        m.KO.disp.movedAt = Date.now() - 12000;
+        m.dispSample();
+      }
+      assert.ok(mv.playCount > 1, 'N2e RED: without the ceiling the episode keeps acting (pre-fix retry loop)');
+      assert.strictEqual(swCalls.slice(b).filter((x) => x && x.__koDiag && x.__koDiag.ev === 'native-stall-failed').length, 0, 'N2e RED: an unbounded budget never spends anything, so no failed row');
+    }
+
+    reset();
+    console.log('N2 native decisions: resumed/refused rows, hidden tab, owned picture and the ceiling - OK');
   }
 
   // ---- O1: the DEATH PATH publishes the loss of the picture ----------------
@@ -2915,7 +3213,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   // rather than a quieter green. Appending an arm means appending its label.
   const ARMS = [
     'P1b2', 'P2e', 'P2f', 'P2g', 'P2h', 'P2i', 'P2k', 'P2n', 'P2o', 'P2p', 'P3', 'W1', 'W2', 'W3', 'W4', 'W5', 'W6',
-    'U mute', 'V quality', 'X per-player', 'X2 manual sw', 'X3 stale liv', 'Z hover', 'D1', 'N1', 'O1 owner death',
+    'U mute', 'V quality', 'X per-player', 'X2 manual sw', 'X3 stale liv', 'Z hover', 'D1', 'N1', 'N2', 'O1 owner death',
   ];
   const printed = armLog.map((l) => String(l).trim());
   const missing = ARMS.filter((a) => !printed.some((l) => l.startsWith(a)));
