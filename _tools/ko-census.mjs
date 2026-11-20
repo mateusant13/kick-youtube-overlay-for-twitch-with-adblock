@@ -56,15 +56,22 @@ function read(rel) {
 }
 
 // Which function each line belongs to, without a full JS parser: track the last
-// `function name(` / `const name = (` opening at column 0-2 and its brace depth.
+// `function name(` / `const name = (…) =>` opening and its brace depth.
+// A `const name = (` that is NOT an arrow function is an ordinary initializer
+// (`const nat = (KO.nat = KO.nat || {...});`) and naming it as a function made
+// every exit of the enclosing function report the wrong owner — measured
+// 2026-11-20, `nativeStallWatch` showed 0 exits while `nat` showed 16.
 function functionIndex(lines) {
   const owner = new Array(lines.length).fill(null);
   let current = null;
   let depth = 0;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const m = /^(?:  )?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)|^(?:  )?const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(/.exec(line);
-    if (m && depth <= 2) current = m[1] || m[2];
+    const decl = /^\s*(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/.exec(line);
+    const arrow = /^\s*const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>/.exec(line);
+    const arrow1 = /^\s*const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?[A-Za-z_$][\w$]*\s*=>/.exec(line);
+    const named = decl || arrow || arrow1;
+    if (named && depth <= 2) current = named[1];
     owner[i] = current;
     for (const ch of line) {
       if (ch === '{') depth++;
@@ -76,14 +83,16 @@ function functionIndex(lines) {
 }
 
 // Blank out comments and string literals so a `return` inside either is never a
-// decision, and preserve offsets so line numbers stay exact.
+// decision. EVERY consumed character is replaced one-for-one and NEWLINES ARE
+// PRESERVED: a multi-line block comment collapsed to spaces shifts every offset
+// after it, and the census then names the wrong line (measured 2026-11-20: a
+// `let lat = null;` was reported as a guard in `dispSample`).
+const blank = (m) => m.replace(/[^\n]/g, ' ');
 function maskNonCode(src) {
-  let out = src.replace(/\/\*[\s\S]*?\*\//g, (m) => ' '.repeat(m.length).replace(/[^\n]/g, ' '));
-  out = out.replace(/\/\/[^\n]*/g, (m) => ' '.repeat(m.length));
-  out = out.replace(/'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`/g, (m) =>
-    m.replace(/[^\n]/g, ' '),
-  );
-  return out;
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, blank)
+    .replace(/\/\/[^\n]*/g, blank)
+    .replace(/'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`/g, blank);
 }
 
 function censusFile(rel) {
@@ -99,6 +108,14 @@ function censusFile(rel) {
     if (!fn) continue;
     if (LOG.test(maskedLines[i])) logsByFn.set(fn, (logsByFn.get(fn) || 0) + 1);
   }
+  // A LOGGING HELPER MAKES ITS CALLER HONEST. `return nativeStallRefuse('user-paused',
+  // …)` writes a row inside the helper, so the exit is explained even though no
+  // `diag(` sits on that line. Counting functions that log ANYWHERE in the file
+  // (not only in this one) is what separates a real silence from a helper call:
+  // without this, `nativeStallWatch` — the one function in the tree written to
+  // the rule, 18 exits and every refusal named — read as 15 silent guards.
+  const helpers = new Set();
+  for (const [fn, n] of logsByFn) if (n > 0) helpers.add(fn);
   // Column offsets -> line numbers, computed once.
   const starts = [];
   let at = 0;
@@ -125,17 +142,17 @@ function censusFile(rel) {
     const idx = lineOf(m.index);
     const fn = owner[idx];
     if (!fn) continue;
-    // Exclude the `return` of a one-line arrow callback that is not a guard
-    // (`map(x => { return y; })` still is one, so only bare expression bodies
-    // are dropped, and those never reach this regex).
+    const text = lines[idx] || '';
+    // A `return` that hands control to a logging helper is explained by it.
+    const callsHelper = [...helpers].some((h) => h !== fn && new RegExp(`\\b${h}\\s*\\(`).test(text));
     const near = maskedLines.slice(Math.max(0, idx - 3), idx + 2).some((l) => LOG.test(l));
     const fnLogs = logsByFn.get(fn) || 0;
     exits.push({
       line: idx + 1,
       fn,
-      text: lines[idx].trim().slice(0, 90),
-      loggedNearby: near,
-      guardShaped: fnLogs > 0 && !near,
+      text: text.trim().slice(0, 90),
+      loggedNearby: near || callsHelper,
+      guardShaped: fnLogs > 0 && !near && !callsHelper,
     });
   }
   return {

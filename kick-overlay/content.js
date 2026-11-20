@@ -48,6 +48,16 @@ const SPA_MS = 900;      // Twitch SPA pathname poll (no reload on channel nav)
 const HIDE_TICKS = 3;    // consecutive ticks without a Twitch player before hiding
 const MAX_RECONNECT = 3; // kick fatal retries (fresh playback_url each time)
 const ARROW_SEEK_SEC = 5; // per-press arrow-left/right step inside the live window
+// How long a press's local rewind may go unanswered by a `st` report and still
+// compose with the next press. A rapid burst (key repeat ~30/s, a human ~4/s)
+// lands several presses inside ONE 1s report; each must add its own step.
+const KICK_STEP_ACCUM_MS = 1200;
+// Margin kept between a rewind and the edge of what the live element holds: the
+// seek itself must not land ON the oldest buffered frame.
+const KICK_STEP_MARGIN_SEC = 2;
+// A `st` report whose position is within this of the pending target reflects
+// that target (the seek landed), so the local burst is spent.
+const KICK_STEP_ABSORB_SEC = 1.5;
 
 // YouTube page hosts (inverse-mapping mode) vs Twitch (forward mapping).
 const YT_HOSTS = new Set(['www.youtube.com', 'm.youtube.com', 'youtube.com', 'youtu.be']);
@@ -993,6 +1003,10 @@ const KO = {
   kickDvrTarget: 0, // the offset that load asked for
   kickDvrClamped: false, // the Ended rescue already re-loaded once for this load
   kickDur: 0,       // broadcast duration (IVS getDuration) — seek-bar range
+  // The arrow's LOCAL rewind burst. `st.pos` is up to one report (~1s) stale,
+  // so composing a second press on it loses that step; the burst keeps the
+  // target and when it was armed, and decays as soon as a report reflects it.
+  kickStep: null,   // {base, target, at, onDvr} — see seekOverlayStep
   kickStreamStart: null, // v1/video created_at (ISO-Z, absolute) — bar max base
   kickDvrFetchedAt: 0, // when kickStreamStart was captured (elapsed grows)
   kickStreamId: null, // live stream id (v2 livestream.id) — DVR entry match
@@ -3738,9 +3752,45 @@ function toggleOverlayFullscreen() {
   else KO.wrap.requestFullscreen().catch((err) => diag('fullscreen', { err: String(err).slice(0, 100) }));
 }
 
+// ---- the playing source's own timeline ---------------------------------------
+// A rewind is expressed in TWO different clocks depending on the source, and
+// mixing them was the "arrow jumps to the start of the live" bug:
+//  - live url: getPosition() is relative to THIS playback session (the live
+//    window), not to the broadcast start. `KO.kickDur` is the whole VOD
+//    duration (hours), so a broadcast-timeline target built from pos+lat
+//    lands near 0 on the replay url.
+//  - replay url: pos IS the broadcast offset, so a direct seek is correct.
+// `kickSrcOffset` is the number that converts one into the other: the position
+// of the element's own clock zero on the broadcast timeline, ESTIMATED as
+// `broadcast edge - element clock edge`. The live element's clock zero is the
+// moment its playlist started (measured 2026-11-20: pos 1626.84 against a
+// broadcast edge of 27863 -> offset 26236), and the broadcast edge is the
+// wall-clock elapsed since `kickStreamStart`, which the bar already trusts for
+// its max. It is used ONLY to place a rewind that the live element cannot hold
+// in itself, where the alternative is losing the rewind entirely.
+function kickBroadcastEdge() {
+  const start = KO.kickStreamStart;
+  const at = KO.kickDvrFetchedAt;
+  if (start && at) {
+    const edge = (at - start) / 1000 + (Date.now() - at) / 1000;
+    if (isFinite(edge) && edge > 0) return edge;
+  }
+  const st = KO.kickState || {};
+  return Math.max(0, (Number(st.pos) || 0) + (Number(st.lat) || 0));
+}
+
+function kickSrcOffset() {
+  const st = KO.kickState || {};
+  const pos = Number(st.pos) || 0;
+  const lat = Number(st.lat) || 0;
+  if (KO.kickOnDvr) return 0; // the replay's clock IS the broadcast offset
+  return Math.max(0, kickBroadcastEdge() - (pos + lat));
+}
+
 // Arrow-left/right seek inside the live window. The absolute media time is
 // the current playhead +/- the step; each engine clamps to what it actually
-// holds (yt/hls: the liveBackBufferLength window; kick: full-broadcast DVR).
+// holds (yt/hls: the liveBackBufferLength window; kick: the live element's
+// own back-buffer, and the replay source beyond it).
 function seekOverlayStep(delta) {
   if (!KO.wrap || KO.player === 'twitch') return;
   if (KO.player === 'youtube') {
@@ -3758,45 +3808,78 @@ function seekOverlayStep(delta) {
     ytCmd('seek', ct + delta);
     return;
   }
-  // kick: two different timelines, and mixing them was the "arrow goes to
-  // the start of the broadcast" bug.
-  //  - live url: getPosition() is relative to THIS playback session (the
-  //    live window), not to the broadcast start. `KO.kickDur` is the whole
-  //    VOD duration (hours), so a broadcast-timeline target built from
-  //    pos+lat lands near 0 on the DVR url.
-  //  - DVR url: pos is the broadcast offset, so a direct seek is correct.
-  // A 5s step must stay on the current player: seeking the live element
-  // backwards within its own seekable window is exactly a 5s rewind. The
-  // DVR url is only for real jumps (seekbar / kick.com's >30s rule).
+  // kick: one press is ONE step, composed from the local burst (see below),
+  // and the action is chosen by what THIS element can still hold. Measured on
+  // the live source 2026-11-20: the element holds `pos - buffered.start(0)`
+  // seconds behind the playhead (1.2s at the edge, growing to ~25s once the
+  // back-buffer fills), and an in-place seek PAST that lands and STOPS
+  // (paused=true, readyState 1 - the picture then has to be revived, which is
+  // the flicker the owner reported). The old `if (lat >= 25) return;` used the
+  // live LATENCY as a proxy for that window and swallowed the press with no log
+  // row at all; latency is a different quantity (measured lat 30.3 against a
+  // 25.4s buffer) and a press must never be silent.
   const st = KO.kickState || {};
-  const pos = st.pos || 0;
+  const pos = Number(st.pos) || 0;
   const lat = isFinite(st.lat) && st.lat >= 0 ? st.lat : 0;
-  if (!KO.kickOnDvr) {
-    if (delta > 0) {
-      // Behind live, ArrowRight advances one step — same as YouTube. Only
-      // when already within a step of the edge does it mean "go live".
-      if (lat > ARROW_SEEK_SEC + 1) {
-        kickSend({ t: 'seek', s: pos + delta });
-      } else {
-        kickSend({ t: 'seekToLive' });
-      }
-      return;
-    }
-    // Stay inside the live element's own buffer. Once the accumulated
-    // rewind reaches the buffer limit, IVS re-bases the player at the edge
-    // (the "arrow jumps back to the start" symptom). The live buffer held
-    // ~25s in testing; stop a step before that rather than reloading the
-    // stream. One press is 5s, so this only guards long key-repeat runs.
-    if (lat >= 25) return;
-    // session-relative rewind: the IVS bridge feeds this to p.seekTo(), and
-    // p.getPosition()/getLiveLatency() share that session timeline. Never
-    // build this from KO.kickDur (the broadcast duration) — that was the
-    // "arrow jumps to the start of the live" bug.
-    kickSend({ t: 'seek', s: Math.max(0, pos + delta) });
-    return;
+  // The burst: presses that the last report cannot have answered yet. Their
+  // targets are what the next press composes onto, so a burst inside one 1s
+  // report still adds its own step (owner: "apertar varias vezes rapido nao
+  // deveria bugar").
+  const now = Date.now();
+  const burst = KO.kickStep && KO.kickStep.onDvr === !!KO.kickOnDvr && now - KO.kickStep.at < KICK_STEP_ACCUM_MS
+    ? KO.kickStep
+    : null;
+  const anchor = burst ? burst.target : pos;
+  const target = Math.max(0, anchor + delta);
+  // How far behind the anchor the current element still holds. `hold` is the
+  // bridge's buffered back-buffer; 0 means the bridge has not measured it (an
+  // older frame, or no back-buffer yet), and then the LATENCY is the honest
+  // fallback: with only ~lat seconds of history there is nothing to hold.
+  const held = isFinite(st.hold) && st.hold > 0 ? Number(st.hold) : 0;
+  const room = Math.max(0, (held > 0 ? held : lat) - KICK_STEP_MARGIN_SEC);
+  const back = Math.max(0, anchor - target);
+  let act;
+  if (delta > 0) {
+    // ArrowRight mirrors: one step forward, and at/over the edge it is "go
+    // live" - the existing contract, unchanged.
+    const edge = KO.kickOnDvr ? (Number(st.dur) || 0) : pos + lat;
+    act = KO.kickOnDvr
+      ? (target >= edge - 1 ? 'go-live' : 'seek')
+      : (pos + lat <= ARROW_SEEK_SEC + 1 ? 'go-live' : 'seek');
+  } else {
+    const bcastRoom = KO.kickOnDvr ? target : anchor + kickSrcOffset() - target;
+    act = !KO.kickOnDvr && back > room
+      ? (KO.kickDvrUrl && bcastRoom > 0 ? 'handoff-dvr' : 'blocked')
+      : 'seek';
   }
-  // DVR url: already loaded, so seek it directly instead of reloading it.
-  kickSend({ t: 'seek', s: Math.max(0, pos + delta) });
+  const row = { dir: delta < 0 ? 'back' : 'fwd', from: +anchor.toFixed(2), to: +target.toFixed(2), pending: +(target - pos).toFixed(2), lat: +lat.toFixed(2) };
+  if (act === 'seek') {
+    kickSend({ t: 'seek', s: target });
+  } else if (act === 'go-live') {
+    kickSend({ t: 'seekToLive' });
+  } else if (act === 'handoff-dvr') {
+    // The burst left what the live element holds: hand the SAME intent to the
+    // replay source at the broadcast offset, so the rewind survives instead of
+    // being re-based to the edge (owner's ring: pos 540.15 -> 0 -> 27375.85,
+    // the whole rewind destroyed). kickStartDvr loads the replay and keeps
+    // playing across the switch.
+    kickStartDvr(Math.max(0, anchor + kickSrcOffset() + delta));
+  } else {
+    row.why = KO.kickOnDvr ? 'past replay start' : 'no replay source';
+  }
+  KO.kickStep = act === 'seek'
+    ? { base: burst ? burst.base : pos, target, at: now, onDvr: !!KO.kickOnDvr }
+    : null; // a handoff/go-live/refused press starts a new burst on the new source
+  // Every press names itself: one row per press, with what it decided.
+  if (act !== 'seek') KO.kickStep = null;
+  diag('arrow-step', {
+    act,
+    ...row,
+    pendingFinal: KO.kickStep ? +(KO.kickStep.target - pos).toFixed(2) : 0,
+    win: Math.round(Number(st.win) || 0),
+    hold: Math.round(held),
+    onDvr: !!KO.kickOnDvr,
+  });
 }
 
 // Shared dispatch for an overlay key, whether it arrived from the page

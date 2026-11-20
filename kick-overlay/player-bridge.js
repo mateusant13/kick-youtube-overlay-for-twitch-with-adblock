@@ -675,6 +675,21 @@ function sendSt() {
       if (isFinite(ws) && isFinite(we) && we > ws && we < 1e15) win = we - ws;
     }
   } catch { /* not ready */ }
+  // The SAME measurement from the buffer, which is the number that decides an
+  // in-place rewind. `V.seekable` is useless for that on a live IVS element:
+  // it reports [0, 1073741824] (a sentinel) or nothing at all, while the
+  // element really holds `pos - buffered.start(0)` seconds behind the
+  // playhead (measured 2026-11-20: at pos 1934 with buffered 1908.6.. the
+  // element held 25.4s, and a seek 12s back landed but STOPPED - paused=true,
+  // readyState 1 - which is the owner's "flashes and the live gets in the way").
+  // `hold` is what an arrow step may spend without reloading the source.
+  let hold = 0;
+  try {
+    if (pos > 0 && V.buffered && V.buffered.length) {
+      const bs = V.buffered.start(0);
+      if (isFinite(bs)) hold = Math.max(0, pos - bs);
+    }
+  } catch { /* not ready */ }
   // Retry a pending rewind seek every poll until it lands, capped — IVS
   // drops a seekTo issued before the loaded media is seekable (first
   // Playing can fire with an empty seekable range), but a target that
@@ -709,6 +724,7 @@ function sendSt() {
       lat,
       dur,
       win,
+      hold,
       q,
       qcount: qualities.length,
       qualities,
