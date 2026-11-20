@@ -1255,6 +1255,15 @@
   let adUiReasserts = 0;
   // One `ad-skip {reason:'hidden-tab'}` per detected episode, not one per tick.
   let adUiHiddenLogged = false;
+  // One `ad-skip {reason:'overlay-owns'}` per detected episode, for the same
+  // reason. That return was the ONLY silent exit left in this function, and it
+  // is the one that cost a whole pod: measured 2026-11-19 on twitch.tv/alanzoka
+  // (no kick channel at all), `data-ko-owner` read "kick" for 30 s of slate
+  // (`ad-ui-on` 188911 -> `ad-ui-off {adSec:29.7}` 218566) with
+  // `wrapShown:false` and `kick:null` on every heartbeat, so `adUiHold`
+  // returned at the ownership test and the ring could not say why - the
+  // verdict printed "NOTHING SAW AN AD" over a page that had detected one.
+  let adUiOwnerLogged = false;
   // A banner or a squeezeback is not a playing ad and must never cost the user
   // his picture: the hold needs the ad surface to cover most of the player, or
   // the countdown label (which only exists while one is running).
@@ -1296,7 +1305,17 @@
     if (adUiHeldAt) return; // already held by this signal
     if (!AD_OVERLAY_ENABLED) return;
     if (overlay.adActive || overlay.standby || overlay.frame) return; // the pod owns it now
-    if (overlayOwnsPlayback()) return; // the overlay player is the picture: no ad here
+    if (overlayOwnsPlayback()) {
+      // NAMED, ONCE PER EPISODE. A refusal the ring cannot see is how a whole
+      // 30 s pod read as "NOTHING SAW AN AD" (measured 2026-11-19). `own` is
+      // the raw attribute and `wrap` proves whether a layer can exist at all:
+      // `own:"kick"` with `wrap:false` is a stale publish, not a covered page.
+      if (!adUiOwnerLogged) {
+        adUiOwnerLogged = true;
+        adLog('ad-skip', { reason: 'overlay-owns', own: ownerAttr() || null, wrap: !!document.getElementById('ko-wrap') });
+      }
+      return; // the overlay player is the picture: no ad here
+    }
     if (document.visibilityState && document.visibilityState !== 'visible') {
       // A REFUSAL IS NAMED, ONCE PER EPISODE. The tick retries this every 500 ms
       // (see the tick's own comment), so the tab coming back inside a pod gets
@@ -2400,6 +2419,32 @@
 
   function overlayOwnsPlayback() {
     const owner = ownerAttr();
+    // THE ATTRIBUTE IS A CLAIM; THE NODE IS THE PROOF. Measured 2026-11-19 on
+    // twitch.tv/alanzoka (no kick channel, so no layer can exist at all): the
+    // ring carried `ad-ui-on` at 188911 and `ad-ui-off {adSec:29.7}` at 218566
+    // - a whole 30 s slate - with `visible {own:"kick"}` in the middle, while
+    // every heartbeat in that window said `kick:null wrapShown:false` and a
+    // live probe read `#ko-wrap` ABSENT. `overlayOwnsPlayback()` returned true
+    // on the stale publish, `adUiHold` returned at the ownership test, and the
+    // verdict could only print "NOTHING SAW AN AD" over a page that had
+    // detected one. A layer that has no node in the document cannot be the
+    // picture, whatever the attribute says - so ownership requires both.
+    // Existence, not visibility: a layer hidden for a probe frame is still a
+    // layer, and that is the flap the latch below exists for.
+    let wrap = null;
+    try {
+      wrap = document.getElementById('ko-wrap');
+    } catch {
+      wrap = null;
+    }
+    if (!wrap) {
+      // A stale publish is released immediately, latch included: there is no
+      // screen to protect, so the native is free to be defended.
+      if (owner) overlay.staleOwnerAt = Date.now();
+      overlay.ownerSeenAt = 0;
+      overlay.ownerClearAt = 0;
+      return false;
+    }
     if (owner) {
       overlay.ownerSeenAt = overlay.ownerSeenAt || Date.now();
       overlay.ownerClearAt = 0;
@@ -3535,6 +3580,7 @@
         // every tick for a tab that IS visible; the same tick now gets the
         // chance to take it the moment the tab comes back inside the episode.
         adUiHiddenLogged = false;
+        adUiOwnerLogged = false;
         if (ad) adUiHold(adDetail);
         else adUiRelease();
         if (!ad) rec.adSince = 0;
