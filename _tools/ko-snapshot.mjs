@@ -98,20 +98,34 @@ for (const o of out) {
     console.log('  NO VIDEO ELEMENT in this page');
   } else {
     const adv = m0 ? +(m.ct - m0.ct).toFixed(2) : null;
+    // A LAYER THAT OWNS THE PICTURE IS THE SURFACE, and the page's own element
+    // is paused BY DESIGN (`syncMute()` pauses every page video so one surface
+    // renders at a time). Reading that pause as the verdict answered the wrong
+    // question: measured on a guest with `player=kick`, the kick frame reported
+    // Playing at ct 169->201 and lat 1.65 while this probe printed `-> PAUSED`.
+    // The element state stays printed; it just stops being the verdict.
+    const layerSurface = !!(b.owner && b.frame);
     let verdict;
     if (m.paused) verdict = 'PAUSED';
     else if (adv !== null && Math.abs(adv) < 0.1) verdict = 'FROZEN (claims to play, clock did not move in 1.5s)';
     else if (adv !== null && adv < -1) verdict = `REPEAT (${adv}s backwards in 1.5s)`;
     else verdict = 'PLAYING';
     console.log(`  main ${m.w}x${m.h} ct=${m.ct}${adv !== null ? ` (${adv >= 0 ? '+' : ''}${adv}s/1.5s)` : ''} rs=${m.rs} ahead=${m.ahead ?? 'null'} seekableEnd=${m.seekableEnd}`);
-    console.log(`  muted=${m.muted} vol=${m.vol} paused=${m.paused}  -> ${verdict}`);
+    if (layerSurface) {
+      console.log(`  muted=${m.muted} vol=${m.vol} paused=${m.paused} (page element; the surface is the ${b.owner} frame)`);
+      console.log(`  -> SURFACE=FRAME(${b.owner})  this element's state is not the verdict; the frame's own pos/lat are in the ring`);
+    } else {
+      console.log(`  muted=${m.muted} vol=${m.vol} paused=${m.paused}  -> ${verdict}`);
+    }
     if (b.vids.length > 1) console.log(`  (${b.vids.length} video elements; the largest is shown)`);
     const anomaly = (s) => { anomalies += 1; console.log(`  ANOMALY: ${s}`); };
     if (b.wrap && !b.frame) anomaly('#ko-wrap exists with no iframe (the frame was torn down)');
     if (b.owner && !b.wrap) anomaly(`owner="${b.owner}" but #ko-wrap is absent (ownership published with nothing mounted)`);
     if (!b.owner && b.frame) console.log('  NOTE: frame mounted but the owner attribute is empty (a pod may hold the screen)');
-    if (!m.paused && adv !== null && Math.abs(adv) < 0.1) anomaly('the element claims to play and its clock does not advance');
-    if (!m.paused && m.rs <= 1) anomaly(`playing with readyState ${m.rs} (no data)`);
+    if (!layerSurface) {
+      if (!m.paused && adv !== null && Math.abs(adv) < 0.1) anomaly('the element claims to play and its clock does not advance');
+      if (!m.paused && m.rs <= 1) anomaly(`playing with readyState ${m.rs} (no data)`);
+    }
   }
 }
 

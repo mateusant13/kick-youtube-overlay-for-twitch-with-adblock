@@ -58,6 +58,15 @@ const KICK_STEP_MARGIN_SEC = 2;
 // A `st` report whose position is within this of the pending target reflects
 // that target (the seek landed), so the local burst is spent.
 const KICK_STEP_ABSORB_SEC = 1.5;
+// How long a dispatched arrow step has to SHOW UP in the element's own `st`
+// report before the burst re-issues it once. A seek issued while another is
+// still travelling is dropped by the frame (measured live 2026-11-20 on the
+// replay source: three presses 124/130 ms apart asked for 15 s, `pending`
+// reached -15, and the element moved 9.43 s). The report is the only evidence
+// of delivery, so the claim is verified against it and the lost step is
+// re-asked ONCE; if the element still has not arrived, the burst is rebased
+// onto what it really holds and the loss is named in the ring.
+const KICK_STEP_SETTLE_MS = 1500;
 
 // YouTube page hosts (inverse-mapping mode) vs Twitch (forward mapping).
 const YT_HOSTS = new Set(['www.youtube.com', 'm.youtube.com', 'youtube.com', 'youtu.be']);
@@ -937,7 +946,7 @@ const NOT_CHANNEL = new Set([
 
 // Build marker for the diag stream — lets us tell which code a tab runs
 // (content scripts of pre-reload tabs survive extension reloads).
-const KO_VER = '0.8.107';
+const KO_VER = '0.8.110';
 // How long a lost picture may last before the native player is allowed to
 // reclaim the screen (owner 2026-11-11: an ad and the player fighting).
 const OWNER_GRACE_MS = 6000;
@@ -1897,13 +1906,59 @@ window.addEventListener('message', (ev) => {
     if (m.st && typeof m.st === 'object') m.st.ts = Date.now();
     const prevKickSig = KO.kickState ? KO.kickState.state + '|' + (KO.kickState.muted ? '1' : '0') : '';
     KO.kickState = m.st;
-    // The local arrow burst (seekOverlayStep) is spent once a report reflects
-    // it, or once the source changed under it: a stale burst must never drag
-    // the next press back to a target the player already answered.
-    if (KO.kickStep) {
-      const bt = KO.kickStep;
-      const landed = Math.abs((Number(m.st && m.st.pos) || 0) - bt.target) <= KICK_STEP_ABSORB_SEC;
-      if (landed || bt.onDvr !== !!KO.kickOnDvr) KO.kickStep = null;
+    // The local arrow burst (seekOverlayStep) is spent when the source changes
+    // under it: a stale burst must never drag the next press onto another clock.
+    // A report NEVER ends a live burst on its own: the frame coalesces a seek
+    // issued while another is in flight, and the `st` that arrives first still
+    // describes the pre-seek playhead - clearing here made a rapid second press
+    // re-compose to the target the first one had already sent (measured
+    // 0.8.108: three presses -> one 5s step). Only a source switch invalidates
+    // it; the age bound (KICK_STEP_ACCUM_MS) retires it otherwise. A report
+    // from ANOTHER source is the one thing that does retire it at once: the
+    // replay and the live url do not share a clock.
+    if (KO.kickStep && KO.kickStep.onDvr !== !!KO.kickOnDvr) KO.kickStep = null;
+    // A dispatched step is a CLAIM until the element's own report lands on it.
+    // The frame drops a seek issued while another is still travelling
+    // (measured live 2026-11-20 on the replay: three presses 124/130 ms apart,
+    // `pending` reached -15, the element moved 9.43 s), and a burst that kept
+    // composing onto an undelivered target would report seconds the picture
+    // never moved. The report is the only evidence of delivery, so: one
+    // re-issue of the SAME target (never a new intent), then - if the element
+    // still has not arrived - the burst is rebased onto what it really holds
+    // and the loss is named (`pending-dropped`).
+    const burstStep = KO.kickStep;
+    if (burstStep && KO.player === 'kick' && burstStep.sent != null && burstStep.onDvr === !!KO.kickOnDvr) {
+      const sp = Number(m.st && m.st.pos) || 0;
+      const sent = Number(burstStep.sent) || 0;
+      const age = Date.now() - (Number(burstStep.sentAt) || 0);
+      const talk = {
+        lat: Number(m.st && m.st.lat) || 0,
+        hold: Number(m.st && m.st.hold) || 0,
+        win: Number(m.st && m.st.win) || 0,
+        pos: sp,
+        from: sp,
+        delta: burstStep.target - sp,
+      };
+      if (Math.abs(sp - sent) <= KICK_STEP_ABSORB_SEC) {
+        burstStep.sent = null; // the dispatched step is on screen: the claim is real
+      } else if (age >= KICK_STEP_SETTLE_MS) {
+        if (!burstStep.retried) {
+          burstStep.retried = true;
+          burstStep.sentAt = Date.now();
+          kickSend({ t: 'seek', s: burstStep.target });
+          talk.to = burstStep.target;
+          talk.why = 'pending-dropped';
+          arrowStepRow('catch-up', talk);
+        } else {
+          // The element will not reach it. Withdraw the claim instead of
+          // carrying seconds that were never delivered into the next press.
+          talk.to = sp;
+          talk.want = burstStep.target;
+          talk.why = 'pending-dropped';
+          arrowStepRow('blocked', talk);
+          KO.kickStep = null;
+        }
+      }
     }
     KO.lastKickSt = Date.now();
     if (prevKickSig !== String(m.st && m.st.state) + '|' + (m.st && m.st.muted ? '1' : '0')) visAudio('kick-st');
@@ -3836,11 +3891,21 @@ function arrowStepRow(act, d) {
     engine: o.engine || KO.player || null,
     from: num(o.from),
     to: num(o.to),
+    // What the press ASKED for when it could not be honoured (`to` then stays
+    // at the target the source already holds). Without it a refusal loses the
+    // intent it refused, which is the ring question this row exists to answer.
+    want: num(o.want),
     pos: num(o.pos),
     pending: num(num(o.to) - num(o.pos)),
     lat: num(o.lat),
     hold: Math.round(Number(o.hold) || 0),
     win: Math.round(Number(o.win) || 0),
+    // The budget the decision actually compared against, and WHICH quantity it
+    // came from: `hold` (live back-buffer), `lat` (fallback when the bridge has
+    // no buffer measurement), `replay-window` (the replay's seekable span) or
+    // `replay-clock` (the replay's own offset, the window from broadcast 0).
+    room: num(o.room),
+    roomSrc: o.roomSrc || null,
     onDvr: !!KO.kickOnDvr,
   });
 }
@@ -3888,7 +3953,14 @@ function seekOverlayStep(delta) {
   const burst = KO.kickStep && KO.kickStep.onDvr === !!KO.kickOnDvr && now - KO.kickStep.at < KICK_STEP_ACCUM_MS
     ? KO.kickStep
     : null;
-  const anchor = burst ? burst.target : pos;
+  // The anchor is the DEEPEST intent a live burst holds, never a report that
+  // may still describe the pre-seek playhead: a back press composes onto
+  // min(pos, burst.target) and a forward press onto max(...), so rapid presses
+  // add their own step whichever sample arrives in between (measured 0.8.108 on
+  // the replay source: three presses inside 1s all composed to the SAME target
+  // because an `st` cleared the burst and the next press re-read the stale pos
+  // - 10 of the 15 seconds were silently dropped).
+  const anchor = !burst ? pos : (delta < 0 ? Math.min(pos, burst.target) : Math.max(pos, burst.target));
   const target = Math.max(0, anchor + delta);
   // How far behind the anchor the current element still holds. `hold` is the
   // bridge's buffered back-buffer; 0 means the bridge has not measured it (an
@@ -3896,19 +3968,49 @@ function seekOverlayStep(delta) {
   // fallback: with only ~lat seconds of history there is nothing to hold.
   const held = isFinite(st.hold) && st.hold > 0 ? Number(st.hold) : 0;
   const room = Math.max(0, (held > 0 ? held : lat) - KICK_STEP_MARGIN_SEC);
-  const back = Math.max(0, anchor - target);
+  // The replay source is NOT bounded by the live back-buffer: its `pos` is the
+  // broadcast offset and the element can seek anywhere in its published window
+  // (`win` = seekable.end - seekable.start, the span it can land in). The room
+  // behind the playhead is therefore min(pos, win) - the distance from the
+  // window's own start - and NOT the buffered back-buffer, which collapses to a
+  // few seconds right after a seek and would refuse steps the element can take
+  // (measured 2026-11-20: hold 7 -> 3 while a 15 s rewind landed). The row
+  // carries `room`/`roomSrc` so the arithmetic is readable, not asserted.
+  const winReal = isFinite(st.win) && st.win > 4 && st.win < 1e6 ? Number(st.win) : 0;
+  const replayRoom = Math.max(0, Math.min(pos, winReal > 0 ? winReal : pos));
+  const roomNow = KO.kickOnDvr ? replayRoom : room;
+  const roomSrc = KO.kickOnDvr ? (winReal > 0 ? 'replay-window' : 'replay-clock') : (held > 0 ? 'hold' : 'lat');
+  // How deep the burst leaves the REPORTED playhead: the hold is a budget spent
+  // cumulatively by the whole burst, not by the last press alone (three 5s
+  // presses against a 12s hold leave the window on the third).
+  const back = Math.max(0, pos - target);
+  // A press whose step the element never reached must not be counted as
+  // delivered: after a report has had time to reflect the previous target, a
+  // playhead still shallower than it means that step was dropped by the frame
+  // (a seek coalesced by the one in flight). The row says so and the new step
+  // is measured from what the player really holds.
+  const unhonoured = !!burst && now - burst.at > 600
+    && Math.abs(pos - burst.target) > KICK_STEP_ABSORB_SEC;
   let act;
   if (delta > 0) {
-    // ArrowRight mirrors: one step forward, and at/over the edge it is "go
-    // live" - the existing contract, unchanged.
-    const edge = KO.kickOnDvr ? (Number(st.dur) || 0) : pos + lat;
-    act = KO.kickOnDvr
-      ? (target >= edge - 1 ? 'go-live' : 'seek')
-      : (pos + lat <= ARROW_SEEK_SEC + 1 ? 'go-live' : 'seek');
+    // ArrowRight mirrors: one step forward, and within a step of the edge it
+    // is "go live" - the existing contract, unchanged. The distance is
+    // measured from the PENDING playhead (a burst that walked 15s back is 15s
+    // further from the edge), which is the only way a right press after a
+    // burst walks forward instead of jumping live from the stale report.
+    const edgeDist = KO.kickOnDvr ? Infinity : lat + (pos - anchor);
+    act = edgeDist <= ARROW_SEEK_SEC + 1 ? 'go-live' : 'seek';
   } else {
     const bcastRoom = KO.kickOnDvr ? target : anchor + kickSrcOffset() - target;
-    act = !KO.kickOnDvr && back > room
-      ? (KO.kickDvrUrl && bcastRoom > 0 ? 'handoff-dvr' : 'blocked')
+    // `back > roomNow` is the press asking for more than THIS source can seek
+    // back over: on the live element the buffered hold, on the replay its own
+    // published window. A replay cannot refuse a target inside its window for
+    // being far from the buffered head, and a live element must never be told
+    // to seek past the frames it holds (it lands and STOPS - the flicker).
+    act = back > roomNow
+      ? (KO.kickOnDvr
+        ? 'blocked'
+        : (KO.kickDvrUrl && bcastRoom > 0 ? 'handoff-dvr' : 'blocked'))
       : 'seek';
   }
   // A replay that has been loaded but has not reported Playing yet cannot take
@@ -3916,7 +4018,16 @@ function seekOverlayStep(delta) {
   // reloads the replay AT THE DEEPER OFFSET instead - never the live edge.
   const replayLoading = KO.kickOnDvr && (now - (KO.kickDvrLoadedAt || 0) < KICK_STEP_ACCUM_MS * 20)
     && (!KO.kickState || KO.kickState.state !== 'Playing');
-  const extra = { delta, from: anchor, to: target, pos, lat, hold: held, win: Number(st.win) || 0 };
+  const extra = { delta, from: anchor, to: target, pos, lat, hold: held, win: Number(st.win) || 0, room: roomNow, roomSrc };
+  if (act === 'blocked') {
+    // Nothing is sent for a refusal, so nothing may be CLAIMED for it either:
+    // `to` stays at the target the source already holds (the burst's committed
+    // depth) and `want` names the intent that was refused. Without this a
+    // blocked press still reported `pending` = the seconds it asked for, which
+    // is exactly "claiming more than the element delivered".
+    extra.to = anchor;
+    extra.want = target;
+  }
   if (act === 'seek' && replayLoading && delta < 0) {
     // The depth is composed in the replay's own (broadcast) clock, which is
     // what the reload offset means.
@@ -3943,9 +4054,21 @@ function seekOverlayStep(delta) {
   // its target), the live->replay handoff starts one in the BROADCAST clock,
   // and go-live/refusal end it - the next press must start from a fresh report,
   // never from a target that was not reached.
-  if (act === 'seek') KO.kickStep = { base: burst ? burst.base : pos, target, at: now, onDvr: !!KO.kickOnDvr };
-  else if (act !== 'handoff-dvr') KO.kickStep = null;
-  if (act === 'blocked') extra.why = KO.kickOnDvr ? 'past-replay-start' : 'no-replay-source';
+  if (act === 'seek') {
+    KO.kickStep = {
+      base: burst ? burst.base : pos,
+      target,
+      at: now,
+      onDvr: !!KO.kickOnDvr,
+      // The target actually handed to the frame, and when: the `st` handler
+      // verifies THIS arrived and re-asks it once if the frame dropped it.
+      sent: target,
+      sentAt: now,
+      retried: false,
+    };
+  } else if (act !== 'handoff-dvr') KO.kickStep = null;
+  if (act === 'blocked') extra.why = roomNow <= 0 ? 'no-hold' : (KO.kickOnDvr ? 'past-replay-start' : 'no-replay-source');
+  else if (unhonoured) extra.why = 'pending-unhonoured';
   if (act === 'handoff-dvr' && KO.kickStep) extra.to = KO.kickStep.target; // the broadcast offset actually asked for
   // A rejected press is a row too: nothing here may exit without naming itself.
   arrowStepRow(act, extra);

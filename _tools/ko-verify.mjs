@@ -470,6 +470,53 @@ check('silent-census', () => {
   return `guard-shaped silent exits=${m[1]}, ad-path state fields no arm touches=${m[2]}; a planted silent guard makes this check FAIL`;
 });
 
+// ---- 6b. live state probe ------------------------------------------------
+// The ring holds TRANSITIONS, so a state that is stably wrong emits nothing and
+// "is it stuck right now" had no instrument (measured 2026-11-20: a native
+// element sat frozen for 70 s with no row). `ko-snapshot` reads what the page
+// publishes, so THIS check can only prove its CONTRACT: every attribute it
+// reads is still written somewhere, and every verdict it can print still has
+// its branch. A check that needed a live Twitch tab would be red on every run
+// without one, which is the vacuous-arm defect this file already pays for.
+check('live-state-probe', () => {
+  const tool = path.join(ROOT, '_tools/ko-snapshot.mjs');
+  assert(existsSync(tool), 'missing _tools/ko-snapshot.mjs');
+  const src = read('_tools/ko-snapshot.mjs');
+  // Full attribute names, hyphens included: `[a-z]+` stopped at the first
+  // hyphen, so `data-ko-audio-m` counted as `audio` and the check reported 3
+  // readers where the probe reads 7. A census that undercounts its own subject
+  // is the same defect class it exists to catch.
+  const readers = [...src.matchAll(/data-ko-([a-z0-9]+(?:-[a-z0-9]+)*)/g)]
+    .map((m) => m[1]);
+  const uniq = [...new Set(readers)];
+  assert(uniq.length >= 6, `probe reads only ${uniq.length} published attribute(s): ${uniq.join(', ')}`);
+
+  const producers = ['kick-overlay/content.js', 'kick-overlay/adblock-bridge.js']
+    .map((f) => read(f)).join('\n');
+  const orphan = uniq.filter((a) => !producers.includes(`data-ko-${a}`));
+  assert(!orphan.length, `probe reads attribute(s) nothing writes: ${orphan.join(', ')}`);
+
+  for (const cls of ['FROZEN', 'PAUSED', 'REPEAT', 'PLAYING']) {
+    assert(src.includes(cls), `probe lost the ${cls} verdict branch`);
+  }
+  const r = spawnSync(process.execPath, [tool, '9446'], { cwd: ROOT, encoding: 'utf8', timeout: 40000 });
+  const out = String(r.stdout || '') + String(r.stderr || '');
+  assert(r.status === 2 || r.status === 0 || r.status === 1,
+    `probe crashed: rc=${r.status}\n${out.trim().slice(-300)}`);
+  assert(/no Twitch\/YouTube tab|NOT measurable from the DOM/.test(out),
+    `probe printed neither a no-tab verdict nor its limits:\n${out.trim().slice(-300)}`);
+  // A LAYER THAT OWNS THE PICTURE IS THE SURFACE. The probe once read the
+  // page's own <video> — paused BY DESIGN under `player=kick` — and printed
+  // `-> PAUSED` while the kick frame reported Playing at lat 1.65. The
+  // assertion is conditional on what the run actually observed, so it can
+  // never pass vacuously on a guest with no layer mounted.
+  const ownsLayer = /owner=(kick|youtube)/.test(out) && /frame=true/.test(out);
+  if (ownsLayer) {
+    assert(out.includes('SURFACE=FRAME'), 'a page with a mounted owning layer printed a native verdict instead of naming the frame as the surface');
+  }
+  return `${uniq.length} published attribute(s) each with a writer, ${r.status === 2 ? 'no guest tab (contract only)' : 'ran against a guest'}${ownsLayer ? ', layer-surface branch exercised' : ''}`;
+});
+
 // ---- 7. bug ledger -------------------------------------------------------
 // States are explicit. `fixed` is allowed; `verified` needs an independent
 // verifier, and `arm-verified` is the narrower claim: the negative arm was

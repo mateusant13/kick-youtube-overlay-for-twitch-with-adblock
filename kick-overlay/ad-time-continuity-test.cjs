@@ -107,6 +107,20 @@ const PRE_FIX_MUTE_SPAM = [[
   '    if (false) return;',
 ]];
 
+// 10. a standby left PAUSED by a previous pod was read as a ready cover: the
+//     tick returned at "the pod owns it" on every tick, no hold was raised, and
+//     the new ad played for its whole length (owner ring 2026-11-20: 62.6 s).
+const PRE_FIX_STANDBY_STALE = [[
+  '    if (standbyStale()) {',
+  '    if (false && standbyStale()) {',
+], [
+  // The refusal used to treat a mere warm standby/frame as a cover; the fix
+  // narrowed it to a real ad or a revealed picture. Reverting BOTH lines is the
+  // pre-fix state the arm must catch: no teardown AND standby read as a cover.
+  '    if (overlay.adActive || overlay.revealed) {',
+  '    if (overlay.adActive || overlay.standby || overlay.frame) {',
+]];
+
 const checks = [];
 function check(name, fn) {
   try {
@@ -742,6 +756,70 @@ async function main() {
       assert(seeked >= 1, 'the mutant did not seek either: the arm measures nothing');
     });
   }
+
+  // ---- 10a2c. A PAUSED STANDBY LEFT BY A PREVIOUS POD IS NOT A COVER ------
+  // Owner report 2026-11-20, verbatim: "eu peguei anuncio por varios segundos".
+  // His own Chrome's ring (twitch.tv/xqc, player=kick): 31 rows of
+  // `overlay-catchup-skip {why:"standby-paused"}` and ~62.6 s of the native
+  // playing the ad. The standby the previous pod left behind (paused, never
+  // revealed, never torn down) answered `overlay.standby` on every tick, and
+  // both the tick and the hold read that flag as "a clean picture is ready", so
+  // no hold was raised and no source that can play was ever asked for.
+  {
+    const page = makeWorld();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    // The leftover: minted by a previous pod, then twelve 1 Hz reports saying
+    // the frame never started. The run length is the proof, not one sample: a
+    // frame that was just minted reports `paused` while its first segment is
+    // fetched.
+    page.bypass({ type: 'standby-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+    await settle(20);
+    page.frameMsg({ t: 'ready' });
+    for (let i = 0; i < 12; i++) {
+      page.frameMsg(healthySt({ state: 'Paused', paused: true, pos: 82, lat: 9, buffered: 8.5 }));
+    }
+    await settle(10);
+    check('twelve paused reports are what makes a standby stale', () => {
+      const n = page.stats().standbyPausedReports();
+      assert(n === 12, `the frame said paused 12 times and the counter says ${n}`);
+    });
+    page.stats().adUiHoldTick();
+    await settle(10);
+    check('the tick tears the stale standby down instead of calling it a cover', () => {
+      const row = page.logsOf('ad-ui-hold').find((l) => l.d.act === 'standby-stale');
+      assert(!!row, `no standby-stale row: ${JSON.stringify(page.logsOf('ad-ui-hold').map((l) => l.d))}`);
+      assert(row.d.why === 'paused-never-revealed', `why=${JSON.stringify(row.d.why)}`);
+      assert(row.d.reports === 12, `the row does not name the evidence: reports=${JSON.stringify(row.d.reports)}`);
+      assert(page.frame && page.frame.removed === true, 'the stale frame is still mounted');
+    });
+    // ...and the NEW ad is served: the hold that was refusing at its standby
+    // guard now pauses the ad frame. That is the contract the ring lost.
+    page.stats().adUiHold({ kind: 'wrapper', w: 1280, h: 720 });
+    await settle(10);
+    check('a new ad is served once the stale standby is gone', () => {
+      assert(page.video.paused === true, 'the ad kept playing after the stale standby was torn down');
+      const held = page.logsOf('ad-ui-hold').filter((l) => l.d.act === 'paused');
+      assert(held.length === 1, `hold rows=${JSON.stringify(held.map((l) => l.d))}`);
+    });
+  }
+  // The other half: a standby that is PLAYING is not stale, and the same tick
+  // must leave it alone (a fix that tore down every standby would "serve" every
+  // ad by throwing away the warm source the pod depends on).
+  {
+    const page = makeWorld();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    await warmStandby(page, { pos: 100, lat: 3 });
+    page.stats().adUiHoldTick();
+    await settle(10);
+    check('a standby that is playing is not torn down by the same tick', () => {
+      assert(page.frame && page.frame.removed !== true, 'the tick tore down a healthy standby');
+      const stale = page.logsOf('ad-ui-hold').filter((l) => l.d.act === 'standby-stale');
+      assert(stale.length === 0, `a healthy standby was judged stale: ${JSON.stringify(stale.map((l) => l.d))}`);
+    });
+  }
+  // The RED arm for this decision lives in the `negatives` list as
+  // 'stale standby': the pre-fix branch leaves the flag set and the new ad is
+  // refused by a standby from the previous pod.
 
   // ---- 10a3. no seek the element cannot cover (the 7 s freeze) -----------
   // Owner report 2026-11-12: "travou por uns 7 segundos. depois, destravou".
@@ -1547,6 +1625,25 @@ async function main() {
       }
       const after = page.muteSent().filter((m) => m === true).length;
       return { caught: after - before > 1, detail: `re-sent mute ${after - before} times over 5 ticks` };
+    }],
+    ['stale standby', PRE_FIX_STANDBY_STALE, async () => {
+      const page = makePage(mutate(PRE_FIX_STANDBY_STALE));
+      setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+      page.bypass({ type: 'standby-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+      await settle(20);
+      page.frameMsg({ t: 'ready' });
+      for (let i = 0; i < 12; i++) {
+        page.frameMsg(healthySt({ state: 'Paused', paused: true, pos: 82, lat: 9, buffered: 8.5 }));
+      }
+      await settle(10);
+      page.stats().adUiHoldTick();
+      page.stats().adUiHold({ kind: 'wrapper', w: 1280, h: 720 });
+      await settle(10);
+      const stale = page.logsOf('ad-ui-hold').filter((l) => l.d.act === 'standby-stale');
+      return {
+        caught: page.video.paused === false && !!page.frame && page.frame.removed !== true && stale.length === 0,
+        detail: `paused=${page.video.paused} frame=${!!page.frame} staleRows=${stale.length}`,
+      };
     }],
   ];
   for (const [label, pairs, run] of negatives) {

@@ -1784,6 +1784,301 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   framePosts.length = 0;
   console.log('P1c hidden gate: overlay answers arrows while the wrap is hidden (display-agnostic) — OK');
 
+  // ---- A3: the arrow contract, driven through the REAL seekOverlayStep and
+  // onOverlayKeydown. Owner 2026-11-20: "ta HORRIVEL de usar a setinha pros
+  // lados, no player da kick... deveria acontecer igual no youtube, que volta 5
+  // segundos, mas o play continua" + "apertar varias vezes rapido nao deveria
+  // bugar". His ring showed each press moving ~5s back with `playing:true`, and
+  // then the IVS element re-basing to pos 0 and reloading at the live edge -
+  // the whole rewind destroyed - while one press emitted NO row at all (the old
+  // `if (lat >= 25) return;` swallowed it). Each limb below runs a mutation that
+  // restores the pre-fix line and turns it RED.
+  {
+    const kickRows = (from) => swCalls.slice(from).filter((m) => m && m.__koDiag && m.__koDiag.ev === 'arrow-step').map((m) => m.__koDiag.data);
+    const sentSince = (from, t) => framePosts.slice(from).filter((m) => m && m.__koKick && m.__koKick.t === t).map((m) => m.__koKick);
+    // A live kick player that reports the element's own back-buffer (`hold`),
+    // which is the number that decides an in-place rewind.
+    const liveKick = (over) => {
+      KO.player = 'kick';
+      KO.wrap = wrap;
+      KO.kickOnDvr = false;
+      KO.kickDvrUrl = 'https://dvr.example/a3';
+      KO.activeUrl = 'https://ivs.example/live-a3';
+      KO.kickDur = 0;
+      KO.kickStep = null;
+      KO.kickStreamStart = null;
+      KO.kickDvrFetchedAt = 0;
+      Object.assign(KO, { kickState: { state: 'Playing', paused: false, pos: 1000, lat: 3, dur: 0, win: 0, hold: 40, ts: Date.now() } }, over || {});
+      fakeFrame = { ...el('iframe'), dataset: { koToken: 'a3' }, contentWindow: { postMessage: (m) => framePosts.push(m) } };
+      KO.kickFrame = fakeFrame; KO.kickWin = fakeFrame.contentWindow;
+    };
+    const press = (key) => api.onOverlayKeydown({
+      key, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false,
+      target: wrap, preventDefault() {}, stopImmediatePropagation() {},
+    });
+    const mkA3 = (from, to) => {
+      assert.ok(src.includes(from), `A3 RED: the mutation target is gone: ${from.slice(0, 60)}`);
+      const realSetInterval = global.setInterval;
+      global.setInterval = () => 0;
+      try {
+        return new Function('window', 'document', 'location', 'navigator', src.replace(from, to)
+          + '\n;return {KO, seekOverlayStep, onOverlayKeydown};')(global, doc, global.location, global.navigator);
+      } finally { global.setInterval = realSetInterval; }
+    };
+    const prepA3 = (mod, over) => {
+      const K = mod.KO;
+      K.player = 'kick';
+      K.wrap = wrap;
+      K.kickOnDvr = false;
+      K.kickDvrUrl = 'https://dvr.example/a3';
+      K.activeUrl = 'https://ivs.example/live-a3';
+      K.kickDur = 0;
+      K.kickStep = null;
+      K.kickStreamStart = null;
+      K.kickDvrFetchedAt = 0;
+      Object.assign(K, { kickState: { state: 'Playing', paused: false, pos: 1000, lat: 3, dur: 0, win: 0, hold: 40, ts: Date.now() } }, over || {});
+      const posts = [];
+      K.kickFrame = { dataset: { koToken: 'a3red' } };
+      K.kickWin = { postMessage: (m) => posts.push(m) };
+      return posts;
+    };
+
+    // A3a: ONE press is exactly one step, in place, with no reload of the
+    // source (the reload is the visible stop the owner hears as "flica").
+    liveKick();
+    let b = swCalls.length;
+    let p = framePosts.length;
+    press('ArrowLeft');
+    let rows1 = kickRows(b);
+    let seeks1 = sentSince(p, 'seek');
+    assert.strictEqual(rows1.length, 1, `A3a: one press must emit exactly one row (got ${JSON.stringify(rows1)})`);
+    assert.strictEqual(rows1[0].act, 'seek', `A3a: a rewind inside the hold must seek in place (got ${rows1[0].act})`);
+    assert.strictEqual(rows1[0].dir, 'back', 'A3a: the row names the direction');
+    assert.strictEqual(rows1[0].engine, 'kick', 'A3a: the row names the engine');
+    assert.strictEqual(seeks1.length, 1, `A3a: exactly one seek (got ${seeks1.length})`);
+    assert.strictEqual(seeks1[0].s, 995, `A3a: one press is 5s back from 1000 (got ${seeks1[0].s})`);
+    assert.strictEqual(sentSince(p, 'load').length, 0, 'A3a: a 5s step inside the hold must not reload the source');
+    assert.strictEqual(rows1[0].hold, 40, 'A3a: the row carries the back-buffer it compared against');
+    assert.strictEqual(rows1[0].lat, 3, 'A3a: the row carries the latency it compared against');
+    {
+      const red = mkA3('  const room = Math.max(0, (held > 0 ? held : lat) - KICK_STEP_MARGIN_SEC);', '  const room = 0; // RED: hold ignored');
+      const posts = prepA3(red);
+      red.seekOverlayStep(-5);
+      assert.strictEqual(posts.filter((m) => m.__koKick && m.__koKick.t === 'load').length, 1, 'A3a RED: without the hold budget a 5s step reloads the source');
+    }
+    console.log('A3a arrow hold: one press = 5s back, seek in place, no reload, row names hold/lat - OK');
+
+    // A3b: THREE presses inside one 1s report are 3 x 5s, composed from local
+    // pending state - never from a `st` report the player has not answered yet.
+    liveKick();
+    b = swCalls.length;
+    p = framePosts.length;
+    press('ArrowLeft'); press('ArrowLeft'); press('ArrowLeft');
+    const rows3 = kickRows(b);
+    const seeks3 = sentSince(p, 'seek').map((m) => m.s);
+    assert.strictEqual(rows3.length, 3, `A3b: three presses, three rows (got ${rows3.length})`);
+    assert.deepStrictEqual(seeks3, [995, 990, 985], `A3b: rapid presses compose 5s each (got ${JSON.stringify(seeks3)})`);
+    assert.strictEqual(rows3[2].from, 990, 'A3b: the third press starts from the pending target, not the stale report');
+    assert.strictEqual(sentSince(p, 'load').length, 0, 'A3b: three presses inside the hold never reload');
+    {
+      const red = mkA3("  const anchor = !burst ? pos : (delta < 0 ? Math.min(pos, burst.target) : Math.max(pos, burst.target));", '  const anchor = pos; // RED: no local pending state');
+      const posts = prepA3(red);
+      red.seekOverlayStep(-5); red.seekOverlayStep(-5); red.seekOverlayStep(-5);
+      const got = posts.map((m) => m.__koKick && m.__koKick.s);
+      assert.deepStrictEqual(got, [995, 995, 995], `A3b RED: composing from the stale report collapses the burst (got ${JSON.stringify(got)})`);
+    }
+    console.log('A3b arrow burst: 3 rapid presses = 15s from local pending, never from a stale report - OK');
+
+    // A3c: a burst that leaves what the element holds is HANDED OFF to the
+    // replay at the broadcast offset and keeps playing - it is never reloaded
+    // to the live edge (his ring: pos 540.15 -> 0 -> 27375.85, rewind lost).
+    liveKick({ kickState: { state: 'Playing', paused: false, pos: 1000, lat: 3, dur: 0, win: 0, hold: 12, ts: Date.now() } });
+    b = swCalls.length;
+    p = framePosts.length;
+    press('ArrowLeft'); press('ArrowLeft'); press('ArrowLeft');
+    const rowsH = kickRows(b);
+    const loads = sentSince(p, 'load');
+    assert.strictEqual(rowsH[2].act, 'handoff-dvr', `A3c: the press past the hold hands off (got ${rowsH[2].act})`);
+    assert.strictEqual(loads.length, 1, `A3c: the handoff loads the replay once (got ${loads.length})`);
+    assert.strictEqual(sentSince(p, 'seekToLive').length, 0, 'A3c: a rewind past the hold never reloads to the live edge');
+    assert.strictEqual(KO.kickOnDvr, true, 'A3c: the source is now the replay');
+    assert.ok(KO.kickStep && KO.kickStep.onDvr === true, 'A3c: the burst continues on the replay clock, so the next press composes');
+    {
+      const red = mkA3("(KO.kickDvrUrl && bcastRoom > 0 ? 'handoff-dvr' : 'blocked')", "('blocked' /* RED: no handoff */)");
+      const posts = prepA3(red, { kickState: { state: 'Playing', paused: false, pos: 1000, lat: 3, dur: 0, win: 0, hold: 12, ts: Date.now() } });
+      red.seekOverlayStep(-5); red.seekOverlayStep(-5); red.seekOverlayStep(-5);
+      assert.strictEqual(posts.filter((m) => m.__koKick && m.__koKick.t === 'load').length, 0, 'A3c RED: without the handoff the rewind past the hold never reaches the replay');
+    }
+    console.log('A3c arrow handoff: past the live hold the rewind continues on the replay source, never the live edge - OK');
+
+    // A3d: every refused press names itself - a guard that returns without a
+    // row is the class that made his report unanswerable. No replay source and
+    // no hold room means the press cannot be honoured; it must say so.
+    liveKick({ kickState: { state: 'Playing', paused: false, pos: 1000, lat: 3, dur: 0, win: 0, hold: 12, ts: Date.now() }, kickDvrUrl: null });
+    b = swCalls.length;
+    press('ArrowLeft'); press('ArrowLeft'); press('ArrowLeft');
+    const rowsB = kickRows(b);
+    assert.strictEqual(rowsB.length, 3, 'A3d: a refused press still emits its row');
+    assert.strictEqual(rowsB[2].act, 'blocked', `A3d: the press past the hold with no replay is blocked (got ${rowsB[2].act})`);
+    assert.strictEqual(rowsB[2].why, 'no-replay-source', `A3d: the refusal names the reason (got ${JSON.stringify(rowsB[2].why)})`);
+    assert.strictEqual(sentSince(p = framePosts.length, 'seekToLive').length, 0, 'A3d: a blocked rewind never becomes an implicit go-live');
+    // no wrap at all: the pre-fix silent return, now a row with a reason
+    KO.wrap = null;
+    b = swCalls.length;
+    api.seekOverlayStep(-5);
+    const rowsNW = kickRows(b);
+    assert.strictEqual(rowsNW.length, 1, 'A3d: no-wrap press still emits a row');
+    assert.strictEqual(rowsNW[0].why, 'no-wrap', 'A3d: the no-wrap refusal names its reason');
+    {
+      const red = mkA3("    arrowStepRow('refused', { delta, why: !KO.wrap ? 'no-wrap' : 'player-twitch' });\n    return;", '    return; // RED: silent refusal');
+      const posts = prepA3(red);
+      red.KO.wrap = null;
+      red.seekOverlayStep(-5);
+      assert.strictEqual(posts.length, 0, 'A3d RED: a silent refusal sends nothing AND logs nothing');
+    }
+    console.log('A3d arrow refusals: a refused press names itself, never a silent return - OK');
+
+    // A3e: ArrowRight stays the mirror - one step forward behind the edge, and
+    // go-live within a step of it (the distance is the LATENCY domain, not the
+    // broadcast clock that `pos` carries).
+    liveKick({ kickState: { state: 'Playing', paused: false, pos: 1000, lat: 20, dur: 0, win: 0, hold: 40, ts: Date.now() } });
+    p = framePosts.length;
+    press('ArrowRight');
+    assert.deepStrictEqual(sentSince(p, 'seek').map((m) => m.s), [1005], 'A3e: behind the edge ArrowRight advances one step');
+    assert.strictEqual(sentSince(p, 'seekToLive').length, 0, 'A3e: a step forward from 20s behind is not a go-live');
+    liveKick({ kickState: { state: 'Playing', paused: false, pos: 1000, lat: 2, dur: 0, win: 0, hold: 40, ts: Date.now() } });
+    p = framePosts.length;
+    press('ArrowRight');
+    assert.strictEqual(sentSince(p, 'seekToLive').length, 1, 'A3e: at the edge ArrowRight means go live');
+    {
+      const red = mkA3("    const edgeDist = KO.kickOnDvr ? Infinity : lat + (pos - anchor);", "    const edgeDist = KO.kickOnDvr ? Infinity : pos + lat; // RED: broadcast clock read as latency");
+      const posts = prepA3(red);
+      red.seekOverlayStep(5);
+      assert.strictEqual(posts.filter((m) => m.__koKick && m.__koKick.t === 'seekToLive').length, 0, 'A3e RED: reading pos+lat as the edge distance sends a seek where the edge means go-live');
+    }
+    KO.wrap = wrap;
+    framePosts.length = 0;
+    console.log('A3e arrow mirror: ArrowRight steps forward behind the edge and goes live at it - OK');
+
+    // A3f: THE REPORT IN THE MIDDLE. The frame posts `st` between two rapid
+    // presses (it does: every seek flushes one), and that report still
+    // describes the PRE-seek playhead - the seek takes a frame or two to
+    // land. The burst must therefore compose onto the deepest INTENT, not
+    // onto whatever the report says: measured 0.8.108 on the replay source,
+    // three presses inside 1s all composed to the SAME target and the owner
+    // lost 10 of the 15 seconds ("volta 1-2s e a live atrapalha").
+    liveKick({ kickState: { state: 'Playing', paused: false, pos: 1000, lat: 1, dur: 5000, win: 5000, hold: 3, ts: Date.now() } });
+    KO.kickOnDvr = true; // the replay source: `pos` is the broadcast clock
+    b = swCalls.length;
+    p = framePosts.length;
+    press('ArrowLeft');
+    // The report the player emits while the seek is still travelling: it
+    // landed 4s short of the target the burst asked for.
+    KO.kickState = { state: 'Playing', paused: false, pos: 999, lat: 1, dur: 5000, win: 5000, hold: 3, ts: Date.now() };
+    press('ArrowLeft');
+    KO.kickState = { state: 'Playing', paused: false, pos: 999, lat: 1, dur: 5000, win: 5000, hold: 3, ts: Date.now() };
+    press('ArrowLeft');
+    const rowsF = kickRows(b);
+    assert.strictEqual(rowsF.length, 3, `A3f: three presses, three rows (got ${rowsF.length})`);
+    assert.deepStrictEqual(
+      sentSince(p, 'seek').map((m) => m.s),
+      [995, 990, 985],
+      `A3f: a stale report between presses must not re-compose to the same target (got ${JSON.stringify(sentSince(p, 'seek').map((m) => m.s))})`,
+    );
+    // `pending` is measured against the report the press was judged on, so it
+    // deepens only as far as the report lags the intent - and the INTENT is
+    // the sum: 1000 - 985 = 15s over three presses.
+    assert.deepStrictEqual(rowsF.map((r) => r.pending), [-5, -9, -14], `A3f: each row states how deep its own intent sits behind the report it saw (got ${JSON.stringify(rowsF.map((r) => r.pending))})`);
+    assert.strictEqual(rowsF[0].to - rowsF[2].to, 10, 'A3f: three presses advance the intent 10s past the first target');
+    assert.strictEqual(rowsF[0].from - rowsF[2].to, 15, 'A3f: the burst walks the full 15s from the playhead the first press saw');
+    assert.strictEqual(sentSince(p, 'load').length, 0, 'A3f: a rewind the replay can hold never reloads it');
+    {
+      // RED: the pre-fix report handler, which cleared the burst as soon as a
+      // report was within the absorb window of its target (0.8.108's rule).
+      // RED: the pre-fix anchor, which composed onto a report the seek had not
+      // reached yet instead of onto the intent the burst already holds.
+      const redClear = mkA3(
+        "  const anchor = !burst ? pos : (delta < 0 ? Math.min(pos, burst.target) : Math.max(pos, burst.target));",
+        "  const anchor = (burst && Math.abs(pos - burst.target) > KICK_STEP_ABSORB_SEC) ? burst.target : pos; // RED: a report near the intent retires the burst (0.8.108)",
+      );
+      const posts = prepA3(redClear, { kickState: { state: 'Playing', paused: false, pos: 1000, lat: 1, dur: 5000, win: 5000, hold: 3, ts: Date.now() } });
+      const R = redClear.KO;
+      R.kickOnDvr = true;
+      redClear.seekOverlayStep(-5);
+      // The seek landed 1s short of its target (IVS lands on a segment
+      // boundary); the next press must still add a full step to the INTENT.
+      R.kickState = { state: 'Playing', paused: false, pos: 996, lat: 1, dur: 5000, win: 5000, hold: 3, ts: Date.now() };
+      redClear.seekOverlayStep(-5);
+      const got = posts.map((m) => m.__koKick && m.__koKick.s).filter((v) => v !== undefined);
+      assert.deepStrictEqual(got, [995, 991], `A3f RED: an intent the player has not reached yet collapses the next step onto it (got ${JSON.stringify(got)})`);
+    }
+    console.log('A3f arrow coalesced report: a stale st between presses never swallows a step - OK');
+
+    // A3g: A BURST MAY ONLY CLAIM WHAT THE ELEMENT DELIVERED. The frame drops
+    // a seek issued while another is still travelling (measured live 2026-11-20
+    // on the replay: three presses 124/130 ms apart reached `pending` -15 while
+    // the element moved 9.43 s). The element's own report is the only evidence
+    // of delivery, so the burst verifies against it: one re-issue of the SAME
+    // target, then - if the element still has not arrived - the claim is
+    // withdrawn and the loss named instead of carried into the next press.
+    const relaySt = (frame, st) => msgListeners.forEach((listener) => listener({
+      source: frame.contentWindow,
+      origin: new URL(chromeStub.runtime.getURL('player.html')).origin,
+      data: { __koKick: { t: 'st', st, _koToken: frame.dataset.koToken } },
+    }));
+    const replaySt = (pos) => ({ state: 'Playing', paused: false, pos, lat: 0, dur: 5000, win: 5000, hold: 3 });
+    // The page's yt-element lookup must not claim this frame (an earlier arm
+    // leaves `getElementById('ko-yt')` pointing at the shared fakeFrame).
+    doc.getElementById = () => null;
+    liveKick({ kickState: replaySt(1000) });
+    KO.kickOnDvr = true; // the replay: `pos` is the broadcast clock, `win` its seekable span
+    b = swCalls.length;
+    p = framePosts.length;
+    press('ArrowLeft'); press('ArrowLeft'); press('ArrowLeft');
+    let rowsG = kickRows(b);
+    assert.strictEqual(rowsG.length, 3, `A3g: three presses, three rows (got ${rowsG.length})`);
+    assert.deepStrictEqual(sentSince(p, 'seek').map((m) => m.s), [995, 990, 985], 'A3g: three composed seeks leave the page, one per press');
+    assert.strictEqual(rowsG[2].room, 1000, `A3g: the replay row carries the seekability it compared against (got ${rowsG[2].room})`);
+    assert.strictEqual(rowsG[2].roomSrc, 'replay-window', `A3g: ... and NAMES the quantity (got ${rowsG[2].roomSrc})`);
+    // The frame answered only the FIRST seek: its report says 991 - nine of the
+    // fifteen seconds the burst asked for.
+    KO.kickStep.sentAt = Date.now() - 5000; // the settle window has elapsed
+    p = framePosts.length;
+    relaySt(KO.kickFrame, replaySt(991));
+    rowsG = kickRows(b);
+    assert.strictEqual(rowsG.length, 4, `A3g: the undelivered step gets its own row (got ${rowsG.length})`);
+    assert.strictEqual(rowsG[3].act, 'catch-up', `A3g: the lost step is re-asked once (got ${rowsG[3].act})`);
+    assert.strictEqual(rowsG[3].why, 'pending-dropped', `A3g: ... and the row names why (got ${rowsG[3].why})`);
+    assert.deepStrictEqual(sentSince(p, 'seek').map((m) => m.s), [985], 'A3g: the re-issue asks for the burst OWN target, never a new intent');
+    // The element still does not take it: the claim is withdrawn rather than
+    // reported as if the picture had moved.
+    KO.kickStep.sentAt = Date.now() - 5000;
+    p = framePosts.length;
+    relaySt(KO.kickFrame, replaySt(991));
+    rowsG = kickRows(b);
+    assert.strictEqual(rowsG.length, 5, `A3g: the dropped claim emits its own row (got ${rowsG.length})`);
+    assert.strictEqual(rowsG[4].act, 'blocked', `A3g: a step the element will not deliver is refused (got ${rowsG[4].act})`);
+    assert.strictEqual(rowsG[4].why, 'pending-dropped', `A3g: ... named (got ${rowsG[4].why})`);
+    assert.strictEqual(rowsG[4].pending, 0, `A3g: a refused row claims no depth (got ${rowsG[4].pending})`);
+    assert.strictEqual(KO.kickStep, null, 'A3g: the burst is spent; the next press starts from the report, not the lost intent');
+    {
+      // RED: the pre-fix code verified nothing - a report proving the steps
+      // were dropped left the burst claiming 15s and never re-asked them.
+      const red = mkA3('} else if (age >= KICK_STEP_SETTLE_MS) {', '} else if (false) { // RED: delivery never verified');
+      const posts = prepA3(red, { kickState: replaySt(1000) });
+      const R = red.KO;
+      R.kickOnDvr = true;
+      R.kickFrame.contentWindow = R.kickWin;
+      red.seekOverlayStep(-5); red.seekOverlayStep(-5); red.seekOverlayStep(-5);
+      R.kickStep.sentAt = Date.now() - 5000;
+      relaySt(R.kickFrame, replaySt(991));
+      assert.ok(R.kickStep, 'A3g RED: without the delivery check the burst survives a report that proves nothing landed');
+      assert.strictEqual(R.kickStep.target, 985, 'A3g RED: ... and keeps claiming the full 15s the element never delivered');
+      assert.strictEqual(posts.filter((m) => m.__koKick && m.__koKick.t === 'seek').length, 3, 'A3g RED: no catch-up seek is ever issued');
+    }
+    console.log('A3g arrow delivery: an undelivered step is re-asked once, then the claim is withdrawn - OK');
+  }
+
   // ---- P2a: bridge relays iframe-focus overlay keys (pain 2 — "player not
   // keyboard-controllable"). The extension-page bridge (both HLS and IVS
   // branches) addEventListener('keydown') for f/arrows, preventDefaults, and
@@ -3270,6 +3565,8 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   const ARMS = [
     'P1b2', 'P2e', 'P2f', 'P2g', 'P2h', 'P2i', 'P2k', 'P2n', 'P2o', 'P2p', 'P2q', 'P3', 'W1', 'W2', 'W3', 'W4', 'W5', 'W6',
     'U mute', 'V quality', 'X per-player', 'X2 manual sw', 'X3 stale liv', 'Z hover', 'D1', 'N1', 'N2', 'O1 owner death',
+    'A3a arrow hold', 'A3b arrow burst', 'A3c arrow handoff', 'A3d arrow refusals', 'A3e arrow mirror',
+    'A3f arrow coalesced report', 'A3g arrow delivery',
   ];
   const printed = armLog.map((l) => String(l).trim());
   const missing = ARMS.filter((a) => !printed.some((l) => l.startsWith(a)));

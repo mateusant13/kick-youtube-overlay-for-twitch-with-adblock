@@ -510,12 +510,17 @@ check(
      // the next one); the stub must do the same or a second pod early-returns.
      const adUiRelease = () => { state.heldAt = 0; state.reasserts = 0; log.push('ad-ui-release'); };
      const adUiHoldTick = () => {};
+     // The hold now names its refusals through the same per-episode channel as
+     // the tick (adUiTickSkip), so the world must define it or the refusal
+     // would be a ReferenceError caught by the tick's own try/catch - a green
+     // that proves nothing.
+     const adUiTickSkip = (why) => log.push('skip:' + why);
      const document = {
        get visibilityState() { return page.visible ? 'visible' : 'hidden'; },
        getElementById: (id) => (id === 'ko-wrap' && page.wrap !== false ? {} : null),
      };
      ${HOLD.replace(/\badUiHeldAt\b/g, 'state.heldAt').replace(/\badUiReasserts\b/g, 'state.reasserts').replace(/\badUiHiddenLogged\b/g, 'state.hiddenLogged').replace(/\badUiOwnerLogged\b/g, 'state.ownerLogged')}
-     ${src.replace(/\badUiHeldAt\b/g, 'state.heldAt').replace(/\badUiHiddenLogged\b/g, 'state.hiddenLogged').replace(/\badUiOwnerLogged\b/g, 'state.ownerLogged')}`,
+     ${src.replace(/\badUiHeldAt\b/g, 'state.heldAt').replace(/\badUiReasserts\b/g, 'state.reasserts').replace(/\badUiTickWhy\b/g, 'state.tickWhy').replace(/\badUiHiddenLogged\b/g, 'state.hiddenLogged').replace(/\badUiOwnerLogged\b/g, 'state.ownerLogged')}`,
   );
   // (a) the pod is detected while the tab is hidden: the hold is refused and
   //     SAID, not silent. One world, three ticks: hidden, visible, visible.
@@ -594,6 +599,198 @@ check(
       'RED: without the retry the pod runs its whole length unheld (his 30.0 s)',
       ctx2.log.includes('ad-skip:hidden-tab') && !video2.paused && !ctx2.log.includes('ad-ui-hold'),
       JSON.stringify(ctx2.log),
+    );
+  }
+}
+
+// ---- a surviving pod object must not disarm the NEXT pod -----------------
+// Owner report 2026-11-20, verbatim: "eu peguei anuncio por varios segundos".
+// Measured on his own Chrome (0.8.109, twitch.tv/buzzyi_, player=kick, adblock
+// on): pod 1 `ad-ui-on` 943633 -> `ad-ui-hold {act:"paused"}` 947616 ->
+// `ad-ui-off {adSec:31}` with `ad-ui-release {act:"pod-owns"}`; pod 2
+// `ad-ui-on` 030620 while a standby reported clean/playing at 129899, then 28
+// `ad-tick` rows ALL `paused:false` (ct 4.7 -> 34.6) to `ad-ui-off {adSec:36.6}`
+// - and not one `ad-ui-hold` row. The whole 1200-event ring held exactly ONE
+// such row, pod 1's.
+//
+// TWO NAMED CAUSES, both fixed in the shipped file this arm executes:
+//  1. `adUiHold` returned at `if (overlay.adActive || overlay.standby ||
+//     overlay.frame) return;` writing NOTHING. A warm standby is not a cover:
+//     a live `snap().who` on the same page read `{standby:true, revealed:false,
+//     adActive:false, playing:true}` with no ad on screen, so the guard was
+//     armed in STEADY STATE and refused every DOM hold.
+//  2. `adUiTickWhy` (the one-row-per-reason dedupe) was cleared only inside
+//     `adUiRelease` AFTER `if (!adUiHeldAt) return;`, so a single refused pod
+//     silenced every later pod on the same reason for the whole page load.
+//
+// RUNS THE REAL functions - hold, tick, skip, release and the shipped tick
+// body - over ONE page load with four pods.
+{
+  const HOLD = grab('adUiHold');
+  const HOLD_TICK = grab('adUiHoldTick');
+  const SKIP = grab('adUiTickSkip');
+  const RELEASE = grab('adUiRelease');
+  const tickBody = (() => {
+    const marker = 'setInterval(() => {';
+    const hits = [...SRC.matchAll(/setInterval\(\(\) => \{/g)].map((m) => m.index);
+    const owning = hits.filter((at) => {
+      let depth = 0;
+      for (let i = at + marker.length - 1; i < SRC.length; i++) {
+        if (SRC[i] === '{') depth++;
+        else if (SRC[i] === '}') {
+          depth--;
+          if (!depth) return /adUiDetail\(\)/.test(SRC.slice(at, i));
+        }
+      }
+      return false;
+    });
+    if (owning.length !== 1) return null;
+    const open = owning[0] + marker.length - 1;
+    let depth = 0;
+    for (let i = open; i < SRC.length; i++) {
+      if (SRC[i] === '{') depth++;
+      else if (SRC[i] === '}') {
+        depth--;
+        if (!depth) return SRC.slice(open, i + 1);
+      }
+    }
+    return null;
+  })();
+  check('the two-pod arm can extract the ad tick body', !!tickBody);
+  // Module state becomes `S.*` so two pods share it, exactly as the page does.
+  const ren = (s) => s
+    .replace(/\badUiHeldAt\b/g, 'S.heldAt')
+    .replace(/\badUiReasserts\b/g, 'S.reasserts')
+    .replace(/\badUiHiddenLogged\b/g, 'S.hiddenLogged')
+    .replace(/\badUiOwnerLogged\b/g, 'S.ownerLogged')
+    .replace(/\badUiTickWhy\b/g, 'S.why');
+  const makeWorld = (holdSrc, holdTickSrc, tickSrc) => new Function(
+    'ctx',
+    `const { rec, page, video, log, overlay } = ctx;
+     const S = ctx.state || (ctx.state = { heldAt: 0, reasserts: 0, hiddenLogged: false, ownerLogged: false, why: '' });
+     const AD_OVERLAY_ENABLED = true;
+     const AD_UI_HOLD_MAX_MS = 12000;
+     const ownerAttr = () => '';
+     const overlayOwnsPlayback = () => false;
+     const standbyStale = () => false;
+     const stopAdOverlay = (why) => log.push('stop:' + why);
+     const requestStandby = () => log.push('standby');
+     const resumeNative = () => { video.paused = false; log.push('resume'); };
+     const adUiDetail = () => ({ kind: 'slate' });
+     const adHoldWorthy = () => page.ad !== false;
+     const mainVideo = () => video;
+     const sampleVideo = () => video;
+     const recLog = (n, d) => log.push(n + (d && d.hold ? ':hold=' + JSON.stringify(d.hold) : ''));
+     const adLog = (n, f) => log.push(n + ':' + ((f && (f.why || f.act || f.reason)) || ''));
+     const adLogState = (n, f) => log.push(n + ':' + ((f && (f.act || f.reason)) || 'state'));
+     const document = { visibilityState: 'visible', getElementById: () => null };
+     ${ren(SKIP)}
+     ${ren(holdTickSrc)}
+     ${ren(RELEASE)}
+     ${ren(holdSrc)}
+     const tick = () => ${ren(tickSrc)};
+     return { tick, S };`,
+  );
+  const build = (holdSrc, holdTickSrc, tickSrc) => {
+    const video = {
+      paused: false, isConnected: true, currentTime: 100, readyState: 4, w: 1920, rs: 4,
+      pause() { this.paused = true; },
+    };
+    const overlay = { adActive: false, standby: false, frame: null, revealed: false, playing: false, selfPausedAt: 0 };
+    const ctx = {
+      rec: { ad: false, adSince: 0, playing: false, lastTick: 0 },
+      page: { ad: false }, video, log: [], overlay,
+    };
+    const w = makeWorld(holdSrc, holdTickSrc, tickSrc)(ctx);
+    const count = (label) => ctx.log.filter((l) => l === label).length;
+    return { video, overlay, ctx, w, log: ctx.log, count };
+  };
+  const a = build(HOLD, HOLD_TICK, tickBody);
+  // POD A - no overlay at all: the baseline that must stay green.
+  a.ctx.page.ad = true;
+  a.w.tick();
+  check(
+    'pod A: a detected ad pauses the native and names the hold',
+    a.video.paused === true && a.count('ad-ui-hold:paused') === 1,
+    JSON.stringify(a.log),
+  );
+  // POD A ends. The hand-back leaves a WARM STANDBY + a minted frame behind -
+  // the pod object his ring shows outliving the episode (`ad-ui-release
+  // {act:"pod-owns"}`).
+  a.overlay.standby = true;
+  a.overlay.frame = {};
+  a.overlay.revealed = false;
+  a.overlay.adActive = false;
+  a.ctx.page.ad = false;
+  a.w.tick();
+  check(
+    'pod A releases (native resumed) and its verdict rides on ad-ui-off',
+    a.video.paused === false && a.log.some((l) => l.startsWith('ad-ui-off:hold=')),
+    JSON.stringify(a.log),
+  );
+  // POD B - THE MEASURED POD 2: detected while that standby/frame survives.
+  a.ctx.page.ad = true;
+  a.w.tick();
+  check(
+    'pod B: a surviving standby/frame does NOT disarm the hold (native PAUSED)',
+    a.video.paused === true && a.count('ad-ui-hold:paused') === 2,
+    JSON.stringify(a.log),
+  );
+  // POD C - the overlay actually paints: abstain, and SAY SO.
+  a.ctx.page.ad = false;
+  a.w.tick();
+  a.overlay.adActive = true;
+  a.overlay.revealed = true;
+  a.overlay.standby = false;
+  a.ctx.page.ad = true;
+  a.w.tick();
+  check(
+    'pod C: a painted pod refuses the hold and names the reason',
+    a.video.paused === false && a.count('ad-ui-hold:pod-owns') === 1,
+    JSON.stringify(a.log),
+  );
+  // POD D - back to a warm standby: the SAME reason must be able to speak
+  // again, which is what a dedupe surviving its episode forbids.
+  a.ctx.page.ad = false;
+  a.w.tick();
+  a.overlay.adActive = false;
+  a.overlay.revealed = false;
+  a.overlay.standby = true;
+  a.ctx.page.ad = true;
+  a.w.tick();
+  check(
+    'pod D: a later pod on the same shape is held and logged again (dedupe is per episode)',
+    a.video.paused === true && a.count('ad-ui-hold:paused') === 3,
+    JSON.stringify(a.log),
+  );
+
+  // RED: restore the shipped guard (`adActive || standby || frame`) and the
+  // same pod B leaves the ad PLAYING - the pod the owner took.
+  const revert = (s) => s.split('if (overlay.adActive || overlay.revealed) {').join('if (overlay.adActive || overlay.standby || overlay.frame) {');
+  const redHold = revert(HOLD);
+  const redTick = revert(HOLD_TICK);
+  check('the leftover-standby mutation applied to the shipped hold', redHold !== HOLD);
+  check('the leftover-standby mutation applied to the shipped tick', redTick !== HOLD_TICK);
+  if (redHold !== HOLD && redTick !== HOLD_TICK) {
+    const r = build(redHold, redTick, tickBody);
+    r.ctx.page.ad = true;
+    r.w.tick();
+    r.overlay.standby = true;
+    r.overlay.frame = {};
+    r.overlay.revealed = false;
+    r.overlay.adActive = false;
+    r.ctx.page.ad = false;
+    r.w.tick();
+    // The pod's own hand-back resumes the native (the pre-fix release defers to
+    // the standby, so without this the red would show the frozen picture
+    // instead of the ad that actually played).
+    r.video.paused = false;
+    r.ctx.page.ad = true;
+    r.w.tick();
+    check(
+      'RED: with the leftover standby the pre-fix guard leaves the ad PLAYING (his pod 2)',
+      r.video.paused === false && r.count('ad-ui-hold:paused') === 1,
+      JSON.stringify(r.log),
     );
   }
 }
@@ -705,6 +902,15 @@ const expected = [
   'an owned page refuses the hold and NAMES it (once per episode)',
   'the retry mutation applied to the shipped tick',
   'RED: without the retry the pod runs its whole length unheld (his 30.0 s)',
+  'the two-pod arm can extract the ad tick body',
+  'pod A: a detected ad pauses the native and names the hold',
+  'pod A releases (native resumed) and its verdict rides on ad-ui-off',
+  'pod B: a surviving standby/frame does NOT disarm the hold (native PAUSED)',
+  'pod C: a painted pod refuses the hold and names the reason',
+  'pod D: a later pod on the same shape is held and logged again (dedupe is per episode)',
+  'the leftover-standby mutation applied to the shipped hold',
+  'the leftover-standby mutation applied to the shipped tick',
+  'RED: with the leftover standby the pre-fix guard leaves the ad PLAYING (his pod 2)',
   'the ownership reader consults #ko-wrap, not the attribute alone',
   'an attribute with NO layer node does not own playback (the 30 s pod)',
   'an attribute WITH a live layer node still owns playback',

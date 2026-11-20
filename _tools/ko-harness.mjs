@@ -1507,6 +1507,52 @@ async function main() {
       const back = a.pos - b.pos;
       return { pass: w.ok && back >= 2, detail: `from=${a.pos} to=${b.pos} back=${back.toFixed(2)}s onDvr=${b.onDvr} lat=${b.lat} (${w.ms}ms)` };
     });
+    await row('arrow-back-3x-15s', async () => {
+      // Owner 2026-11-20: "apertar varias vezes rapido nao deveria bugar".
+      // Three real ArrowLeft presses inside one report window must compose to
+      // 15s back and playback must NEVER pause across them - each press adds
+      // its own step from local pending state, not from a 1s-stale report.
+      const gate = await waitPlaying();
+      if (!gate.ok) return { pass: false, detail: 'precondition: not playing' };
+      const a = await st();
+      if (a.pos < 20) return { pass: false, detail: `precondition: pos=${a.pos} (no room for three steps)` };
+      // The ring rows are the claim: what each press ASKED for, and the depth
+      // the sequence walked. Reading `st` alone cannot separate "the step was
+      // dropped" from "5s of playback happened while sampling" - the old row
+      // did exactly that and called a delivered 15s a 9.43s failure.
+      await s.page.evalIsolated('(() => { window.__koArrow = []; document.addEventListener("ko-adlog", (e) => { try { const d = JSON.parse(e.detail); if (d.ev === "arrow-step") window.__koArrow.push(d.d); } catch (_) {} }); })()');
+      let pausedSeen = false;
+      let minSeen = Infinity;
+      await key('ArrowLeft');
+      await delay(120);
+      await key('ArrowLeft');
+      await key('ArrowLeft');
+      // Sample ACROSS the burst: a pause during a rewind is the defect itself,
+      // and the deepest `pos` is what the sequence actually delivered.
+      for (let i = 0; i < 14; i++) {
+        await delay(200);
+        const v = await st();
+        if (v.paused) pausedSeen = true;
+        if (v.pos > 0 && v.pos < minSeen && v.onDvr === a.onDvr) minSeen = v.pos;
+      }
+      const rows = await s.page.evalIsolated('JSON.stringify(window.__koArrow || [])').then((x) => JSON.parse(x || '[]'));
+      const b = await st();
+      // A press emits `act:"seek"`. A `catch-up` row is the SAME step being
+      // re-asked because the report proved the frame dropped it, and a
+      // `blocked` row is the claim being withdrawn - counting either as a
+      // fourth press would make the arm measure its own bookkeeping.
+      const steps = rows.filter((r) => r.act === 'seek').length;
+      const deepest = rows.length ? Math.min(...rows.map((r) => Number(r.to) || Infinity)) : NaN;
+      const claimed = isFinite(deepest) ? a.pos - deepest : 0;
+      const delivered = a.onDvr === b.onDvr && isFinite(minSeen) ? a.pos - minSeen : claimed;
+      const back = Math.min(claimed, delivered);
+      return {
+        pass: steps === 3 && back >= 14 && !pausedSeen,
+        detail: `from=${a.pos} steps=${steps} claimed=${claimed.toFixed(2)}s deepest=${delivered.toFixed(2)}s back=${back.toFixed(2)}s want~15`
+          + ` paused=${pausedSeen} onDvr=${a.onDvr}->${b.onDvr} state=${b.state}`
+          + ` rows=${rows.map((r) => `${r.act}@${r.from}->${r.to}`).join(',')}`,
+      };
+    });
     await row('rewind-60s-holds', async () => {
       const gate = await waitPlaying();
       if (!gate.ok) return { pass: false, detail: `precondition: not playing` };

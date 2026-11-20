@@ -299,6 +299,11 @@
     nudgeTries: 0,
     lastSt: null,
     lastStAt: 0,
+    // Consecutive 1 Hz reports in which the clean frame said `paused`. A
+    // standby that just started says it while its first segment is fetched; a
+    // standby left behind by a previous pod says it for the whole pod. The
+    // difference is the run length (`standbyStale()` reads this).
+    standbyPausedReports: 0,
     catchupAt: 0,
     unmuteTried: false,
     audioAgreedAt: 0, // page clock when the frame's report first matched our command
@@ -1282,16 +1287,97 @@
     }
   }
   const AD_UI_HOLD_MAX_MS = 12000; // the mint's own ceiling; past it the watchdog owns the screen
+  // ---- A STANDBY IS NOT A COVER UNTIL IT CAN PLAY -------------------------
+  // Owner report 2026-11-20, verbatim: "eu peguei anuncio por varios segundos".
+  // His own Chrome's ring (twitch.tv/xqc, player=kick): `ad-ui-on=0 ad-hold=0
+  // worker-playlist=0`, 31 `overlay-catchup-skip {why:"standby-paused"}` rows,
+  // and ~62.6 s of the native playing the ad. A standby left PAUSED by a
+  // previous pod (never revealed, never torn down) keeps `overlay.standby` true
+  // and this tick read that flag as "a clean picture is warmed and ready" on
+  // every tick, so it never re-asserted a pause and never asked for a source
+  // that can actually play. `overlay.standby` means a clean source EXISTS; it
+  // says nothing about whether that source can be painted.
+  //
+  // One `paused` report is not the answer: a frame that was just minted reports
+  // it while its first segment is fetched. A run of them is a duration (the
+  // frame reports at 1 Hz), and twelve seconds of a standby that was supposed to
+  // be warming is a standby that is not coming.
+  const STANDBY_PAUSED_REPORTS = 12;
+  function standbyStale() {
+    if (!overlay.standby) return false;
+    if (overlay.adActive || overlay.revealed || overlay.playing) return false;
+    if (!overlay.lastSt || !overlay.lastSt.paused) return false;
+    // A throttled background frame legitimately stops advancing; only a visible
+    // tab's reports describe a standby the user could have been shown.
+    if (!document.visibilityState || document.visibilityState !== 'visible') return false;
+    // A report that is not fresh describes a frame that stopped talking, not a
+    // frame that cannot play (`stGapMs` is measured, up to 32 s in a hidden tab).
+    if (!overlay.lastStAt || Date.now() - overlay.lastStAt > 3000) return false;
+    return (overlay.standbyPausedReports || 0) >= STANDBY_PAUSED_REPORTS;
+  }
+  // One row per reason transition: the tick runs every 500 ms for the length of
+  // a pod, so a row per call would bury the chronology the ring exists for.
+  //
+  // BUT A DEDUPE THAT OUTLIVES ITS EPISODE IS THE SAMPLE-NOT-TRANSITION DEFECT
+  // THIS FILE ALREADY PAID FOR. It is reset at BOTH ends of an episode: at the
+  // `ad !== rec.ad` transition (the unknown direction, so neither a held nor a
+  // refused pod can leak its reason) and in `adUiRelease()`. Measured
+  // 2026-11-20 on twitch.tv/buzzyi_: a 1200-event ring with 52 `ad-tick` rows,
+  // two `ad-ui-on`/`ad-ui-off` pairs and ZERO `ad-ui-hold` skip rows - the ring
+  // could not name a single hold refusal.
+  let adUiTickWhy = '';
+  function adUiTickSkip(why, extra) {
+    if (adUiTickWhy !== why) {
+      adUiTickWhy = why;
+      adLog('ad-ui-hold', Object.assign({ act: 'skip', why }, extra || {}));
+    }
+  }
   // Twitch's ad renderer calls play() again on its own element, so a single
   // pause is undone in milliseconds. Re-asserting is not a fight with the page:
   // it is the only way a pause survives the ad it is meant to stop.
   function adUiHoldTick() {
-    if (!adUiHeldAt) return;
-    if (overlay.adActive || overlay.standby || overlay.frame) return; // the pod owns it now
-    if (overlayOwnsPlayback()) return;
-    if (Date.now() - adUiHeldAt > AD_UI_HOLD_MAX_MS) return;
+    // THE STALE STANDBY IS TORN DOWN BEFORE ANY OTHER QUESTION IS ASKED. It is
+    // the flag every later branch reads as "the pod owns it now", so leaving it
+    // set is how a previous pod's paused source refuses a whole new pod (the
+    // ring above). `stale-standby` is the same exit `overlay-stall-stop` uses
+    // for a source that cannot play, and `requestStandby(0, true)` is the
+    // hold's own warming path, so the replacement starts in this tick.
+    if (standbyStale()) {
+      const st = overlay.lastSt || {};
+      adLog('ad-ui-hold', {
+        act: 'standby-stale',
+        why: 'paused-never-revealed',
+        reports: overlay.standbyPausedReports || 0,
+        pos: isFinite(Number(st.pos)) ? +Number(st.pos).toFixed(1) : null,
+        lat: isFinite(Number(st.lat)) ? +Number(st.lat).toFixed(1) : null,
+        ageMs: overlay.startedAt ? Date.now() - overlay.startedAt : null,
+      });
+      stopAdOverlay('stale-standby');
+      requestStandby(0, true);
+    }
+    if (!adUiHeldAt) return adUiTickSkip('no-hold');
+    // ONLY A POD THAT OWNS THE PICTURE REFUSES. `overlay.adActive` is the pod's
+    // own claim and `overlay.revealed` is a clean picture actually on screen; a
+    // warm standby and a minted-but-hidden frame are neither. Measured on the
+    // owner's live tab 2026-11-20 (`snap().who`): `{standby:true,
+    // revealed:false, adActive:false, playing:true}` with NO ad on screen, so
+    // the old three-flag guard armed in STEADY STATE and refused every DOM hold
+    // on a page where a standby merely existed.
+    if (overlay.adActive || overlay.revealed) {
+      return adUiTickSkip('pod-owns', {
+        adActive: !!overlay.adActive,
+        revealed: !!overlay.revealed,
+        standby: !!overlay.standby,
+        frame: !!overlay.frame,
+      });
+    }
+    if (overlayOwnsPlayback()) return adUiTickSkip('overlay-owns');
+    if (Date.now() - adUiHeldAt > AD_UI_HOLD_MAX_MS) {
+      return adUiTickSkip('hold-expired', { heldMs: Date.now() - adUiHeldAt });
+    }
     const v = mainVideo();
-    if (!v || !v.isConnected || v.paused) return;
+    if (!v || !v.isConnected) return adUiTickSkip('no-video');
+    if (v.paused) return adUiTickSkip('native-paused');
     try { v.pause(); } catch { /* ignore */ }
     overlay.selfPausedAt = Date.now();
     adUiReasserts++;
@@ -1303,8 +1389,23 @@
   }
   function adUiHold(detail) {
     if (adUiHeldAt) return; // already held by this signal
-    if (!AD_OVERLAY_ENABLED) return;
-    if (overlay.adActive || overlay.standby || overlay.frame) return; // the pod owns it now
+    if (!AD_OVERLAY_ENABLED) return adUiTickSkip('overlay-disabled');
+    // NAMED, ONCE PER EPISODE, AND ONLY FOR A POD THAT OWNS THE PICTURE. This
+    // return wrote NOTHING, and the comment above `adUiOwnerLogged` claiming
+    // `overlay-owns` was "the ONLY silent exit left" was wrong: this was a
+    // second one, and it is the one that arms in steady state because a warm
+    // standby is not a cover. Measured 2026-11-20 (twitch.tv/buzzyi_, pod 2,
+    // same page load): `ad-ui-on` at ms 130359 with a standby reporting
+    // clean/playing at 129899, the whole 36.6 s native (`ad-tick` paused:false,
+    // ct 4.7 -> 34.6), and not one `ad-ui-hold` row in a 1200-event ring.
+    if (overlay.adActive || overlay.revealed) {
+      return adUiTickSkip('pod-owns', {
+        adActive: !!overlay.adActive,
+        revealed: !!overlay.revealed,
+        standby: !!overlay.standby,
+        frame: !!overlay.frame,
+      });
+    }
     if (overlayOwnsPlayback()) {
       // NAMED, ONCE PER EPISODE. A refusal the ring cannot see is how a whole
       // 30 s pod read as "NOTHING SAW AN AD" (measured 2026-11-19). `own` is
@@ -1328,8 +1429,10 @@
       return;
     }
     const v = mainVideo();
-    if (!v || !v.isConnected) return;
-    if (!adHoldWorthy(detail, v)) return;
+    if (!v || !v.isConnected) return adUiTickSkip('no-video');
+    // A DETECTED POD THAT IS NOT WORTH PAUSING FOR SAYS SO. `adUiDetail` can
+    // answer for a 160x90 banner, and silence there read as "nothing detected".
+    if (!adHoldWorthy(detail, v)) return adUiTickSkip('not-worthy', { kind: detail ? detail.kind : null });
     adUiReasserts = 0;
     if (v.paused) {
       adUiHeldAt = Date.now();
@@ -1361,14 +1464,23 @@
   } catch { /* ignore */ }
 
   function adUiRelease() {
+    // THE REASON IS CLEARED ON EVERY EPISODE END, HELD OR NOT. It used to sit
+    // after `if (!adUiHeldAt) return;`, so the first pod that was refused
+    // poisoned the per-episode dedupe for the rest of the page load: the ring
+    // got its one row, and every later pod on the same reason was silent.
+    adUiTickWhy = '';
     if (!adUiHeldAt) return;
     const heldMs = Date.now() - adUiHeldAt;
     adUiHeldAt = 0;
     const reasserts = adUiReasserts;
     adUiReasserts = 0;
-    // The pod's own hand-back owns the resume once it exists: two resumers on
-    // one element is the pause/resume churn the 2026-11-09 wave removed.
-    if (overlay.adActive || overlay.standby || overlay.frame) {
+    // ONLY A CLAIMED / PAINTED POD OWNS THE RESUME. Two resumers on one element
+    // was the pause/resume churn the 2026-11-09 wave removed, but a warm
+    // standby does not resume anything (a standby shutdown never touches the
+    // native), so deferring to it left this hold's pause in place - the frozen
+    // picture. `resumeNative` only acts on a paused element, so a pod that has
+    // already resumed is a no-op.
+    if (overlay.adActive || overlay.revealed) {
       adLog('ad-ui-release', { heldMs, act: 'pod-owns', reasserts });
       return;
     }
@@ -1387,6 +1499,10 @@
   stats.adUiHoldTick = adUiHoldTick;
   stats.adHoldWorthy = adHoldWorthy;
   stats.adUiHeldAt = () => adUiHeldAt;
+  // Diagnostic seam: how many consecutive reports said the clean frame is
+  // paused. The stale-standby decision reads it, and an arm that could not read
+  // it would have to re-count reports beside the product and pass either way.
+  stats.standbyPausedReports = () => overlay.standbyPausedReports;
 
   function finishAdOverlay() {
     if (!overlay.frame) {
@@ -2827,6 +2943,16 @@
         const nowSt = Date.now();
         const gap = overlay.lastStAt ? nowSt - overlay.lastStAt : 0;
         if (gap > 0) overlay.stGapMs = gap;
+        // HOW LONG THE FRAME HAS SAID IT CANNOT PLAY. A standby that just
+        // started reports `paused` while its first segment is fetched, so one
+        // report proves nothing; a RUN of them is a duration, because the frame
+        // reports at 1 Hz (`player-bridge.js`). `standbyStale()` reads this to
+        // tell a source that is warming from one a previous pod left paused and
+        // never revealed. Reset on a new frame's first report: `startAdOverlay`
+        // nulls `lastSt`, and a counter carried across frames would make every
+        // replacement look stale on its first sample.
+        if (!overlay.lastSt) overlay.standbyPausedReports = 0;
+        overlay.standbyPausedReports = m.st.paused ? (overlay.standbyPausedReports || 0) + 1 : 0;
         // Keep the PREVIOUS report beside the current one: the frozen-position
         // test below compares two samples, and `lastSt` is overwritten here.
         overlay.prevSt = overlay.lastSt;
@@ -3559,6 +3685,18 @@
       const ad = adHoldWorthy(adDetail, mainVideo());
       if (ad !== rec.ad) {
         const since = rec.adSince;
+        // THE EPISODE BOUNDARY IS THE ONLY PLACE A REASON CANNOT GO STALE. The
+        // dedupe in `adUiTickSkip` is what stops one row per 500 ms tick, and a
+        // dedupe that survives its episode is what makes the SECOND pod silent
+        // (measured 2026-11-20: 52 `ad-tick` rows and zero reason rows across a
+        // whole ring). Cleared in BOTH directions, before either handler runs.
+        const prev = {
+          why: adUiTickWhy || null,
+          held: !!adUiHeldAt,
+          heldMs: adUiHeldAt ? Date.now() - adUiHeldAt : 0,
+          reasserts: adUiReasserts,
+        };
+        adUiTickWhy = '';
         rec.ad = ad;
         if (ad) rec.adSince = Date.now();
         rec.lastTick = 0;
@@ -3566,6 +3704,19 @@
           // Never derive a duration from adSince=0; that printed epoch seconds.
           adSec: ad ? 0 : since ? Number(((Date.now() - since) / 1000).toFixed(1)) : null,
           match: adDetail,
+          // WHY THIS POD WAS OR WAS NOT HELD, ON THE ROW THAT IS ALWAYS WRITTEN.
+          // On `ad-ui-on` it is the state the hold has to work with (a warm
+          // standby is not a cover); on `ad-ui-off` it is the verdict. This is
+          // the question the ring must answer without reading the code.
+          hold: ad
+            ? {
+                standby: !!overlay.standby,
+                adActive: !!overlay.adActive,
+                revealed: !!overlay.revealed,
+                frame: !!overlay.frame,
+                own: overlayOwnsPlayback(),
+              }
+            : prev,
         });
         // THE AD UI IS THE AD, and it appears one segment-refresh before the
         // worker's playlist probe can prove it. Owner report 2026-11-15: "ad

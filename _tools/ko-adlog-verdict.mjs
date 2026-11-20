@@ -219,7 +219,15 @@ function reportEpisode(ep, idx) {
     const d = e.d || {};
     if (e.ev === 'ad-ui-on' && !adSeen) adSeen = { at: e.t, hold: null, release: null, worker: null };
     if (e.ev === 'ad-hold' && adSeen && !adSeen.worker) adSeen.worker = e.t;
-    if (e.ev === 'ad-ui-hold' && adSeen && adSeen.hold == null) adSeen.hold = { t: e.t, act: d.act };
+    // A TICK'S REFUSAL IS NOT A HOLD. `adUiHoldTick` names every decision it
+    // makes under the same event (`act:'skip'`), and a stale standby being torn
+    // down (`act:'standby-stale'`) is the opposite of a hold. Listening to the
+    // first row of the event would start the defence window at a refusal and
+    // credit the ad path with a pause it never took.
+    if (e.ev === 'ad-ui-hold' && adSeen
+      && adSeen.hold == null
+      && d.act !== 'skip'
+      && d.act !== 'standby-stale') adSeen.hold = { t: e.t, act: d.act };
     if (e.ev === 'ad-ui-release' && adSeen) {
       adSeen.release = { t: e.t, act: d.act, reasserts: d.reasserts };
       adWindows.push(adSeen);
