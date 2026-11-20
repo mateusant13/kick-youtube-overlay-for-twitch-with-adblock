@@ -2047,3 +2047,38 @@ possible at all, and it is the same disk the checkout lives on.
 **Owed:** the next pod that begins while his tab is in the background must show `ad-skip
 {reason:"hidden-tab"}` followed by `ad-ui-hold` in the tick he returns to. An extension reload does not
 re-inject into open tabs; the next Twitch page load carries it.
+
+## Wave record - 2026-11-19, the tab that never asked, and a ledger row the gate could not read (0.8.107)
+
+Two defects, both found by reading rather than by guessing, and both were in the harness rather than in the
+picture the owner sees.
+
+**1. `recoverStale()` never ran on the tab it exists for.** The one sanctioned reload (0.8.82) is called at
+boot and from `visibilitychange`, and a visibilitychange only fires when visibility CHANGES: a tab that was
+already hidden when an update landed never saw an edge and never asked again. Measured in his own ring -
+`node _tools/ko-adlog-window.mjs 9222 1200 --keep boot,hb` - `boot {version:"0.8.104"}` with
+`hb {ver:"0.8.104", hidden:true}` every ~8 s for 226 s while `manifest.json` was 0.8.106. Every ad-defence
+answer of that window came from code that is no longer installed, which is the same class as the 2026-11-12
+record (three waves behind) with a narrower cause: not a missing guard, but a guard with only one clock.
+
+The heartbeat is now the second clock. `koHbTick` is module scope (a `setInterval` inside `init()` cannot be
+driven by the suite, which evaluates the module and never boots it), it calls `recoverStale()` before it
+writes `hb`, and the interval is `setInterval(koHbTick, 8000)`. The guards are unchanged and both are
+asserted: once per version, hidden tabs only. Arm `P2q` drives the real tick with `mountDoc.hidden = true`
+and a newer manifest (one reload), repeats it (no second reload - a loop would be worse than a stale tab),
+and ticks a visible page (no reload under the user). Its RED evaluates the same driver against a copy with
+the heartbeat call removed AND the boot/visibility call silenced, so the arm cannot be satisfied by a path
+it is not about - the first run of the arm failed at exactly that seam and was fixed, not loosened.
+
+**2. A ledger row the gate reads as "no evidence".** `KO-20261119-04` shipped `evidence` as one long
+string; `ko-verify.mjs` asserts `Array.isArray(bug.evidence)`, so `bug-ledger` printed `fixed without
+evidence` and the gate read `checks=23 failed=1` while every other check passed. The row now carries four
+entries. The rule that follows is cheap and general: a ledger field the checker type-tests is written by the
+checker's shape, never by prose habit, and `node _tools/ko-verify.mjs` is run once on the committed tree -
+the earlier green belonged to a tree that did not contain the row.
+
+Verification: `node content-fix-test.cjs` -> `P2p`, `P2q` OK, `ARMS 28/28 present`, `ALL CONTENT.JS FIX
+CHECKS PASSED`; gate `node _tools/ko-verify.mjs` -> `RESULT PASS checks=23 failed=0`.
+
+**Owed:** the live half of 0.8.107 needs one update landed while a Twitch tab sits hidden, then
+`hb {ver:"0.8.107"}` from that tab with no navigation performed by the owner.
