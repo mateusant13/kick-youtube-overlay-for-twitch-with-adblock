@@ -904,7 +904,7 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
     addEventListener() {},
     removeEventListener() {},
   };
-  const mountApi = new Function('window', 'document', 'location', 'navigator', src + '\n;return {KO, mount, updateKickBar, teardown, injectStyles, rectTick, syncMute, setupHotBar, teardownHotBar, renderQualityMenu, overlayOwnsPicture, overlayHasPicture, visibleSurface, syncOwner, recoverStale, kickSeekTo, kickBackToLive};')(
+  const mountApi = new Function('window', 'document', 'location', 'navigator', src + '\n;return {KO, mount, updateKickBar, teardown, injectStyles, rectTick, syncMute, setupHotBar, teardownHotBar, renderQualityMenu, overlayOwnsPicture, overlayHasPicture, visibleSurface, syncOwner, recoverStale, koHbTick, kickSeekTo, kickBackToLive};')(
     global, mountDoc, global.location, global.navigator,
   );
   const mKO = mountApi.KO;
@@ -2118,6 +2118,62 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     };
     await run();
   }
+  // P2q: THE EDGE IS NOT THE ONLY CLOCK. `recoverStale()` ran at boot and on
+  // `visibilitychange`, and a visibilitychange only fires when visibility
+  // CHANGES - so the tab that sat in the background across the update was
+  // exactly the one that never asked again, which is the opposite of the intent
+  // (hidden is the only state it may heal in). Measured 2026-11-19 in his own
+  // ring: `boot {version:"0.8.104"}` and `hb {ver:"0.8.104"}` for 226 s against
+  // an installed 0.8.106, every heartbeat `hidden:true`. The heartbeat asks the
+  // same question, and the RED removes that one call.
+  {
+    const run = async () => {
+      manifestVersion = '0.9.1';
+      reloads.length = 0;
+      mountDoc.hidden = true;
+      mountApi.koHbTick(); // a tick on a tab hidden BEFORE the update landed
+      await new Promise((r) => setTimeout(r, 900));
+      assert.strictEqual(reloads.length, 1, 'a tab hidden across the update never healed: the heartbeat did not ask');
+      mountApi.koHbTick();
+      mountApi.koHbTick();
+      await new Promise((r) => setTimeout(r, 900));
+      assert.strictEqual(reloads.length, 1, 'the heartbeat reloaded the same version again (a loop)');
+      manifestVersion = '0.9.2';
+      mountDoc.hidden = false;
+      mountApi.koHbTick();
+      await new Promise((r) => setTimeout(r, 900));
+      assert.strictEqual(reloads.length, 1, 'a VISIBLE page was reloaded under the user by the heartbeat');
+      // RED: the same driver against a module without the heartbeat's question.
+      // The mutant's own `init()` boots as well, so the BOOT call is neutralized
+      // too - otherwise the mutation would be "proved" by a path the arm is not
+      // about, and the arm would pass on a file that never asks at the heartbeat.
+      const hb = "    recoverStale();\n    diag('hb', {";
+      const from = "  recoverStale();\n  diag('hb', {";
+      const bootFrom = "  recoverStale();\n  document.addEventListener('visibilitychange', () => recoverStale(), true);";
+      assert.ok(src.includes(from) || src.includes(hb), 'P2q RED: the heartbeat no longer asks where the arm expects it');
+      assert.ok(src.includes(bootFrom), 'P2q RED: the boot call the mutant must silence is not in the source');
+      const mutated = src
+        .replace(from, "  diag('hb', {")
+        .replace(bootFrom, "  document.addEventListener('visibilitychange', () => {}, true);");
+      assert.notStrictEqual(mutated, src, 'P2q RED: the mutation (drop the heartbeat call) did not apply');
+      const noAsk = new Function('window', 'document', 'location', 'navigator', mutated + '\n;return {koHbTick};')(
+        global,
+        mountDoc,
+        global.location,
+        global.navigator,
+      );
+      const before = reloads.length;
+      manifestVersion = '0.9.3';
+      mountDoc.hidden = true;
+      noAsk.koHbTick();
+      await new Promise((r) => setTimeout(r, 900));
+      assert.strictEqual(reloads.length, before, 'the RED mutant healed the tab anyway, so the arm proves nothing');
+      mountDoc.hidden = false;
+      manifestVersion = '0.8.82';
+      console.log('P2q stale-tab: the heartbeat heals a tab hidden across the update - OK');
+    };
+    await run();
+  }
   // P2j: the LOG must answer the owner's questions. Every report of 2026-11-11/12
   // (an ad/player fight, a switch that lost the mute, a native left paused) asked
   // "who had the screen, what changed, and why" - and content.js sent those
@@ -3212,7 +3268,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   // the same file, so an arm deleted or skipped without its label is a FAILURE
   // rather than a quieter green. Appending an arm means appending its label.
   const ARMS = [
-    'P1b2', 'P2e', 'P2f', 'P2g', 'P2h', 'P2i', 'P2k', 'P2n', 'P2o', 'P2p', 'P3', 'W1', 'W2', 'W3', 'W4', 'W5', 'W6',
+    'P1b2', 'P2e', 'P2f', 'P2g', 'P2h', 'P2i', 'P2k', 'P2n', 'P2o', 'P2p', 'P2q', 'P3', 'W1', 'W2', 'W3', 'W4', 'W5', 'W6',
     'U mute', 'V quality', 'X per-player', 'X2 manual sw', 'X3 stale liv', 'Z hover', 'D1', 'N1', 'N2', 'O1 owner death',
   ];
   const printed = armLog.map((l) => String(l).trim());
