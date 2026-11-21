@@ -17,6 +17,11 @@ ko-guest*.log
 # Generated verification receipts (regenerate with _tools/ko-verify.mjs)
 _evidence/
 
+# Generated code index (CodeIntel). Kept on disk, never versioned: 13 tracked
+# blobs weighing ~35 MB meant every `git status` and every commit draft walked
+# and read them on the I: SMR platter (owner order 2026-11-21: reduce disk ops).
+.codeintel/
+
 # Separate projects kept locally, not part of the Kick Overlay repo
 cookie-extension/
 instagram-followguard/
