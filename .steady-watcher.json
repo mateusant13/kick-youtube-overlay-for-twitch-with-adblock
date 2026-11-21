@@ -2,126 +2,69 @@
   "app": "Steady Watcher",
   "ok": true,
   "ready": true,
-  "mood": "gaming",
+  "mood": "steady",
   "run_mode": "auto",
-  "gaming": true,
-  "game": {
-    "pid": 48836,
-    "name": "deadlock.exe",
-    "exe": "",
-    "in_match": true,
-    "started_s_ago": 984.6,
-    "duration_s": 984.6,
-    "match_total_s": 0.0,
-    "state_since_s": 984.6,
-    "ticks": 770,
-    "peak_cpu_pct": 28.3,
-    "peak_commit_gb": 10.79,
-    "sessions": 2
-  },
+  "gaming": false,
+  "game": null,
   "defer_gpu": false,
-  "heavy_job_cap_pct": 4.0,
+  "heavy_job_cap_pct": 32.0,
   "projects": [
     {
-      "id": "vodrip",
-      "count": 2,
-      "cpu": 1.393625393481631,
-      "rss": 1017159680,
-      "commit_mb": 2383.61328125,
-      "rate": 4.0,
-      "io_mbps": 0.2,
-      "mood": "gaming",
-      "duty_allow_pct": 60
-    },
-    {
-      "id": "gravador",
+      "id": "sotto",
       "count": 1,
-      "cpu": 0.0,
-      "rss": 0,
-      "commit_mb": 252.5859375,
-      "rate": 4.0,
-      "io_mbps": 9.2,
-      "mood": "gaming"
+      "cpu": 4.701967592584991,
+      "rss": 134443008,
+      "commit_mib": 219.74609375,
+      "rate": 32.0,
+      "io_mbps": 0.2,
+      "mood": "steady"
     },
     {
       "id": "brandops",
       "count": 8,
-      "cpu": 0.0,
-      "rss": 0,
-      "commit_mb": 97.15234375,
-      "rate": 4.0,
-      "io_mbps": 0.0,
-      "mood": "gaming"
+      "cpu": 0.12056327160474334,
+      "rss": 49635328,
+      "commit_mib": 813.22265625,
+      "rate": 2.0,
+      "io_mbps": 0.1,
+      "mood": "steady"
     },
     {
-      "id": "auto_reqwest-0.13.4",
+      "id": "gravador",
       "count": 1,
-      "cpu": 0.0,
-      "rss": 141266944,
-      "commit_mb": 308.4140625,
-      "rate": 4.0,
-      "io_mbps": 0.0,
-      "mood": "gaming"
-    },
-    {
-      "id": "auto_clap_builder-4.6.0",
-      "count": 1,
-      "cpu": 0.0,
-      "rss": 137363456,
-      "commit_mb": 204.07421875,
-      "rate": 4.0,
-      "io_mbps": 0.0,
-      "mood": "gaming"
-    },
-    {
-      "id": "superharness",
-      "count": 4,
-      "cpu": 0.4546556741016321,
-      "rss": 1251446784,
-      "commit_mb": 2534.0625,
-      "rate": 4.0,
-      "io_mbps": 0.0,
-      "mood": "gaming"
-    },
-    {
-      "id": "codeintel-worktrees",
-      "count": 2,
-      "cpu": 1.0669926716233102,
-      "rss": 2613190656,
-      "commit_mb": 4381.95703125,
-      "rate": 4.0,
-      "io_mbps": 55.5,
-      "mood": "gaming",
-      "duty_allow_pct": 60
+      "cpu": 0.12056327160474334,
+      "rss": 31981568,
+      "commit_mib": 27.9765625,
+      "rate": 2.0,
+      "io_mbps": 14.4,
+      "mood": "steady"
     }
   ],
   "notes": [
-    "game deadlock.exe \u2014 P-cores + high GPU/IO (client); projects keep running on E-cores",
-    "26 project processes idle \u2014 they join when they get heavy",
-    "memory warn: 5.1G free, commit 85% \u2014 trimming workers, not killing \u2014 held by deadlock.exe (pid 48836) 9.99G, bun.exe (pid 33680) 2.38G [codeintel-worktrees], bun.exe (pid 31192) 2.31G [superharness], bun.exe (pid 36400) 2.28G [vodrip], python.exe (pid 47996) 1.90G [codeintel-worktrees]"
+    "61 project processes idle \u2014 they join when they get heavy"
   ],
-  "advice": "A game is in the foreground. Keep all project work running \u2014 the watcher already pinned it to efficiency cores and dropped its GPU/IO class. Do not kill jobs. Do not spawn a second copy because the first looks slow. If you must block, GET /wait (it pulses before caches go cold).",
+  "advice": "Desktop is yours. Heavy work is slow-and-steady. Proceed.",
   "pulse_seconds": 250.0,
   "how_to_wait": "GET http://127.0.0.1:47891/wait?max_ms=250000",
   "how_to_why": "GET http://127.0.0.1:47891/why?pid=<n>[,<n2>] \u2014 per-pid class trace (flags, target, live policy, measurement_class). Call it before trusting any number measured on that pid.",
   "how_to_admission": "GET http://127.0.0.1:47891/admission?project=<your-id>&kind=heavy|light \u2014 allow|degrade|refuse with reasons (mood, gaming, active stall windows). Never treat unknown as allow.",
   "how_to_status": "GET http://127.0.0.1:47891/status?project=<your-id> \u2014 pass your project id to get that job's own rate and wall_multiplier instead of the worst-case slice",
   "throttle": {
-    "wall_multiplier": 25.0,
-    "heavy_job_cap_pct": 4.0,
+    "wall_multiplier": 3.12,
+    "heavy_job_cap_pct": 32.0,
     "basis": "global-max-slice"
   },
-  "tier": "soft",
+  "tier": "none",
   "mood_gate": {
     "armed": true,
     "window_s": 15.0,
-    "applied_mood": "gaming",
+    "applied_mood": "steady",
     "pending": [],
     "holding_for_s": 0.0,
     "selftest": {
       "armed": true,
       "window_s": 15.0,
-      "at": "2026-11-12T04:17:32Z",
+      "at": "2026-11-21T03:16:53Z",
       "refused": true,
       "earned": true,
       "floor_passes": true,
@@ -130,31 +73,31 @@
   },
   "how_to_toolcall": "POST http://127.0.0.1:47891/toolcall {\"pid\": <pid>, \"timeout_ms\": <ms>} before a bounded op \u2014 the watcher lifts throttling for it until the deadline or POST {\"id\"} to /toolcall/done.",
   "bus": "http://127.0.0.1:47891",
-  "tick": 100759,
-  "tick_ms_last": 453.0,
-  "tick_period_ms": 1157.0,
-  "tick_rate_ema": 0.996,
+  "tick": 23535,
+  "tick_ms_last": 47.0,
+  "tick_period_ms": 656.0,
+  "tick_rate_ema": 1.523,
   "write_latency": {
     "status": {
-      "p50_ms": 2.587,
-      "p95_ms": 86.629,
-      "max_ms": 1255.294,
-      "over_150ms": 3270,
-      "count": 104088
+      "p50_ms": 1.493,
+      "p95_ms": 19.381,
+      "max_ms": 56340.276,
+      "over_150ms": 481,
+      "count": 24098
     },
     "history": {
-      "p50_ms": 1.298,
-      "p95_ms": 62.371,
-      "max_ms": 1116.191,
-      "over_150ms": 2756,
-      "count": 100759
+      "p50_ms": 0.76,
+      "p95_ms": 7.08,
+      "max_ms": 56329.698,
+      "over_150ms": 454,
+      "count": 23535
     },
     "pulse": {
-      "p50_ms": 111.388,
-      "p95_ms": 290.696,
-      "max_ms": 70503.403,
-      "over_150ms": 1769,
-      "count": 12594
+      "p50_ms": 45.299,
+      "p95_ms": 203.33,
+      "max_ms": 49710.923,
+      "over_150ms": 162,
+      "count": 2941
     },
     "errors": {
       "dropped": 0,
@@ -162,34 +105,17 @@
       "queue_depth": 0
     }
   },
-  "updated": "2026-11-12T04:20:12Z",
-  "tick_updated": "2026-11-12T04:20:12Z",
-  "pulse_n": 3341,
+  "updated": "2026-11-21T03:17:03Z",
+  "tick_updated": "2026-11-21T03:17:03Z",
+  "pulse_n": 566,
   "admin": true,
   "paused": false,
   "presence": "present",
-  "presence_reason": "game running",
-  "memory_level": "warn",
+  "presence_reason": "present (recent input or not yet AFK)",
+  "memory_level": "ok",
   "league_reserve_active": false,
   "perf": {
     "verdicts": [
-      {
-        "rule": "commit.holders",
-        "action": "report",
-        "severity": "warn",
-        "actor_pid": 0,
-        "actor_name": "system",
-        "evidence": {
-          "measured": "84.763",
-          "threshold": "70",
-          "unit": "% of commit limit",
-          "holders": "deadlock.exe (pid 48836) 9.987G, bun.exe (pid 33680) 2.38G [codeintel-worktrees], bun.exe (pid 31192) 2.309G [superharness], bun.exe (pid 36400) 2.281G [vodrip], python.exe (pid 47996) 1.899G [codeintel-worktrees]",
-          "holder_count": "5",
-          "holders_commit_gb": "18.856",
-          "sample_commit_gb": "69.864",
-          "min_holder_gb": "0.5"
-        }
-      },
       {
         "rule": "stall.window",
         "action": "report",
@@ -197,49 +123,124 @@
         "actor_pid": 0,
         "actor_name": "system",
         "evidence": {
-          "measured": "66",
+          "measured": "40",
           "threshold": "1",
           "unit": "stall windows",
-          "total_ms": "23383.299",
-          "peak_gap_ms": "3206",
+          "total_ms": "146875",
+          "peak_gap_ms": "20144",
           "peak_floor_ms": "250",
           "peak_crit_ms": "1000",
-          "peak_dpc_pct": "5.469",
-          "peak_irq_pct": "5.769",
-          "peak_disk_ms": "0.018",
+          "peak_dpc_pct": "5.159",
+          "peak_irq_pct": "9.231",
+          "peak_disk_ms": "0.058",
           "probe_interval_ms": "200",
           "probe_retention_s": "600",
-          "attributed": "ffmpeg.exe (pid 48860)",
-          "attribution_reason": "heaviest cpu consumer",
+          "attributed": "none",
+          "attribution_reason": "gap too large to attribute (20144 ms > 5000 ms): the recorder itself was not being scheduled, so no process is named",
           "attributable_gap_ms": "5000"
+        }
+      },
+      {
+        "rule": "disk.saturated",
+        "action": "report",
+        "severity": "crit",
+        "actor_pid": 0,
+        "actor_name": "system",
+        "evidence": {
+          "measured": "2.49",
+          "threshold": "2",
+          "unit": "avg requests in service",
+          "volume": "I",
+          "queue_now": "3",
+          "queue_limit": "4",
+          "queue_avg": "2.49",
+          "busy_pct": "248.986",
+          "busy_meaning": "% of the window the volume was busy (= 100 x queue_avg, the SAME quantity the queue bar measures; it has no bar of its own)",
+          "read_mbps": "1.272",
+          "write_mbps": "1.546",
+          "latency_ms": "27.517",
+          "ops": "58",
+          "ops_per_s": "90.484",
+          "rate_reading": "the volume is at its OWN limit: 90 ops/s at 27.5 ms service time is the device answering as fast as it can, not a workload asking too much - no process cap fixes this, the writer has to move off the volume. MEASURED on this box: I: is a 4 TB ST4000DM004, an SMR platter whose random-access ceiling I probed at ~32 IOPS",
+          "window_ms": "641",
+          "contenders": "chrome.exe (11796) 25.802MB/s [C], chrome.exe (27532) 5.823MB/s [C], msedge.exe (4976) 5.395MB/s [C], ffmpeg.exe (39536) 3.955MB/s [H]",
+          "disk_source": "IOCTL_DISK_PERFORMANCE per volume (CurrentDiskQueueLength/AvgDiskQueueLength/PercentDiskTime)"
+        }
+      },
+      {
+        "rule": "stutter.machine",
+        "action": "report",
+        "severity": "crit",
+        "actor_pid": 0,
+        "actor_name": "system",
+        "evidence": {
+          "measured": "2",
+          "threshold": "2",
+          "unit": "independent signals over line",
+          "signals": "scheduler, disk",
+          "class": "disk+scheduler",
+          "cause": "disk+scheduler on I: via chrome.exe x2 (pids 11796, 27532) [C]",
+          "disk": "I",
+          "disk_queue": "3",
+          "disk_queue_limit": "8",
+          "disk_busy_pct": "248.986",
+          "disk_latency_ms": "27.517",
+          "tree": "chrome.exe x2 (pids 11796, 27532) [C]",
+          "creation_parent": "mixed [msedge.exe(34840) 7/21, omp.exe(15092) 2/21, git.exe(30832) 2/21]",
+          "creation_parent_mixed": "yes",
+          "creation_parent_share": "33%",
+          "creation_window_rate_per_s": "2.1",
+          "scheduler_measured": "20144",
+          "scheduler_threshold": "250",
+          "scheduler_unit": "ms late",
+          "scheduler_detail": "probe_peak=20144 instant=3",
+          "disk_measured": "3",
+          "disk_threshold": "8",
+          "disk_unit": "requests in service",
+          "disk_detail": "volume=I busy_pct=248.986 queue_now=3 latency_ms=27.517"
+        }
+      },
+      {
+        "rule": "lane.agent_silent",
+        "action": "admit",
+        "severity": "warn",
+        "actor_pid": 23688,
+        "actor_name": "node.exe",
+        "evidence": {
+          "measured": "16095.864",
+          "threshold": "180",
+          "unit": "s without output",
+          "outputs_seen": "0",
+          "first_output_seen": "no"
         }
       }
     ],
     "sample": {
-      "ts": 1794457212.3780346,
-      "cpu_pct": 74.8,
-      "commit_pct": 84.76257529874381,
-      "ram_free_gb": 5.135833740234375,
-      "dpc_pct": 0.882,
-      "irq_pct": 1.912,
-      "dpc_max_core_pct": 8.824,
-      "irq_max_core_pct": 5.882,
+      "ts": 1795231023.1015494,
+      "cpu_pct": 45.8,
+      "commit_pct": 48.23756499585892,
+      "ram_free_gb": 19.940109252929688,
+      "ram_total_gb": 47.71098327636719,
+      "dpc_pct": 0.367,
+      "irq_pct": 0.733,
+      "dpc_max_core_pct": 4.878,
+      "irq_max_core_pct": 7.317,
       "disk_latency_ms": 0.0,
-      "stall_gap_ms": 18.999999997322437,
-      "agent_pid": 7556,
-      "agent_name": "omp.exe",
-      "agent_output_age_s": 31.364288568496704,
+      "stall_gap_ms": 3.000000001338765,
+      "agent_pid": 23688,
+      "agent_name": "node.exe",
+      "agent_output_age_s": 16095.863909959793,
       "agent_outputs_seen": 0,
       "stall": {
-        "windows": 66,
-        "total_ms": 23383.3,
-        "peak_gap_ms": 3206.0,
-        "peak_dpc_pct": 5.469,
-        "peak_irq_pct": 5.769,
-        "peak_disk_ms": 0.02,
-        "actor_pid": 48860,
-        "actor_name": "ffmpeg.exe",
-        "actor_reason": "heaviest cpu consumer",
+        "windows": 40,
+        "total_ms": 146875.0,
+        "peak_gap_ms": 20144.0,
+        "peak_dpc_pct": 5.159,
+        "peak_irq_pct": 9.231,
+        "peak_disk_ms": 0.06,
+        "actor_pid": 0,
+        "actor_name": "",
+        "actor_reason": "gap too large to attribute (20144 ms > 5000 ms): the recorder itself was not being scheduled, so no process is named",
         "probe_interval_ms": 200.0,
         "probe_retention_s": 600.0,
         "attributable_gap_ms": 5000.0
@@ -247,17 +248,17 @@
       "disk": {
         "status": "MEASURED",
         "source": "IOCTL_DISK_PERFORMANCE per volume (CurrentDiskQueueLength/AvgDiskQueueLength/PercentDiskTime)",
-        "interval_ms": 953.0,
+        "interval_ms": 641.0,
         "volumes": [
           {
             "letter": "C",
             "queue_now": 0,
-            "queue_avg": 0.11,
-            "busy_pct": 10.99,
-            "read_bps": 14795886.7,
-            "write_bps": 3210610.7,
-            "latency_ms": 0.167,
-            "ops": 626
+            "queue_avg": 0.004,
+            "busy_pct": 0.36,
+            "read_bps": 0.0,
+            "write_bps": 2613516.4,
+            "latency_ms": 0.176,
+            "ops": 13
           },
           {
             "letter": "D",
@@ -292,273 +293,316 @@
           {
             "letter": "G",
             "queue_now": 0,
-            "queue_avg": 0.071,
-            "busy_pct": 7.08,
-            "read_bps": 93185074.5,
-            "write_bps": 0.0,
-            "latency_ms": 1.5,
-            "ops": 45
+            "queue_avg": 0.0,
+            "busy_pct": 0.05,
+            "read_bps": 0.0,
+            "write_bps": 198090.5,
+            "latency_ms": 0.028,
+            "ops": 11
           },
           {
             "letter": "H",
             "queue_now": 0,
             "queue_avg": 0.002,
-            "busy_pct": 0.24,
-            "read_bps": 73066.1,
-            "write_bps": 3313762.9,
-            "latency_ms": 0.385,
-            "ops": 6
+            "busy_pct": 0.17,
+            "read_bps": 0.0,
+            "write_bps": 31950.1,
+            "latency_ms": 0.365,
+            "ops": 3
           },
           {
             "letter": "I",
-            "queue_now": 0,
-            "queue_avg": 0.037,
-            "busy_pct": 3.69,
-            "read_bps": 0.0,
-            "write_bps": 5501448.1,
-            "latency_ms": 5.027,
-            "ops": 7
+            "queue_now": 3,
+            "queue_avg": 2.49,
+            "busy_pct": 248.99,
+            "read_bps": 1271613.1,
+            "write_bps": 1546383.8,
+            "latency_ms": 27.517,
+            "ops": 58
           }
         ],
         "contenders": [
           {
-            "pid": 47996,
-            "name": "python.exe",
-            "read_mbps": 348.794,
-            "write_mbps": 0.0,
+            "pid": 11796,
+            "name": "chrome.exe",
+            "read_mbps": 1.763,
+            "write_mbps": 24.039,
+            "home": "C"
+          },
+          {
+            "pid": 27532,
+            "name": "chrome.exe",
+            "read_mbps": 3.429,
+            "write_mbps": 2.394,
+            "home": "C"
+          },
+          {
+            "pid": 4976,
+            "name": "msedge.exe",
+            "read_mbps": 1.871,
+            "write_mbps": 3.523,
+            "home": "C"
+          },
+          {
+            "pid": 39536,
+            "name": "ffmpeg.exe",
+            "read_mbps": 1.99,
+            "write_mbps": 1.965,
             "home": "H"
           },
           {
-            "pid": 20372,
-            "name": "chrome.exe",
-            "read_mbps": 0.123,
-            "write_mbps": 7.108,
-            "home": "C"
-          },
-          {
-            "pid": 48080,
-            "name": "chrome.exe",
-            "read_mbps": 7.051,
-            "write_mbps": 0.132,
-            "home": "C"
-          },
-          {
-            "pid": 8032,
-            "name": "explorer.exe",
-            "read_mbps": 2.085,
-            "write_mbps": 0.0,
-            "home": "C"
-          },
-          {
-            "pid": 36624,
-            "name": "msedge.exe",
-            "read_mbps": 0.927,
-            "write_mbps": 0.997,
-            "home": "C"
-          },
-          {
-            "pid": 46756,
+            "pid": 9028,
             "name": "nvcontainer.exe",
             "read_mbps": 0.0,
-            "write_mbps": 1.844,
+            "write_mbps": 1.978,
             "home": "C"
           },
           {
-            "pid": 15340,
-            "name": "chrome.exe",
-            "read_mbps": 1.084,
-            "write_mbps": 0.482,
-            "home": "C"
-          },
-          {
-            "pid": 50136,
+            "pid": 34840,
             "name": "msedge.exe",
-            "read_mbps": 0.6,
-            "write_mbps": 0.527,
+            "read_mbps": 1.006,
+            "write_mbps": 0.813,
+            "home": "C"
+          },
+          {
+            "pid": 33584,
+            "name": "codex.exe",
+            "read_mbps": 1.338,
+            "write_mbps": 0.091,
+            "home": "H"
+          },
+          {
+            "pid": 16752,
+            "name": "msedge.exe",
+            "read_mbps": 0.626,
+            "write_mbps": 0.611,
             "home": "C"
           }
         ]
       },
       "creation": {
         "window_s": 10.0,
-        "count": 46,
-        "rate_per_s": 4.636,
-        "decayed_rate_per_s": 9.081,
+        "count": 21,
+        "rate_per_s": 2.138,
+        "decayed_rate_per_s": 1.588,
         "sustained_s": 0.0,
-        "parent_pid": 46064,
-        "parent_name": "node.exe",
+        "parent_pid": 34840,
+        "parent_name": "msedge.exe",
         "parent_count": 7,
-        "parent_share": 0.1522,
+        "parent_share": 0.3333,
         "parent_rate_per_s": 0.7,
-        "window_rate_per_s": 4.6,
+        "window_rate_per_s": 2.1,
         "mixed": true,
         "parents": [
           [
-            46064,
-            "node.exe",
+            34840,
+            "msedge.exe",
             7
           ],
           [
-            47996,
-            "python.exe",
-            4
+            15092,
+            "omp.exe",
+            2
           ],
           [
-            3832,
-            "bun.exe",
-            3
+            30832,
+            "git.exe",
+            2
           ]
         ],
         "child_pids": [
-          35260,
-          26600,
-          49420,
-          50168
+          21156,
+          46360,
+          16752,
+          44668,
+          15040,
+          34024
         ],
-        "tracked": 583,
-        "cost_ms": 1.062,
+        "tracked": 431,
+        "cost_ms": 0.572,
         "measured": "MEASURED"
       },
       "gpu": {
-        "available": false,
-        "used_mb": 0.0,
-        "total_mb": 0.0,
-        "used_pct": 0.0,
-        "util_pct": 0.0,
-        "reason": "unavailable",
-        "holders": []
+        "available": true,
+        "used_mb": 3389.0,
+        "total_mb": 16303.0,
+        "used_pct": 20.8,
+        "util_pct": 16.0,
+        "reason": "",
+        "holders": [
+          {
+            "pid": 2244,
+            "name": "dwm.exe",
+            "used_mb": -1.0
+          },
+          {
+            "pid": 2636,
+            "name": "ShellHost.exe",
+            "used_mb": -1.0
+          },
+          {
+            "pid": 4160,
+            "name": "CrossDeviceResume.exe",
+            "used_mb": -1.0
+          },
+          {
+            "pid": 13800,
+            "name": "NVIDIA Overlay.exe",
+            "used_mb": -1.0
+          },
+          {
+            "pid": 7428,
+            "name": "NVIDIA Overlay.exe",
+            "used_mb": -1.0
+          },
+          {
+            "pid": 3892,
+            "name": "explorer.exe",
+            "used_mb": -1.0
+          },
+          {
+            "pid": 15124,
+            "name": "SearchHost.exe",
+            "used_mb": -1.0
+          },
+          {
+            "pid": 15200,
+            "name": "StartMenuExperienceHost.exe",
+            "used_mb": -1.0
+          }
+        ]
       },
       "procs": [
         {
-          "pid": 4,
-          "name": "System",
+          "pid": 32516,
+          "name": "omp.exe",
           "project_id": "",
-          "lane": "light",
-          "cpu_pct": 8.2825931231622,
-          "commit_gb": 5.7220458984375e-05,
-          "io_mbps": 0.007461795606452434,
+          "lane": "agent",
+          "cpu_pct": 6.751543209865628,
+          "commit_gb": 1.9827804565429688,
+          "io_mbps": 0.0408179012345019,
           "protected": true,
           "game": false
         },
         {
-          "pid": 8032,
-          "name": "explorer.exe",
+          "pid": 18064,
+          "name": "pythonw.exe",
+          "project_id": "sotto",
+          "lane": "heavy",
+          "cpu_pct": 4.701967592584991,
+          "commit_gb": 0.21459579467773438,
+          "io_mbps": 0.0012098765432079204,
+          "protected": false,
+          "game": false
+        },
+        {
+          "pid": 6044,
+          "name": "omp.exe",
           "project_id": "",
-          "lane": "light",
-          "cpu_pct": 4.775549188129558,
-          "commit_gb": 0.2994194030761719,
-          "io_mbps": 2.085308632387944,
+          "lane": "agent",
+          "cpu_pct": 3.6168981481423,
+          "commit_gb": 6.895103454589844,
+          "io_mbps": 0.015262345678987668,
           "protected": true,
           "game": false
         },
         {
-          "pid": 48836,
-          "name": "deadlock.exe",
+          "pid": 15092,
+          "name": "omp.exe",
           "project_id": "",
-          "lane": "light",
-          "cpu_pct": 4.327841451742411,
-          "commit_gb": 9.986946105957031,
-          "io_mbps": 0.0035204882835618476,
-          "protected": true,
-          "game": true
-        },
-        {
-          "pid": 20372,
-          "name": "chrome.exe",
-          "project_id": "",
-          "lane": "light",
-          "cpu_pct": 3.730897803226217,
-          "commit_gb": 1.1158523559570312,
-          "io_mbps": 7.231412667103215,
+          "lane": "agent",
+          "cpu_pct": 3.0140817901185835,
+          "commit_gb": 1.1977462768554688,
+          "io_mbps": 0.0123487654320788,
           "protected": true,
           "game": false
         },
         {
-          "pid": 48080,
-          "name": "chrome.exe",
+          "pid": 3936,
+          "name": "omp.exe",
           "project_id": "",
-          "lane": "light",
-          "cpu_pct": 3.5816618910971685,
-          "commit_gb": 1.0537185668945312,
-          "io_mbps": 7.183136889864203,
+          "lane": "agent",
+          "cpu_pct": 2.89351851851384,
+          "commit_gb": 1.0049667358398438,
+          "io_mbps": 0.025464506172798333,
           "protected": true,
           "game": false
         },
         {
-          "pid": 2216,
-          "name": "dwm.exe",
+          "pid": 37796,
+          "name": "omp.exe",
           "project_id": "",
-          "lane": "light",
-          "cpu_pct": 2.910100286516449,
-          "commit_gb": 0.4406471252441406,
+          "lane": "agent",
+          "cpu_pct": 2.6523919753043534,
+          "commit_gb": 1.3982963562011719,
           "io_mbps": 0.0,
           "protected": true,
           "game": false
         },
         {
-          "pid": 13636,
-          "name": "explorer.exe",
-          "project_id": "",
-          "lane": "light",
-          "cpu_pct": 2.787250786963262,
-          "commit_gb": 0.26108551025390625,
-          "io_mbps": 0.0,
-          "protected": true,
-          "game": false
-        },
-        {
-          "pid": 14828,
+          "pid": 18800,
           "name": "chatterino.exe",
           "project_id": "",
           "lane": "light",
-          "cpu_pct": 2.6862464183228765,
-          "commit_gb": 0.717926025390625,
-          "io_mbps": 3.096936653068637e-05,
+          "cpu_pct": 2.2907021604901234,
+          "commit_gb": 0.469085693359375,
+          "io_mbps": 0.0002577160493822993,
           "protected": false,
           "game": false
         },
         {
-          "pid": 13956,
-          "name": "Taskmgr.exe",
+          "pid": 27532,
+          "name": "chrome.exe",
           "project_id": "",
           "lane": "light",
-          "cpu_pct": 1.6415950334195355,
-          "commit_gb": 0.26328277587890625,
-          "io_mbps": 0.0,
+          "cpu_pct": 1.5673225308616634,
+          "commit_gb": 1.1241950988769531,
+          "io_mbps": 5.823086419743671,
           "protected": true,
           "game": false
         },
         {
-          "pid": 21848,
+          "pid": 34840,
           "name": "msedge.exe",
-          "project_id": "",
+          "project_id": "gravador",
           "lane": "light",
-          "cpu_pct": 1.4177411652259626,
-          "commit_gb": 0.17540740966796875,
-          "io_mbps": 0.05360979519206109,
+          "cpu_pct": 1.5673225308616634,
+          "commit_gb": 0.15223312377929688,
+          "io_mbps": 1.8180123456760728,
           "protected": false,
           "game": false
         },
         {
-          "pid": 36400,
-          "name": "bun.exe",
-          "project_id": "vodrip",
-          "lane": "heavy",
-          "cpu_pct": 1.393625393481631,
-          "commit_gb": 2.2805213928222656,
-          "io_mbps": 0.02201493964133802,
+          "pid": 11796,
+          "name": "chrome.exe",
+          "project_id": "",
+          "lane": "light",
+          "cpu_pct": 1.44675925925692,
+          "commit_gb": 0.3813629150390625,
+          "io_mbps": 25.802271604896553,
+          "protected": true,
+          "game": false
+        },
+        {
+          "pid": 16752,
+          "name": "msedge.exe",
+          "project_id": "gravador",
+          "lane": "light",
+          "cpu_pct": 1.3261959876521767,
+          "commit_gb": 0.19509506225585938,
+          "io_mbps": 1.2372801839766312,
           "protected": false,
           "game": false
         },
         {
-          "pid": 50136,
-          "name": "msedge.exe",
+          "pid": 2244,
+          "name": "dwm.exe",
           "project_id": "",
           "lane": "light",
-          "cpu_pct": 1.3431232091614382,
-          "commit_gb": 0.137542724609375,
-          "io_mbps": 1.126272061258686,
-          "protected": false,
+          "cpu_pct": 1.2056327160474334,
+          "commit_gb": 0.2820396423339844,
+          "io_mbps": 0.0,
+          "protected": true,
           "game": false
         }
       ],
@@ -569,8 +613,12 @@
         "offenses": {},
         "last": {
           "live": false,
-          "signals": [],
-          "detail": [],
+          "signals": [
+            "disk"
+          ],
+          "detail": [
+            "disk=27.517ms per op\u226525"
+          ],
           "parked": [],
           "released": [],
           "escalated": false,
@@ -586,35 +634,33 @@
     "sensors": {
       "interactive_p99_ms": {
         "sensor": "interactive_p99_ms",
-        "class": "Normal",
-        "pid": 15340,
+        "class": "BelowNormal",
+        "pid": 11796,
         "name": "chrome.exe",
         "window_s": 600.0,
-        "measured_in": "probe thread at thread-priority 0",
+        "measured_in": "probe thread at thread-priority -1",
         "status": "MEASURED",
-        "p99_ms": 237.0,
+        "p99_ms": 1019.0,
         "p50_ms": 3.0,
-        "p95_ms": 81.0,
-        "max_ms": 3222.0,
-        "probes": 2730,
-        "stalls_gt_deadline": 91,
+        "p95_ms": 19.0,
+        "max_ms": 20159.0,
+        "probes": 2230,
+        "stalls_gt_deadline": 40,
         "deadline_ms": 100.0
       },
       "class_population": {
         "counts": {
-          "Idle": 83,
-          "BelowNormal": 74,
-          "Normal": 397,
+          "Idle": 36,
+          "BelowNormal": 54,
+          "Normal": 319,
           "AboveNormal": 15,
-          "High": 6,
+          "High": 9,
           "Realtime": 0
         },
-        "total": 593,
-        "unreadable": 18,
-        "unreadable_reasons": {
-          "open-denied": 18
-        },
-        "sampled_at": 1794457209.324,
+        "total": 433,
+        "unreadable": 0,
+        "unreadable_reasons": {},
+        "sampled_at": 1795231021.178,
         "cache_s": 5.0,
         "status": "MEASURED"
       },
@@ -624,33 +670,33 @@
         "deadline_ms": 100.0,
         "classes": {
           "Idle": {
-            "stalls_gt_deadline": 293,
-            "probes": 1800,
-            "max_ms": 12159.0,
+            "stalls_gt_deadline": 88,
+            "probes": 1065,
+            "max_ms": 134269.0,
             "status": "MEASURED"
           },
           "BelowNormal": {
-            "stalls_gt_deadline": 111,
-            "probes": 2718,
-            "max_ms": 3222.0,
+            "stalls_gt_deadline": 40,
+            "probes": 2230,
+            "max_ms": 20159.0,
             "status": "MEASURED"
           },
           "Normal": {
-            "stalls_gt_deadline": 91,
-            "probes": 2730,
-            "max_ms": 3222.0,
+            "stalls_gt_deadline": 39,
+            "probes": 2231,
+            "max_ms": 20159.0,
             "status": "MEASURED"
           },
           "AboveNormal": {
-            "stalls_gt_deadline": 84,
-            "probes": 2752,
-            "max_ms": 3222.0,
+            "stalls_gt_deadline": 39,
+            "probes": 2232,
+            "max_ms": 20159.0,
             "status": "MEASURED"
           },
           "High": {
-            "stalls_gt_deadline": 77,
-            "probes": 2757,
-            "max_ms": 3222.0,
+            "stalls_gt_deadline": 38,
+            "probes": 2232,
+            "max_ms": 20159.0,
             "status": "MEASURED"
           }
         },
@@ -663,41 +709,25 @@
       },
       "unreadable_processes": {
         "sensor": "unreadable_processes",
-        "count": 18,
-        "reasons": {
-          "open-denied": 18
-        },
-        "total": 593,
+        "count": 0,
+        "reasons": {},
+        "total": 433,
         "status": "MEASURED"
       },
       "priority_violations": {
         "sensor": "priority_violations",
         "status": "MEASURED",
-        "count": 3,
+        "count": 1,
         "rows": [
           {
-            "pid": 4848,
-            "image": "voicemeeter.exe",
+            "pid": 11796,
+            "image": "chrome.exe",
             "class": "BelowNormal",
-            "interactive": "visible-window",
+            "interactive": "foreground",
             "below_by": 1
-          },
-          {
-            "pid": 37496,
-            "image": "msedgewebview2.exe",
-            "class": "Idle",
-            "interactive": "visible-window",
-            "below_by": 2
-          },
-          {
-            "pid": 45756,
-            "image": "WhatsApp.Root.exe",
-            "class": "Idle",
-            "interactive": "visible-window",
-            "below_by": 2
           }
         ],
-        "checked": 12,
+        "checked": 9,
         "unreadable": 0
       }
     },
@@ -708,216 +738,26 @@
     "running": true,
     "poll_ms": 250,
     "max_lifetime_s": 180.0,
-    "polls": 318693,
-    "watching": 2,
-    "flashes": 6,
-    "long_lived": 6,
-    "last_flash_at": 1794429262.7196543,
+    "polls": 64355,
+    "watching": 4,
+    "flashes": 0,
+    "long_lived": 2,
+    "last_flash_at": null,
     "windows_shown": 0,
     "windows_suppressed": 0,
     "gate": "counted only when the window was in the foreground or newly appeared",
-    "recent": [
-      {
-        "hwnd": "0xb91592",
-        "pid": 15280,
-        "image": "windowsterminal.exe",
-        "window_class": "Xaml_WindowedPopupClass",
-        "lifetime_s": 0.27,
-        "foreground": false,
-        "popup": true,
-        "requester": "",
-        "chain": [
-          "windowsterminal.exe(15280)",
-          "svchost.exe(1556)",
-          "services.exe(1832)",
-          "wininit.exe(1752)",
-          "?(1628)"
-        ],
-        "candidates": [],
-        "pty_owners": [],
-        "attribution": "no console allocated within 2.0s",
-        "cmdline": "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.24.12741.0_x64__8wekyb3d8bbwe\\WindowsTerminal.exe -Embedding",
-        "cwd": "",
-        "cwd_from": "unavailable",
-        "t": 1794366952.6983511
-      },
-      {
-        "hwnd": "0x1300bf4",
-        "pid": 15280,
-        "image": "windowsterminal.exe",
-        "window_class": "CASCADIA_HOSTING_WINDOW_CLASS",
-        "lifetime_s": 0.88,
-        "foreground": true,
-        "popup": false,
-        "requester": "python.exe(36048)",
-        "chain": [
-          "python.exe(36048)",
-          "pythonw.exe(21400)",
-          "explorer.exe(13636)",
-          "?(13508)"
-        ],
-        "candidates": [],
-        "pty_owners": [],
-        "attribution": "console opened beside it",
-        "cmdline": "C:\\Program Files\\Python311\\python.EXE -u H:\\sotto\\worker\\sotto_worker.py --threads 2",
-        "cwd": "",
-        "cwd_from": "unavailable",
-        "t": 1794368923.8184338
-      },
-      {
-        "hwnd": "0x11615fa",
-        "pid": 15280,
-        "image": "windowsterminal.exe",
-        "window_class": "Xaml_WindowedPopupClass",
-        "lifetime_s": 1.09,
-        "foreground": false,
-        "popup": true,
-        "requester": "gh.exe(41704)",
-        "chain": [
-          "gh.exe(41704)",
-          "bun.exe(3832)",
-          "omp.exe(38424)",
-          "pwsh.exe(23840)",
-          "herdr.exe(23668)"
-        ],
-        "candidates": [],
-        "pty_owners": [],
-        "attribution": "console opened beside it",
-        "cmdline": "gh pr view --json number,url",
-        "cwd": "H:\\sotto",
-        "cwd_from": "requester",
-        "t": 1794369477.3877206
-      },
-      {
-        "hwnd": "0x3d0398",
-        "pid": 15280,
-        "image": "windowsterminal.exe",
-        "window_class": "Xaml_WindowedPopupClass",
-        "lifetime_s": 0.8,
-        "foreground": false,
-        "popup": true,
-        "requester": "",
-        "chain": [
-          "windowsterminal.exe(15280)",
-          "svchost.exe(1556)",
-          "services.exe(1832)",
-          "wininit.exe(1752)",
-          "?(1628)"
-        ],
-        "candidates": [
-          [
-            "python.exe(17644)",
-            "python.exe(6480)",
-            "bun.exe(26012)"
-          ],
-          [
-            "bun.exe(26012)",
-            "omp.exe(8292)",
-            "pwsh.exe(24600)"
-          ],
-          [
-            "rg.exe(7248)",
-            "python.exe(25804)",
-            "python.exe(40912)"
-          ],
-          [
-            "rg.exe(38552)",
-            "python.exe(25804)",
-            "python.exe(40912)"
-          ]
-        ],
-        "pty_owners": [
-          "bash.exe(36796)"
-        ],
-        "attribution": "12 consoles allocated within 2.0s: spawners=python.exe(25804)x9, omp.exe(8292)x1, python.exe(6480)x1",
-        "cmdline": "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.24.12741.0_x64__8wekyb3d8bbwe\\WindowsTerminal.exe -Embedding",
-        "cwd": "",
-        "cwd_from": "unavailable",
-        "t": 1794370064.614957
-      },
-      {
-        "hwnd": "0x205e8",
-        "pid": 15280,
-        "image": "windowsterminal.exe",
-        "window_class": "CASCADIA_HOSTING_WINDOW_CLASS",
-        "lifetime_s": 100.26,
-        "foreground": true,
-        "popup": true,
-        "requester": "",
-        "chain": [
-          "windowsterminal.exe(15280)",
-          "svchost.exe(1556)",
-          "services.exe(1832)",
-          "wininit.exe(1752)",
-          "?(1628)"
-        ],
-        "candidates": [],
-        "pty_owners": [],
-        "attribution": "no console allocated within 2.0s",
-        "cmdline": "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.24.12741.0_x64__8wekyb3d8bbwe\\WindowsTerminal.exe -Embedding",
-        "cwd": "",
-        "cwd_from": "unavailable",
-        "t": 1794401820.5331018
-      },
-      {
-        "hwnd": "0x190518",
-        "pid": 15280,
-        "image": "windowsterminal.exe",
-        "window_class": "CASCADIA_HOSTING_WINDOW_CLASS",
-        "lifetime_s": 1.02,
-        "foreground": false,
-        "popup": true,
-        "requester": "",
-        "chain": [
-          "windowsterminal.exe(15280)",
-          "svchost.exe(1556)",
-          "services.exe(1832)",
-          "wininit.exe(1752)",
-          "?(1628)"
-        ],
-        "candidates": [
-          [
-            "python.exe(54524)",
-            "pythonw.exe(49180)",
-            "explorer.exe(13636)"
-          ],
-          [
-            "powershell.exe(23680)",
-            "powershell.exe(34232)",
-            "pythonw.exe(28860)"
-          ],
-          [
-            "cmd.exe(41560)",
-            "svchost.exe(2872)",
-            "services.exe(1832)"
-          ],
-          [
-            "svchost.exe(1556)",
-            "services.exe(1832)",
-            "wininit.exe(1752)"
-          ]
-        ],
-        "pty_owners": [
-          "cmd.exe(41560)"
-        ],
-        "attribution": "4 consoles allocated within 2.0s: spawners=powershell.exe(34232)x1, pythonw.exe(49180)x1, services.exe(1832)x1",
-        "cmdline": "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.24.12741.0_x64__8wekyb3d8bbwe\\WindowsTerminal.exe -Embedding",
-        "cwd": "",
-        "cwd_from": "unavailable",
-        "t": 1794429262.7196543
-      }
-    ],
+    "recent": [],
     "recent_windows": [],
     "hook": {
       "enabled": true,
       "running": true,
       "ready": true,
-      "events": 7765323,
-      "shown": 1062,
-      "hidden": 2801,
+      "events": 362128,
+      "shown": 153,
+      "hidden": 317,
       "queued": 0,
       "dropped": 0,
-      "visible_tracked": 3447,
+      "visible_tracked": 329,
       "last_error": ""
     },
     "notify": {
@@ -926,183 +766,145 @@
       "dm_tool": "I:/!watcher/tools/herdr-dm.py",
       "cooldown_s": 600.0,
       "min_interval_s": 60.0,
-      "offered": 4284,
-      "sent": 2,
-      "durable_only": 105,
-      "refused": 4176,
+      "offered": 470,
+      "sent": 0,
+      "durable_only": 0,
+      "refused": 470,
       "dropped": 0,
       "refusals": {
-        "not-in-the-foreground": 3854,
-        "min-interval": 123,
-        "pty-client-not-a-window": 9,
-        "dm-rc=15: no json": 1,
-        "cooldown": 186,
-        "dm-run-failed: TimeoutExpired: Command '['C:\\\\Program Files\\\\Python311\\\\pythonw.exe', 'I:\\\\!watcher\\\\tools\\\\herdr-dm.py', '--from', 'watcher', '--subject', 'STUTTER (owner): the tree of bash.exe(29412) is the top measured pressure \u2014 io 40.7MB/s (78.6 ops/s) over 6 proc(s) at the episode, signals: disk, creation', '--body', 'target=w17:p3\\nOWNER ORDER, verbatim: \"acabou de acontecer stutter. culpa de quem? \u00e9 pra\\nsempre verificar o maior culpado do stutter, e mandar dm automaticamente. e\\nse dois maiores culpados tem culpa semelhante, mandar dm pra dois\".\\n\\nThis is the WATCHER\\'s own measurement of an interactive stutter, not a\\nguess: the relief actuator ranked this tree above every other process on the\\nbox while the signals were live, so you were the largest producer of the\\nmeasured pressure.\\nWHAT WAS DONE ABOUT IT: 1 process(es) of this tree were\\ndemoted (E-cores, EcoQoS, below-normal, low IO) for the hold window.\\n\\nculprit   = bash.exe(29412)  (tree of 6 process(es), io 40.7MB/s at 78.6 ops/s, 518 KB/op, cores=0-19 p-cores)\\nattribution = stutter-relief\\nmeasured  = the value in the tick that fired THIS episode (a spike, retained\\n            only as long as the signals were live), NOT the current rate:\\n            re-measure before refuting it, and re-measure before believing\\n            it is still happening.\\ncwd       = G:\\\\superharness-rebase\\\\host\\\\jcode\\ncmdline   = C:\\\\Program Files\\\\Git\\\\usr\\\\bin\\\\bash.exe -c \"cd host/jcode && cargo nextest run --workspace\"\\nchain     = bash.exe(29412)\\nceiling   = CANNOT-MEASURE \u2014 pid 29412 has no readable ancestor (the walk ended immediately), so no argv was read\\nevidence  = io 40.7MB/s at 78.6 ops/s over 6 process(es) of the tree; signals: disk, creation; detail: disk=14requests in service\u22658; creation=10.666creations/s\u22655\\n\\nCREATORS (sampled at compose time -- processes started in the last 120s,\\ngrouped by parent. A SEPARATE measurement from the tree above: `creation` is a\\nBOX-WIDE rate, so the tree that was ranked is not necessarily the tree that spawned):\\n  chrome.exe(15340) x13  C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe --user-data-dir=C:\\\\ChromeDebugProfile --remote-debugging-port=9222 --remote-debugging-address=12\\n  cargo-nextest.exe(28508) x2  H:\\\\cargo\\\\bin\\\\cargo-nextest.exe nextest run --workspace\\n  bun.exe(29104) x2  bun H:\\\\bun\\\\install\\\\global\\\\node_modules\\\\@oh-my-pi\\\\pi-coding-agent\\\\dist\\\\cli.js --continue\\n  -> the top creator is the culprit for that signal; if it is not your tree, say so with THIS pid and audit the half that is yours.\\n\\nsignals live = disk, creation\\n             = `disk` is the WORST VOLUME\\'s latency/queue, machine-wide:\\n               it says the volume was slow, not that this tree wrote it.\\n             = `creation` is a BOX-WIDE process-creation rate (count,\\n               decayed rate and parent summary live in `evidence`), not\\n               this tree\\'s own spawns: the tree inherited the number.\\n               The ONLY number scoped to this tree is the metric in the\\n               subject line.\\nescalation = single\\n\\nWHAT IS DEMANDED (owner order 2026-11-07: \"\u00e9 pra arrumar de fix, de forma\\nnuclear\"):\\n\\n1. FIND the code path that produced this pressure: which script, which job,\\n   which loop. Name it file:line in your receipt -- a stutter with no named\\n   line is an unfixed stutter.\\n2. CUT THE COST AT THE SOURCE, not by waiting longer: cap the workers\\n   (OMP_NUM_THREADS / torch.set_num_threads / --jobs), stop re-doing work\\n   (per-file cache/resume), coalesce the loop into one supervisor, and never\\n   run two heavy jobs at once on this box without a ceiling.\\n3. THIN THE CADENCE and the FAN-OUT. A suite, a gate run or a rebuild that\\n   saturates the CPU or the I: volume IS the stutter; it must run with a\\n   declared ceiling (n\u00ba of workers, % of a core, MB/s) that the owner\\'s\\n   interactive work never waits behind.\\n4. PROVE IT: land the receipt with the before/after measured on THIS box --\\n   `python -m watcher perf` (cpu, disk latency, queue) and\\n   `python -m watcher profile <pid>` (per-thread, kernel-billed) while your\\n   job runs, showing it no longer crosses the interactive lines.\\n\\n\\nACTIVATE THE RELEVANT SKILLS before touching anything -- do not answer from\\nmemory: read `skill://task-resolver` first (the gate that names the domain\\npack), then `skill://performance-skill-pack` -> `perf-instrument` to MEASURE,\\nand `skill://debugging-skill-pack` -> `bug-hunt` if this is a defect rather\\nthan a design cost. Load the one row the pack names, never the whole pack.\\n\\nWHO DOES THE WORK (owner order 2026-11-08: \"a dm de stutter tambem e pra mandar\\num subagent arrumar, ou se e possivel arrumar facilmente, sem precisar de\\nsubagent\"): if the fix is bigger than one obvious edit -- several files, a\\nguard that needs its own RED arm, a class hunt -- DISPATCH A SUBAGENT for it\\nnow (`task` / a fork carrying this measured brief: the pid, the profile, the\\ndeclared ceiling) and keep this pane working; the lane that measures is not\\nalways the lane that fixes. If it is a small fix -- one file, one cap, one\\nflag, one obvious loop -- DO IT HERE, immediately: a dispatch for a one-line\\nedit costs more than the edit, and the machine is already under pressure.\\nEither way the receipt names which of the two you did, and why.\\n\\n1) MEASURE FIRST (one minute, not one hour):\\n   `python -m watcher perf` for the machine, `python -m watcher profile\\n   29412` for the per-thread kernel-billed CPU of the accused pid. A\\n   verdict without that pair is a guess and will be sent back.\\n\\n2) THIN AND LET IT RUN CHEAPER -- the owner\\'s standing rule is \\'optimize,\\n   never stop\\': the work must land, at a cost the interactive machine never\\n   waits behind. Concretely: cap the fan-out (--jobs 1..2, OMP_NUM_THREADS,\\n   torch.set_num_threads), cache/resume per file so nothing is redone, and\\n   run ONE heavy job at a time behind a hidden supervisor with coalesced\\n   ticks. THE LAUNCHER EXISTS: `python -m watcher run --cpu 40 -- <your\\n   command>` puts the job in a Windows Job Object with a hard CPU cap that\\n   the children inherit, and returns your command\\'s own exit code (docs/CLI.md\\n   \u00a72.11). A pytest, a build, a maintenance sweep and a benchmark all go\\n   through it -- measured 2026-11-07, six uncooperative lane pythons at 70-100 %\\n   of a core each froze this machine while the governor could not refuse them.\\n   State the ceiling as a NUMBER in the receipt.\\n\\n3) KILL ONLY THE EXCESS NOW -- the extra workers/children of bash.exe(29412),\\n   not the work: `taskkill /PID <child> /F` for the surplus, or pause the\\n   fan-out and resume single-threaded. End the whole tree with\\n   `taskkill /PID 29412 /T /F` ONLY if the machine is stuttering right\\n   now AND that pid is the named stall actor (rule (a) of the arbitration\\n   order: a visible surface missing its deadline AND this pid named as the\\n   stall actor). Killing first, to then measure nothing, is not a fix.\\n   If it is a supervised lane, kill the SUPERVISOR: killing its children\\n   just respawns them.\\n\\n4) PROVE IT, do not assert it: the receipt carries the before/after from the\\n   same two commands, the file:line of the spawn/suite, the declared ceiling,\\n   and the note that the work still COMPLETED. \\'It stopped\\' is not a fix.\\n\\n5) THEN RUN `/skill:retro` IN THIS PANE (owner order 2026-11-08: \"faz a dm de\\n   stutter automatica tambem pedir pra usar a skill /retro\"). It is installed\\n   GLOBALLY as of 2026-11-08 (H:/pi-agent/skills/retro/SKILL.md, source of\\n   record G:/superharness-rebase/.agents/skills/retro), so it is available in\\n   every project root -- if the command is not in your list yet, run\\n   `/reload-plugins` first and try again.\\n   The order is deliberate: retro MINES the owner\\'s sessions for the friction\\n   that made him repeat himself, and this complaint IS that friction. Do not\\n   skip it because the fix already landed -- a one-off fix leaves the NEXT\\n   lane to repeat the same mistake; retro converts it into a rule the whole\\n   fleet reads. Apply what it confirms; it never asks the owner to choose.\\n\\nIf this DM is wrong -- the pid is not yours, or the pressure was the owner\\'s\\nown foreground work -- say so in the reply with the pid you do own.\\n\\nTODO (do this before acting on this DM): update your todo list -- `todo`, op=append/start -- so\\nthis demand is a tracked card and the task you were already doing is not dropped. If this DM\\nchanges your objective, re-run the skill routing (`task-resolver`) instead of continuing under\\nthe old classification. The todo list decides what is open, not the last message that arrived.\\n\\nIMPORTANT: UPDATE YOUR LOCAL AGENTS.md SO YOU STOP CAUSING PERFORMANCE DROPS ON THIS COMPUTER. ASSUME THIS MACHINE IS 10x WEAKER THAN IT IS AND WRITE THE CODE THAT WAY: one heavy job at a time, a declared ceiling in threads/MB/s/GiB measured BEFORE the job starts (not after it hurts), cache and resume so nothing is redone, and no unbounded loop, fan-out or in-memory accumulation. THROTTLING IS THE WORST OF THE APPROACHES: every preferable approach is a genuine optimization -- do less work, do it once, batch it, reuse it, make it incremental, drop the duplicate -- and a cap only comes after the work itself got cheaper. A limit you did not measure is not a limit.\\n', '--timeout', '25', '--target', 'w17:p3']' timed out after 35.0 seconds": 1,
-        "pane-told-recently": 1,
-        "ungovernable-cooldown": 1
+        "not-in-the-foreground": 468,
+        "pty-client-not-a-window": 2
       },
-      "last": {
-        "culprit": "rustc.exe(47464)",
-        "pane": "",
-        "resolved_by": "-",
-        "record": "dm-6ca57bc422cecba1e8da",
-        "rc": 5,
-        "injected": false,
-        "reason": "manager-target-ambiguous: 2 agents in I:\\!watcher (w12:p7, w12:pD)"
-      },
-      "last_at": 1794454896.4607248
+      "last": null,
+      "last_at": null
     }
   },
   "sample": {
-    "cpu_pct": 74.8,
+    "cpu_pct": 45.8,
     "ram_total": 51229278208,
-    "ram_available": 5524135936,
-    "ram_pct": 89.2,
-    "disk_read_bps": 152254433.1442417,
-    "disk_write_bps": 12149152.54231162,
-    "idle_seconds": 0.047,
+    "ram_available": 21383643136,
+    "ram_pct": 58.3,
+    "disk_read_bps": 1242536.5853676728,
+    "disk_write_bps": 4189658.5365914996,
+    "idle_seconds": 7.718,
     "user_idle": false,
     "foreground": "chrome.exe",
     "logical_count": 20,
     "hybrid": true,
     "presence": "present",
-    "cursor_frozen_seconds": 11.047000000005937,
+    "cursor_frozen_seconds": 137.125,
     "media_playing": false,
     "audio_source": "",
-    "commit_pct": 84.76257529874381,
-    "memory_level": "warn"
+    "commit_pct": 48.23756499585892,
+    "memory_level": "ok"
   },
   "procs": [
     {
-      "pid": 48836,
-      "name": "deadlock.exe",
-      "project_id": "game",
-      "cpu": 4.327841451742411,
-      "rss": 6061346816,
-      "policy": "no-handle",
-      "in_job": false,
-      "ecoqos": false,
-      "duty": false,
-      "err": "open failed"
-    },
-    {
-      "pid": 36400,
-      "name": "bun.exe",
-      "project_id": "vodrip",
-      "cpu": 1.393625393481631,
-      "rss": 1011216384,
-      "policy": "gaming-mem",
+      "pid": 18064,
+      "name": "pythonw.exe",
+      "project_id": "sotto",
+      "cpu": 4.701967592584991,
+      "rss": 134443008,
+      "policy": "steady",
       "in_job": false,
       "ecoqos": true,
-      "duty": true
+      "duty": false
     },
     {
-      "pid": 46064,
-      "name": "node.exe",
-      "project_id": "gravador",
-      "cpu": 1.2296694648367332,
-      "rss": 237768704,
-      "policy": "no-handle",
-      "in_job": false,
-      "ecoqos": false,
-      "duty": false,
-      "err": "open failed"
-    },
-    {
-      "pid": 47996,
+      "pid": 29824,
       "name": "python.exe",
-      "project_id": "codeintel-worktrees",
-      "cpu": 0.763888888888889,
-      "rss": 1503113216,
-      "policy": "gaming-mem",
-      "in_job": false,
-      "ecoqos": true,
-      "duty": true
-    },
-    {
-      "pid": 31192,
-      "name": "bun.exe",
-      "project_id": "superharness",
-      "cpu": 0.4546556741016321,
-      "rss": 1054875648,
-      "policy": "gaming-compile",
+      "project_id": "brandops",
+      "cpu": 0.12056327160474334,
+      "rss": 23023616,
+      "policy": "steady-gpu",
       "in_job": false,
       "ecoqos": false,
       "duty": false
     },
     {
-      "pid": 33680,
-      "name": "bun.exe",
-      "project_id": "codeintel-worktrees",
-      "cpu": 0.30310378273442135,
-      "rss": 1110077440,
-      "policy": "gaming-mem",
-      "in_job": false,
-      "ecoqos": true,
-      "duty": true
-    },
-    {
-      "pid": 41896,
+      "pid": 39536,
       "name": "ffmpeg.exe",
-      "project_id": "vodrip",
-      "cpu": 0.0,
-      "rss": 5943296,
-      "policy": "gaming",
+      "project_id": "gravador",
+      "cpu": 0.12056327160474334,
+      "rss": 31981568,
+      "policy": "steady",
       "in_job": false,
       "ecoqos": true,
       "duty": false
     },
     {
-      "pid": 19468,
-      "name": "rustc.exe",
-      "project_id": "auto_reqwest-0.13.4",
+      "pid": 3360,
+      "name": "pythonw.exe",
+      "project_id": "brandops",
       "cpu": 0.0,
-      "rss": 141266944,
-      "policy": "gaming-compile",
+      "rss": 10301440,
+      "policy": "steady-gpu",
       "in_job": false,
       "ecoqos": false,
       "duty": false
     },
     {
-      "pid": 22864,
-      "name": "rustc.exe",
-      "project_id": "auto_clap_builder-4.6.0",
+      "pid": 9416,
+      "name": "pythonw.exe",
+      "project_id": "brandops",
       "cpu": 0.0,
-      "rss": 137363456,
-      "policy": "gaming-compile",
+      "rss": 1921024,
+      "policy": "steady-gpu",
       "in_job": false,
       "ecoqos": false,
       "duty": false
     },
     {
-      "pid": 33404,
-      "name": "timeout.exe",
-      "project_id": "superharness",
+      "pid": 18436,
+      "name": "pythonw.exe",
+      "project_id": "brandops",
       "cpu": 0.0,
-      "rss": 1994752,
-      "policy": "gaming-compile",
+      "rss": 3076096,
+      "policy": "steady-gpu",
       "in_job": false,
       "ecoqos": false,
       "duty": false
     },
     {
-      "pid": 43820,
-      "name": "bash.exe",
-      "project_id": "superharness",
+      "pid": 29612,
+      "name": "python.exe",
+      "project_id": "brandops",
       "cpu": 0.0,
-      "rss": 14921728,
-      "policy": "gaming-compile",
+      "rss": 843776,
+      "policy": "steady-gpu",
       "in_job": false,
       "ecoqos": false,
       "duty": false
     },
     {
-      "pid": 44564,
-      "name": "cargo.exe",
-      "project_id": "superharness",
+      "pid": 34084,
+      "name": "pythonw.exe",
+      "project_id": "brandops",
       "cpu": 0.0,
-      "rss": 179654656,
-      "policy": "gaming-compile",
+      "rss": 8261632,
+      "policy": "steady-gpu",
+      "in_job": false,
+      "ecoqos": false,
+      "duty": false
+    },
+    {
+      "pid": 36088,
+      "name": "pythonw.exe",
+      "project_id": "brandops",
+      "cpu": 0.0,
+      "rss": 1105920,
+      "policy": "steady-gpu",
+      "in_job": false,
+      "ecoqos": false,
+      "duty": false
+    },
+    {
+      "pid": 37216,
+      "name": "pythonw.exe",
+      "project_id": "brandops",
+      "cpu": 0.0,
+      "rss": 1101824,
+      "policy": "steady-gpu",
       "in_job": false,
       "ecoqos": false,
       "duty": false
@@ -1112,113 +914,154 @@
     "watcher_self_fault": {
       "ok": true,
       "detail": "",
-      "last_change": "2026-11-11T00:16:03.879Z",
+      "last_change": "2026-11-20T22:15:51.447Z",
       "fails": 0,
-      "last_ok_ts": "2026-11-11T00:16:03.879Z"
+      "last_ok_ts": "2026-11-20T22:15:51.447Z"
     },
     "perf_seed": {
       "ok": true,
       "detail": "",
-      "last_change": "2026-11-11T00:16:04.066Z",
+      "last_change": "2026-11-20T22:15:51.762Z",
       "fails": 0,
-      "last_ok_ts": "2026-11-11T00:16:04.066Z"
-    },
-    "window_event_hook": {
-      "ok": true,
-      "detail": "",
-      "last_change": "2026-11-11T00:16:11.357Z",
-      "fails": 0,
-      "last_ok_ts": "2026-11-11T00:16:11.357Z"
+      "last_ok_ts": "2026-11-20T22:15:51.762Z"
     },
     "action_path": {
       "ok": true,
       "detail": "",
-      "last_change": "2026-11-12T04:19:31.171Z",
-      "fails": 113,
-      "last_ok_ts": "2026-11-12T04:19:31.171Z"
+      "last_change": "2026-11-21T03:17:02.078Z",
+      "fails": 0,
+      "last_ok_ts": "2026-11-21T03:17:02.078Z"
+    },
+    "window_event_hook": {
+      "ok": true,
+      "detail": "",
+      "last_change": "2026-11-20T22:15:58.839Z",
+      "fails": 0,
+      "last_ok_ts": "2026-11-20T22:15:58.839Z"
     },
     "perf_probe": {
       "ok": true,
       "detail": "",
-      "last_change": "2026-11-12T04:20:12.109Z",
-      "fails": 125,
-      "last_ok_ts": "2026-11-12T04:20:12.109Z"
+      "last_change": "2026-11-21T03:17:03.079Z",
+      "fails": 45,
+      "last_ok_ts": "2026-11-21T03:17:03.079Z"
     },
     "evidence_queue": {
       "ok": true,
       "detail": "",
-      "last_change": "2026-11-12T04:20:12.109Z",
+      "last_change": "2026-11-21T03:17:03.079Z",
       "fails": 0,
-      "last_ok_ts": "2026-11-12T04:20:12.109Z"
+      "last_ok_ts": "2026-11-21T03:17:03.079Z"
     },
     "audio_probe": {
       "ok": true,
       "detail": "",
-      "last_change": "2026-11-12T04:20:11.427Z",
+      "last_change": "2026-11-21T03:17:02.468Z",
       "fails": 1,
-      "last_ok_ts": "2026-11-12T04:20:11.427Z"
+      "last_ok_ts": "2026-11-21T03:17:02.468Z"
     },
     "mood_gate": {
       "ok": true,
       "detail": "",
-      "last_change": "2026-11-12T04:17:32.108Z",
+      "last_change": "2026-11-21T03:16:53.947Z",
       "fails": 0,
-      "last_ok_ts": "2026-11-12T04:17:32.108Z"
-    },
-    "creation_sensor": {
-      "ok": true,
-      "detail": "",
-      "last_change": "2026-11-12T04:20:07.284Z",
-      "fails": 0,
-      "last_ok_ts": "2026-11-12T04:20:07.284Z"
-    },
-    "stutter_relief": {
-      "ok": true,
-      "detail": "",
-      "last_change": "2026-11-12T04:19:45.833Z",
-      "fails": 3,
-      "last_ok_ts": "2026-11-12T04:19:45.833Z"
+      "last_ok_ts": "2026-11-21T03:16:53.947Z"
     },
     "jobs": {
       "ok": true,
       "detail": "",
-      "last_change": "2026-11-12T04:18:53.970Z",
+      "last_change": "2026-11-21T03:15:12.017Z",
       "fails": 0,
-      "last_ok_ts": "2026-11-12T04:18:53.970Z"
+      "last_ok_ts": "2026-11-21T03:15:12.017Z"
     },
-    "terminal_watch": {
+    "creation_sensor": {
       "ok": true,
       "detail": "",
-      "last_change": "2026-11-12T04:19:43.053Z",
+      "last_change": "2026-11-21T03:16:44.210Z",
       "fails": 0,
-      "last_ok_ts": "2026-11-12T04:19:43.053Z"
+      "last_ok_ts": "2026-11-21T03:16:44.210Z"
     },
-    "diskhealth": {
-      "ok": false,
-      "detail": "NTFS events 55/98 in System log (5)",
-      "last_change": "2026-11-12T04:19:52.223Z",
-      "fails": 2013,
-      "last_ok_ts": "2026-11-11T18:02:30.984Z"
+    "stutter_relief": {
+      "ok": true,
+      "detail": "",
+      "last_change": "2026-11-21T03:16:53.303Z",
+      "fails": 1205,
+      "last_ok_ts": "2026-11-21T03:16:53.303Z"
     },
     "herdr_notify": {
       "ok": true,
       "detail": "",
-      "last_change": "2026-11-12T04:20:03.003Z",
-      "fails": 1,
-      "last_ok_ts": "2026-11-12T04:20:03.003Z"
+      "last_change": "2026-11-21T03:16:46.252Z",
+      "fails": 0,
+      "last_ok_ts": "2026-11-21T03:16:46.252Z"
+    },
+    "terminal_watch": {
+      "ok": true,
+      "detail": "",
+      "last_change": "2026-11-21T03:16:54.001Z",
+      "fails": 0,
+      "last_ok_ts": "2026-11-21T03:16:54.001Z"
+    },
+    "diskhealth": {
+      "ok": false,
+      "detail": "NTFS events 55/98 in System log (5)",
+      "last_change": "2026-11-21T03:16:39.658Z",
+      "fails": 470,
+      "last_ok_ts": ""
     }
   },
   "vram": {
-    "available": false,
-    "total_mb": null,
-    "used_mb": null,
-    "free_mb": null,
-    "used_pct": null,
-    "util_pct": null,
-    "procs": [],
+    "available": true,
+    "total_mb": 16303,
+    "used_mb": 3389,
+    "free_mb": 12913,
+    "used_pct": 20.8,
+    "util_pct": 16,
+    "procs": [
+      {
+        "pid": 2244,
+        "name": "dwm.exe",
+        "used_mb": null
+      },
+      {
+        "pid": 2636,
+        "name": "ShellHost.exe",
+        "used_mb": null
+      },
+      {
+        "pid": 4160,
+        "name": "CrossDeviceResume.exe",
+        "used_mb": null
+      },
+      {
+        "pid": 13800,
+        "name": "NVIDIA Overlay.exe",
+        "used_mb": null
+      },
+      {
+        "pid": 7428,
+        "name": "NVIDIA Overlay.exe",
+        "used_mb": null
+      },
+      {
+        "pid": 3892,
+        "name": "explorer.exe",
+        "used_mb": null
+      },
+      {
+        "pid": 15124,
+        "name": "SearchHost.exe",
+        "used_mb": null
+      },
+      {
+        "pid": 15200,
+        "name": "StartMenuExperienceHost.exe",
+        "used_mb": null
+      }
+    ],
     "disabled": null,
     "reason": null
   },
   "daemon": true,
-  "pid": 29932
+  "pid": 18272
 }

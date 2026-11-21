@@ -22,6 +22,10 @@ _evidence/
 # and read them on the I: SMR platter (owner order 2026-11-21: reduce disk ops).
 .codeintel/
 
+# The watcher governor rewrites this inside the repo on every tick; versioning
+# it made a generated state file part of every status and commit walk.
+.steady-watcher.json
+
 # Separate projects kept locally, not part of the Kick Overlay repo
 cookie-extension/
 instagram-followguard/
