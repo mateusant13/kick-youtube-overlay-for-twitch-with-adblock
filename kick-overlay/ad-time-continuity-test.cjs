@@ -176,14 +176,20 @@ async function warmStandby(page, { pos, lat, buffered } = {}) {
 }
 
 // A full pod: ad-hold -> ad-start -> healthy Playing ticks -> reveal.
-async function pod(page, { pos = 100, lat = 3 } = {}) {
+async function pod(page, { pos = 100, lat = 3, lv, bw } = {}) {
+  // lv/bw travel with the samples that PRODUCE the reveal. An arm that sends
+  // them after the reveal exists reads the pre-reveal report, and the row it
+  // measures was written before the fields arrived (measured: lv null).
+  const extra = {};
+  if (lv != null) extra.lv = lv;
+  if (bw != null) extra.bw = bw;
   page.bypass({ type: 'ad-hold' });
   page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
   await settle(20);
   page.frameMsg({ t: 'ready' });
-  page.frameMsg(healthySt({ pos, lat }));
-  page.frameMsg(healthySt({ pos, lat }));
-  page.frameMsg(healthySt({ pos, lat }));
+  page.frameMsg(healthySt({ pos, lat, ...extra }));
+  page.frameMsg(healthySt({ pos, lat, ...extra }));
+  page.frameMsg(healthySt({ pos, lat, ...extra }));
   await settle(10);
 }
 
@@ -1899,6 +1905,84 @@ async function main() {
     });
   }
 
+
+  // ---- A: standby lifecycle rows and lv/bw cost fields -------------------
+  // The standby path must be answerable from the ring: request/url/frame/firstst/play
+  // are transition-only rows, and playing-not-healthy/overlay-reveal carry lv/bw.
+  {
+    const page = makeWorld();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    page.bypass({ type: 'standby-start', url: 'https://clean.example/live.m3u8', channel: 'rodil', src: 'worker' });
+    await settle(30);
+    if (page.frame && typeof page.frame.fire === 'function') page.frame.fire({ type: 'load' });
+    page.frameMsg({ t: 'ready' });
+    page.frameMsg(healthySt({ pos: 100, lat: 3, buffered: 5, lv: 2, bw: 900000 }));
+    page.frameMsg(healthySt({ pos: 101, lat: 3, buffered: 5, lv: 2, bw: 900000 }));
+    await settle(30);
+    check('A: standby lifecycle rows appear as transition-only events', () => {
+      assert(page.logsOf('standby-url').length === 1, 'missing standby-url');
+      assert(page.logsOf('standby-frame').length === 1, 'missing standby-frame');
+      assert(page.logsOf('standby-firstst').length === 1, 'missing standby-firstst');
+      assert(page.logsOf('standby-play').length === 1, 'missing standby-play');
+    });
+  }
+  {
+    const page = makeWorld();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    // The reveal is produced from these samples, so they carry the cost fields:
+    // the row must publish the quality the picture was actually shown at.
+    await pod(page, { pos: 100, lat: 3, lv: 1, bw: 800000 });
+    const rev = page.logsOf('overlay-reveal').pop();
+    check('A: overlay-reveal carries lv and bw from frame st payload', () => {
+      assert(rev, 'no overlay-reveal row');
+      assert(rev.d.lv === 1, `lv ${JSON.stringify(rev.d.lv)}`);
+      assert(rev.d.bw === 800000, `bw ${JSON.stringify(rev.d.bw)}`);
+    });
+  }
+  {
+    const page = makeWorld();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    await pod(page, { pos: 100, lat: 3 });
+    // playing-not-healthy arm: unhealthy Playing report
+    page.frameMsg({ t: 'st', st: { state: 'Playing', paused: false, muted: true, rs: 4, buffered: 0.5, pos: 102, lat: 12, dur: 0, q: { name: '360p' }, lv: 0, bw: 400000 } });
+    await settle(30);
+    const pnh = page.logsOf('playing-not-healthy').pop();
+    check('A: playing-not-healthy carries lv and bw from frame st payload', () => {
+      assert(pnh, 'no playing-not-healthy row');
+      assert(pnh.d.lv === 0, `lv ${JSON.stringify(pnh.d.lv)}`);
+      assert(pnh.d.bw === 400000, `bw ${JSON.stringify(pnh.d.bw)}`);
+    });
+  }
+  {
+    // RED: pre-fix standby-request had no why/delay shape; our fix logs it.
+    const page = makeWorld();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    page.stats().requestStandby(0, false, 'test-why');
+    await settle(20);
+    const req = page.logsOf('standby-request').pop();
+    check('A: standby-request carries why and delay', () => {
+      assert(req, 'no standby-request row');
+      assert(req.d.why === 'test-why', `why ${JSON.stringify(req.d.why)}`);
+      assert(req.d.delay === 0, `delay ${JSON.stringify(req.d.delay)}`);
+    });
+  }
+  {
+    // RED: pre-fix playing-not-healthy had no lv/bw fields
+    const old = mutate([[
+      "              adLog('playing-not-healthy', { rs: m.st.rs, buffered: m.st.buffered, pos: m.st.pos, why: posFrozen ? 'pos-frozen' : null, lv: m.st.lv == null ? null : m.st.lv, bw: m.st.bw == null ? null : m.st.bw });",
+      "              adLog('playing-not-healthy', { rs: m.st.rs, buffered: m.st.buffered, pos: m.st.pos, why: posFrozen ? 'pos-frozen' : null });",
+    ]]);
+    const page = makeWorld({ adSource: old });
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    await pod(page, { pos: 100, lat: 3 });
+    page.frameMsg({ t: 'st', st: { state: 'Playing', paused: false, muted: true, rs: 4, buffered: 0.5, pos: 102, lat: 12, dur: 0, q: { name: '360p' }, lv: 0, bw: 400000 } });
+    await settle(30);
+    const pnh = page.logsOf('playing-not-healthy').pop();
+    check('A RED: pre-fix playing-not-healthy omits lv/bw', () => {
+      assert(pnh, 'no playing-not-healthy row');
+      assert(!('lv' in pnh.d) && !('bw' in pnh.d), `unexpected lv/bw ${JSON.stringify(pnh.d)}`);
+    });
+  }
   const failed = checks.filter((c) => c.status === 'FAIL');
   console.log('');
   console.log(`RESULT ${failed.length ? 'FAIL' : 'PASS'} ad-time-continuity checks=${checks.length} failed=${failed.length}`);

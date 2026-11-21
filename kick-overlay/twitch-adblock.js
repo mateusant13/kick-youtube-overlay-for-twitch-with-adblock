@@ -268,6 +268,7 @@
     nativeLat: 0, // native latency (edge - currentTime) captured at take-over
     holdAt: 0, // wall clock at take-over: the timeline the live edge advanced on
     holdCt: 0, // native currentTime at take-over
+    playlistPodAt: 0, // wall clock when the playlist hook opened this pod
     // The native RESTARTED its timeline during the pod. Measured in the guest
     // Chrome 2026-11-15 on a live element (twitch.tv/rodil, player=twitch): a
     // paused live <video> is EMPTIED by Twitch after ~20 s and reloads from 0,
@@ -345,6 +346,7 @@
   // or when the tab becomes visible again. It never starts anything directly.
   let standbyRequestTimer = 0;
   let lastStandbyRequestAt = 0;
+  const standbyLife = { requestAt: 0, urlAt: 0, frameAt: 0, frameLogged: false, firstStLogged: false, playLogged: false };
   function pageChannel() {
     try {
       return (location.pathname.split('/').filter(Boolean)[0] || '').toLowerCase();
@@ -361,7 +363,7 @@
       return false;
     }
   }
-  function requestStandby(delay = 1200, force = false) {
+  function requestStandby(delay = 1200, force = false, why = 'unspecified') {
     // A standby that keeps failing (offline channel, bad token) must not turn
     // into a mint/error loop. Normal requests still re-post immediately and
     // do not arm the cooldown, so recovery after an ad is not delayed.
@@ -374,6 +376,13 @@
     standbyRequestTimer = setTimeout(() => {
       standbyRequestTimer = 0;
       if (overlay.frame || overlay.held || overlay.adActive) return;
+      standbyLife.requestAt = Date.now();
+      standbyLife.urlAt = 0;
+      standbyLife.frameAt = 0;
+      standbyLife.frameLogged = false;
+      standbyLife.firstStLogged = false;
+      standbyLife.playLogged = false;
+      adLog('standby-request', { why: String(why || 'unspecified'), delay: Number(delay) || 0 });
       try {
         bypassChannel?.postMessage({
           type: 'standby-request',
@@ -388,7 +397,7 @@
   }
 
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') requestStandby(0);
+    if (document.visibilityState === 'visible') requestStandby(0, false, 'visible');
   });
 
   // ---- THE LOG CARRIES THE ANSWER, NOT A HINT ----------------------------
@@ -1353,7 +1362,7 @@
         ageMs: overlay.startedAt ? Date.now() - overlay.startedAt : null,
       });
       stopAdOverlay('stale-standby');
-      requestStandby(0, true);
+      requestStandby(0, true, 'stale-standby');
     }
     if (!adUiHeldAt) return adUiTickSkip('no-hold');
     // ONLY A POD THAT OWNS THE PICTURE REFUSES. `overlay.adActive` is the pod's
@@ -1450,7 +1459,7 @@
     // segundos até finalmente ser defendido" report (owner 2026-11-15). The ad
     // wrapper appearing is proof enough to start warming a clean source now,
     // so the cover is the freeze plus one HLS segment instead of a full refresh.
-    requestStandby(0, true);
+    requestStandby(0, true, 'ad-ui-hold');
     adLogState('ad-ui-hold', { act: 'paused', ct: +Number(v.currentTime || 0).toFixed(1), rs: v.readyState });
   }
   // Any play the extension did not issue means the user took the player back:
@@ -1463,17 +1472,33 @@
     }, true);
   } catch { /* ignore */ }
 
-  function adUiRelease() {
+  function adUiRelease(fromUiOff) {
     // THE REASON IS CLEARED ON EVERY EPISODE END, HELD OR NOT. It used to sit
     // after `if (!adUiHeldAt) return;`, so the first pod that was refused
     // poisoned the per-episode dedupe for the rest of the page load: the ring
     // got its one row, and every later pod on the same reason was silent.
     adUiTickWhy = '';
-    if (!adUiHeldAt) return;
-    const heldMs = Date.now() - adUiHeldAt;
-    adUiHeldAt = 0;
+    const wasHeld = !!adUiHeldAt;
+    const heldMs = wasHeld ? Date.now() - adUiHeldAt : 0;
     const reasserts = adUiReasserts;
-    adUiReasserts = 0;
+    if (wasHeld) {
+      adUiHeldAt = 0;
+      adUiReasserts = 0;
+    }
+    // The DOM proved the ad ended: a playlist-opened pod must not outlive it.
+    // finishAdOverlay() owns the chrome-linger grace and stopAdOverlay() the
+    // single audio-claim release, so this only chooses the door.
+    if (fromUiOff && overlay.playlistPodAt && (overlay.adActive || overlay.revealed)) {
+      adLog('ad-ui-release', {
+        act: 'pod-end',
+        heldMs,
+        podAgeMs: Date.now() - overlay.playlistPodAt,
+        revealed: !!overlay.revealed,
+      });
+      finishAdOverlay();
+      return;
+    }
+    if (!wasHeld) return;
     // ONLY A CLAIMED / PAINTED POD OWNS THE RESUME. Two resumers on one element
     // was the pause/resume churn the 2026-11-09 wave removed, but a warm
     // standby does not resume anything (a standby shutdown never touches the
@@ -1496,6 +1521,8 @@
   // halves are driven directly - the decision (`adHoldWorthy`) and the effect.
   stats.adUiHold = adUiHold;
   stats.adUiRelease = adUiRelease;
+  // Test/diagnostic seam: drive standby lifecycle rows without a worker round trip.
+  stats.requestStandby = requestStandby;
   stats.adUiHoldTick = adUiHoldTick;
   stats.adHoldWorthy = adHoldWorthy;
   stats.adUiHeldAt = () => adUiHeldAt;
@@ -1507,7 +1534,7 @@
   function finishAdOverlay() {
     if (!overlay.frame) {
       stopAdOverlay('ad-end');
-      requestStandby();
+      requestStandby(1200, false, 'ad-end');
       return;
     }
     // The worker waits for clean playlists, but Twitch's ad chrome can linger
@@ -1518,7 +1545,7 @@
       return;
     }
     stopAdOverlay('ad-end');
-    requestStandby();
+    requestStandby(1200, false, 'ad-end');
   }
 
   // The mute decision is NOT captured here any more: the authority already
@@ -2057,7 +2084,7 @@
         reveals: overlay.reveals || 0,
       });
       stopAdOverlay('clean-stall');
-      if (wasStandby) requestStandby(600, true);
+      if (wasStandby) requestStandby(600, true, 'clean-stall');
     }, ms);
   }
 
@@ -2124,6 +2151,7 @@
       overlay.nativeHidden = false;
       overlay.standby = false;
       overlay.adActive = false;
+      overlay.playlistPodAt = 0;
       // A HOLD THAT NEVER GOT A FRAME STILL PAUSED THE PLAYER. Since the hold no
       // longer waits for the frame, this exit is now reachable WITH the native
       // paused by it — and leaving it paused is the owner's "a live pausou e
@@ -2272,6 +2300,7 @@
     overlay.nativeHidden = false;
     overlay.standby = false;
     overlay.adActive = false;
+    overlay.playlistPodAt = 0;
     // Tell the worker the overlay is gone so a timeout/player-error can retry
     // on a later ad playlist instead of leaving adBypassActive stuck true.
     // Standby shutdowns are invisible to the ad state machine.
@@ -2284,7 +2313,7 @@
         /* overlay is optional */
       }
     }
-    if (wasStandby && String(reason || '') === 'standby-timeout') requestStandby(800);
+    if (wasStandby && String(reason || '') === 'standby-timeout') requestStandby(800, false, 'standby-timeout');
   }
 
   function revealOverlay(reason) {
@@ -2435,6 +2464,8 @@
         latSrc: (stR && stR.latSrc) || null,
         hold: stR && Number.isFinite(Number(stR.buffered)) ? +Number(stR.buffered).toFixed(2) : null,
         q: (stR && stR.q && stR.q.name) || null,
+        lv: stR && stR.lv != null ? stR.lv : null,
+        bw: stR && stR.bw != null ? stR.bw : null,
         target: cleanLatTarget(),
         edgeBehind: natEdge > 0 && natR ? +(natEdge - Number(natR.currentTime || 0)).toFixed(1) : null,
         advanced:
@@ -2710,6 +2741,12 @@
       bypassStats.frameLoads = (bypassStats.frameLoads || 0) + 1;
       overlay.frameReady = true;
       flushOverlayQueue();
+      if (standby && !standbyLife.frameLogged) {
+        standbyLife.frameLogged = true;
+        standbyLife.frameAt = Date.now();
+        const ms = standbyLife.urlAt ? standbyLife.frameAt - standbyLife.urlAt : (standbyLife.requestAt ? standbyLife.frameAt - standbyLife.requestAt : null);
+        adLog('standby-frame', { ms });
+      }
     });
     frame.addEventListener('error', () => {
       bypassStats.frameErrors = (bypassStats.frameErrors || 0) + 1;
@@ -2754,6 +2791,7 @@
     // surface; it becomes an ad only when ad-hold/ad-start sets adActive.
     overlay.standby = !!standby;
     overlay.adActive = !standby;
+    if (!standby) overlay.playlistPodAt = overlay.playlistPodAt || Date.now();
     if (!switchSource) overlay.switchTries = 0;
     if (overlay.hideTimer) {
       try { clearTimeout(overlay.hideTimer); } catch { /* ignore */ }
@@ -2856,6 +2894,10 @@
         overlaySend({ t: 'play' });
         return;
       }
+      if (m.t === 'ev' && m.e === 'standby-level') {
+        adLog('standby-level', m.d || {});
+        return;
+      }
       if (m.t === 'ev' && m.e === 'hls') {
         bypassStats.lastHls = { d: m.d, fatal: m.fatal, url: m.url, at: Date.now() };
         if (m.fatal) bypassStats.errors++;
@@ -2888,7 +2930,7 @@
           // A standby whose token went ad-only is useless. Tear it down and
           // probe a fresh clean master; the ad path remains normal meanwhile.
           stopAdOverlay('standby-ad-only');
-          requestStandby(600, true);
+          requestStandby(600, true, 'standby-ad-only');
           return;
         }
         if (overlay.badge) overlay.badge.textContent = 'sem anúncio · trocando fonte limpa…';
@@ -2907,7 +2949,7 @@
         bypassStats.errors++;
         if (overlay.standby) {
           stopAdOverlay('standby-player-error');
-          requestStandby(2000, true);
+          requestStandby(2000, true, 'standby-player-error');
           return;
         }
         stopAdOverlay('player-error');
@@ -2951,7 +2993,8 @@
         // never revealed. Reset on a new frame's first report: `startAdOverlay`
         // nulls `lastSt`, and a counter carried across frames would make every
         // replacement look stale on its first sample.
-        if (!overlay.lastSt) overlay.standbyPausedReports = 0;
+        const firstStForFrame = !overlay.lastSt;
+        if (firstStForFrame) overlay.standbyPausedReports = 0;
         overlay.standbyPausedReports = m.st.paused ? (overlay.standbyPausedReports || 0) + 1 : 0;
         // Keep the PREVIOUS report beside the current one: the frozen-position
         // test below compares two samples, and `lastSt` is overwritten here.
@@ -2959,6 +3002,16 @@
         overlay.prevStAt = overlay.lastStAt;
         overlay.lastSt = m.st;
         overlay.lastStAt = nowSt;
+        if (overlay.standby && firstStForFrame && !standbyLife.firstStLogged) {
+          standbyLife.firstStLogged = true;
+          const base = standbyLife.frameAt || standbyLife.urlAt || standbyLife.requestAt || 0;
+          adLog('standby-firstst', {
+            ms: base ? Date.now() - base : null,
+            rs: m.st.rs == null ? null : m.st.rs,
+            pos: typeof m.st.pos === 'number' ? +Number(m.st.pos).toFixed(2) : null,
+            lat: typeof m.st.lat === 'number' ? +Number(m.st.lat).toFixed(2) : null,
+          });
+        }
         // The frame reports what its OWN element is doing. If it disagrees with
         // the state we commanded, the element was replaced or muted underneath
         // (a fresh media element starts muted, and a diffed command is never
@@ -3138,7 +3191,7 @@
                 lat: typeof m.st.lat === 'number' ? +Number(m.st.lat).toFixed(1) : null,
                 why: posFrozen ? 'pos-frozen' : null,
               }]).slice(-8);
-              adLog('playing-not-healthy', { rs: m.st.rs, buffered: m.st.buffered, pos: m.st.pos, why: posFrozen ? 'pos-frozen' : null });
+              adLog('playing-not-healthy', { rs: m.st.rs, buffered: m.st.buffered, pos: m.st.pos, why: posFrozen ? 'pos-frozen' : null, lv: m.st.lv == null ? null : m.st.lv, bw: m.st.bw == null ? null : m.st.bw });
             }
             if (!overlay.standby || m.st.pos > 2) scheduleOverlayStall('rs' + m.st.rs);
             return;
@@ -3160,7 +3213,14 @@
           overlay.watchdogTimer = 0;
           if (overlay.standby && !overlay.adActive) {
             // Warm and hidden. Do not cover the native video or show a badge.
-            if (!wasPlaying) bypassStats.standbyReady++;
+            if (!wasPlaying) {
+              bypassStats.standbyReady++;
+              if (!standbyLife.playLogged) {
+                standbyLife.playLogged = true;
+                const base = standbyLife.firstStLogged ? (standbyLife.frameAt || standbyLife.urlAt || standbyLife.requestAt || 0) : (standbyLife.requestAt || 0);
+                adLog('standby-play', { ms: base ? Date.now() - base : null });
+              }
+            }
             return;
           }
           // The clean player is actually running: now it is safe to cover the
@@ -3385,6 +3445,7 @@
         overlay.holdAt = Date.now();
         overlay.holdCt = Number(v.currentTime || 0);
         overlay.timelineReset = false;
+        overlay.playlistPodAt = overlay.playlistPodAt || overlay.holdAt;
         // A cold preroll is the ONLY case where a paused native is ours to
         // start: it has never played at all, so it sits at the very beginning.
         // A user-parked player is at some real position — never < 1s — and must
@@ -3472,6 +3533,7 @@
       }
       if (msg.type === 'ad-start') {
         if (!AD_OVERLAY_ENABLED) return;
+        overlay.playlistPodAt = overlay.playlistPodAt || Date.now();
         if (overlay.frame && overlay.standby) {
           overlay.adActive = true;
           // ad-start can arrive without ad-hold; the mute decision still
@@ -3538,6 +3600,11 @@
         }
         if (overlay.held || overlay.adActive) return;
         if (document.visibilityState !== 'visible') return;
+        if (!standbyLife.urlAt) {
+          standbyLife.urlAt = Date.now();
+          const ms = standbyLife.requestAt ? standbyLife.urlAt - standbyLife.requestAt : null;
+          adLog('standby-url', { ms, src: String(msg.src || 'worker') });
+        }
         // Do not require the native <video> here: on a fast prewarm the clean
         // URL can be ready before Twitch creates its player. positionOverlay()
         // attaches the hidden frame once the native surface exists.
@@ -3558,10 +3625,10 @@
   // it still lands after navigation; these retries cover the window where the
   // worker hook is still installing.
   if (isChannelPath()) {
-    setTimeout(() => requestStandby(0), 200);
-    setTimeout(() => requestStandby(0), 1000);
-    setTimeout(() => requestStandby(0), 2500);
-    setTimeout(() => requestStandby(0), 5000);
+    setTimeout(() => requestStandby(0, false, 'cold-start'), 200);
+    setTimeout(() => requestStandby(0, false, 'cold-start'), 1000);
+    setTimeout(() => requestStandby(0, false, 'cold-start'), 2500);
+    setTimeout(() => requestStandby(0, false, 'cold-start'), 5000);
   }
 
   // SPA channel switch (owner report 2026-10-27: "it keeps the last stream").
@@ -3739,8 +3806,15 @@
         // chance to take it the moment the tab comes back inside the episode.
         adUiHiddenLogged = false;
         adUiOwnerLogged = false;
-        if (ad) adUiHold(adDetail);
-        else adUiRelease();
+        if (ad) {
+          // A flap inside the ad-ui-off linger must keep the pod alive.
+          try { clearTimeout(overlay.adEndTimer); } catch { /* ignore */ }
+          overlay.adEndTimer = 0;
+          overlay.adEndTries = 0;
+          adUiHold(adDetail);
+        } else {
+          adUiRelease(true);
+        }
         if (!ad) rec.adSince = 0;
       } else if (ad) {
         // The episode is still running and the hold has not taken yet: this is

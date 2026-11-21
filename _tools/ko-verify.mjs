@@ -156,11 +156,16 @@ const COLD_CONTRACT = [
   'prewarm.fast',
   'lastStandbyRequestAt',
   'graceMs',
-  'requestStandby(0), 200',
-  'requestStandby(0), 1000',
-  'requestStandby(0), 2500',
-  'requestStandby(0), 5000',
-  'startLevel: 0',
+  // 0.8.111: each retry names its author, so the ring says WHO asked again.
+  "requestStandby(0, false, 'cold-start'), 200",
+  "requestStandby(0, false, 'cold-start'), 1000",
+  "requestStandby(0, false, 'cold-start'), 2500",
+  "requestStandby(0, false, 'cold-start'), 5000",
+  // The old marker here was `startLevel: 0`, which pinned the lowest rendition:
+  // a cold swap showed 360p while the ad ran at 1080p (owner report 2026-11-20).
+  // The contract is now ABR un-pinned FIRST and the chosen level published.
+  'startLevel: -1',
+  'standby-level',
 ];
 const COLD_TEXT = [read('kick-overlay/twitch-adblock.js'), read('kick-overlay/player-bridge.js')].join('\n');
 function coldContract(text) {

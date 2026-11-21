@@ -49,7 +49,17 @@ const SNAP = `(() => {
     vids, main };
 })()`;
 
-const cdp = await connect(port);
+// A closed port is a VERDICT, not a crash: the check that runs this probe asks
+// for "no Twitch/YouTube tab" and the previous `await connect(port)` at top level
+// threw (rc 1) on a stopped guest, which read as a broken instrument instead of
+// as nothing to measure.
+let cdp;
+try {
+  cdp = await connect(port);
+} catch (error) {
+  console.log(`no Twitch/YouTube tab measurable: ${String(error.message || error)}`);
+  process.exit(2);
+}
 const { targetInfos } = await cdp.send('Target.getTargets');
 
 const wanted = [];

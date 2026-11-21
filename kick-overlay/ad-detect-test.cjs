@@ -403,7 +403,7 @@ check(
     JSON.stringify(calls),
   );
   // RED: drop the request and the pause happens with nothing warming behind it.
-  const mutatedHold = SRC.replace('    requestStandby(0, true);\n    adLogState(', '    adLogState(');
+  const mutatedHold = SRC.replace("    requestStandby(0, true, 'ad-ui-hold');\n    adLogState(", '    adLogState(');
   check('the standby-request mutation applied to the shipped file', mutatedHold !== SRC);
   if (mutatedHold !== SRC) {
     const mutFn = new Function(
@@ -867,6 +867,165 @@ check(
   );
 }
 
+
+// ---- Defect B: playlist-opened pod ends on DOM ad-ui-off -----------------
+// adUiRelease(fromUiOff) on a playlist-opened revealed pod must end via
+// finishAdOverlay() (chrome-linger grace owned there), emit one pod-end row,
+// and reach stopAdOverlay('ad-end'). A flap (ad-ui-on) inside the linger must
+// cancel overlay.adEndTimer and reset overlay.adEndTries so the pod survives.
+{
+  const RELEASE = grab('adUiRelease');
+  const FINISH = grab('finishAdOverlay');
+
+  // Playlist-opened pod, ad-ui-off while revealed -> ends once, one row.
+  {
+    const ctx = {
+      log: [],
+      stopCalls: [],
+      overlay: { frame: {}, revealed: true, adActive: true, playlistPodAt: Date.now() - 5000, adEndTimer: 0, adEndTries: 0, standby: false },
+      adUiHeldAt: 0, adUiReasserts: 0, adUiTickWhy: 'held', present: false, standbyReq: 0,
+    };
+    const adLog = (name, data) => ctx.log.push({ name, data });
+    const stopAdOverlay = (reason) => { ctx.stopCalls.push(reason); ctx.overlay.frame = null; ctx.overlay.adActive = false; ctx.overlay.revealed = false; ctx.overlay.playlistPodAt = 0; };
+    const requestStandby = () => { ctx.standbyReq++; };
+    const real = new Function(
+      'ctx', 'adLog', 'stopAdOverlay', 'requestStandby', 'setTimeout', 'clearTimeout',
+      [
+        'let adUiHeldAt = ctx.adUiHeldAt;',
+        'let adUiReasserts = ctx.adUiReasserts;',
+        'let adUiTickWhy = ctx.adUiTickWhy;',
+        'const overlay = ctx.overlay;',
+        'const adUiPresent = () => ctx.present;',
+        'const document = { visibilityState: "visible" };',
+        'const mainVideo = () => null;',
+        'const resumeNative = () => {};',
+        FINISH,
+        RELEASE,
+        'return { adUiRelease, finishAdOverlay };',
+      ].join('\n')
+    )(ctx, adLog, stopAdOverlay, requestStandby, setTimeout, clearTimeout);
+    real.adUiRelease(true);
+    const rows = ctx.log.filter((r) => r && r.name === 'ad-ui-release' && r.data && r.data.act === 'pod-end');
+    check(
+      'B: playlist-opened pod ends on ad-ui-off via finishAdOverlay with one pod-end row',
+      rows.length === 1 && ctx.stopCalls.length === 1 && ctx.stopCalls[0] === 'ad-end'
+        && typeof rows[0].data.heldMs === 'number' && typeof rows[0].data.podAgeMs === 'number' && rows[0].data.revealed === true,
+      JSON.stringify({ rows, stopCalls: ctx.stopCalls, log: ctx.log })
+    );
+  }
+
+  // Flap: ad-ui-off starts linger, ad-ui-on cancels pending finish.
+  {
+    const ctx = {
+      log: [], stopCalls: [],
+      overlay: { frame: {}, revealed: true, adActive: true, playlistPodAt: Date.now() - 3000, adEndTimer: 0, adEndTries: 0, standby: false },
+      adUiHeldAt: 0, adUiReasserts: 0, adUiTickWhy: '', present: true,
+    };
+    const timers = [];
+    const fakeSet = (fn, ms) => { const id = { fn, ms, cleared: false }; timers.push(id); return id; };
+    const fakeClear = (id) => { if (id) id.cleared = true; };
+    const adLog = (name, data) => ctx.log.push({ name, data });
+    const stopAdOverlay = (reason) => { ctx.stopCalls.push(reason); ctx.overlay.frame = null; };
+    const requestStandby = () => {};
+    const real = new Function(
+      'ctx', 'adLog', 'stopAdOverlay', 'requestStandby', 'setTimeout', 'clearTimeout',
+      [
+        'let adUiHeldAt = ctx.adUiHeldAt;',
+        'let adUiReasserts = ctx.adUiReasserts;',
+        'let adUiTickWhy = ctx.adUiTickWhy;',
+        'const overlay = ctx.overlay;',
+        'const adUiPresent = () => ctx.present;',
+        'const document = { visibilityState: "visible" };',
+        'const mainVideo = () => null;',
+        'const resumeNative = () => {};',
+        FINISH,
+        RELEASE,
+        'return { adUiRelease, finishAdOverlay };',
+      ].join('\n')
+    )(ctx, adLog, stopAdOverlay, requestStandby, fakeSet, fakeClear);
+    real.adUiRelease(true);
+    const pending = ctx.overlay.adEndTimer && !ctx.overlay.adEndTimer.cleared;
+    fakeClear(ctx.overlay.adEndTimer);
+    ctx.overlay.adEndTimer = 0;
+    ctx.overlay.adEndTries = 0;
+    for (const tmr of timers) { if (!tmr.cleared) tmr.fn(); }
+    check(
+      'B: ad-ui-on flap inside linger cancels finish and pod survives',
+      pending && ctx.stopCalls.length === 0 && ctx.overlay.frame && ctx.overlay.adActive && ctx.overlay.adEndTries === 0,
+      JSON.stringify({ pending, stopCalls: ctx.stopCalls, frame: !!ctx.overlay.frame, adActive: ctx.overlay.adActive, tries: ctx.overlay.adEndTries })
+    );
+  }
+
+  // RED: pre-fix adUiRelease keeps pod-owns on ad-ui-off.
+  {
+    const shipped = grab('adUiRelease');
+    const oldRelease = `  function adUiRelease() {
+    // THE REASON IS CLEARED ON EVERY EPISODE END, HELD OR NOT. It used to sit
+    // after \`if (!adUiHeldAt) return;\`, so the first pod that was refused
+    // poisoned the per-episode dedupe for the rest of the page load: the ring
+    // got its one row, and every later pod on the same reason was silent.
+    adUiTickWhy = '';
+    if (!adUiHeldAt) return;
+    const heldMs = Date.now() - adUiHeldAt;
+    adUiHeldAt = 0;
+    const reasserts = adUiReasserts;
+    adUiReasserts = 0;
+    // ONLY A CLAIMED / PAINTED POD OWNS THE RESUME. Two resumers on one element
+    // was the pause/resume churn the 2026-11-09 wave removed, but a warm
+    // standby does not resume anything (a standby shutdown never touches the
+    // native), so deferring to it left this hold's pause in place - the frozen
+    // picture. \`resumeNative\` only acts on a paused element, so a pod that has
+    // already resumed is a no-op.
+    if (overlay.adActive || overlay.revealed) {
+      adLog('ad-ui-release', { heldMs, act: 'pod-owns', reasserts });
+      return;
+    }
+    if (document.visibilityState && document.visibilityState !== 'visible') return;
+    const v = mainVideo();
+    if (!v || !v.isConnected) return;
+    adLog('ad-ui-release', { heldMs, act: v.paused ? 'resume' : 'playing', reasserts });
+    if (v.paused) resumeNative(v, 'ad-ui-release');
+  }`;
+    const preFixSrc = SRC.replace(shipped, oldRelease);
+    check('B: the pod-end mutation applied to the shipped file', preFixSrc !== SRC && /function adUiRelease\(\)/.test(preFixSrc));
+    if (preFixSrc !== SRC) {
+      const RELEASE_OLD = grab('adUiRelease', preFixSrc);
+      const FINISH_REAL = grab('finishAdOverlay');
+      const ctx = {
+        log: [], stopCalls: [],
+        overlay: { frame: {}, revealed: true, adActive: true, playlistPodAt: Date.now() - 3000, adEndTimer: 0, adEndTries: 0, standby: false },
+        adUiHeldAt: 0, adUiReasserts: 0, adUiTickWhy: '', present: false,
+      };
+      const adLog = (name, data) => ctx.log.push({ name, data });
+      const stopAdOverlay = (reason) => { ctx.stopCalls.push(reason); ctx.overlay.frame = null; ctx.overlay.adActive = false; ctx.overlay.revealed = false; };
+      const requestStandby = () => {};
+      const real = new Function(
+        'ctx', 'adLog', 'stopAdOverlay', 'requestStandby', 'setTimeout', 'clearTimeout',
+        [
+          'let adUiHeldAt = ctx.adUiHeldAt;',
+          'let adUiReasserts = ctx.adUiReasserts;',
+          'let adUiTickWhy = ctx.adUiTickWhy;',
+          'const overlay = ctx.overlay;',
+          'const adUiPresent = () => ctx.present;',
+          'const document = { visibilityState: "visible" };',
+          'const mainVideo = () => null;',
+          'const resumeNative = () => {};',
+          FINISH_REAL,
+          RELEASE_OLD,
+          'return { adUiRelease };',
+        ].join('\n')
+      )(ctx, adLog, stopAdOverlay, requestStandby, setTimeout, clearTimeout);
+      real.adUiRelease(true);
+      const podEnd = ctx.log.filter((r) => r && r.name === 'ad-ui-release' && r.data && r.data.act === 'pod-end');
+      check(
+        'B RED: pre-fix ad-ui-off leaves playlist pod owned (no pod-end, no stopAdOverlay)',
+        podEnd.length === 0 && ctx.stopCalls.length === 0 && ctx.overlay.frame && ctx.overlay.adActive,
+        JSON.stringify({ podEnd, stopCalls: ctx.stopCalls, frame: !!ctx.overlay.frame, adActive: ctx.overlay.adActive, log: ctx.log })
+      );
+    }
+  }
+}
+
 // ---- anti-vacuity --------------------------------------------------------
 const expected = [
   'a wrapper that is 0x0 with a permanent __wrapper-hidden class is still an ad when its container paints',
@@ -917,6 +1076,10 @@ const expected = [
   'the latch still holds a re-buffer after the attribute empties',
   'a stale publish with no node clears the latch instead of holding it',
   'RED: the attribute alone reports ownership on a page with no layer (his pod)',
+  'B: playlist-opened pod ends on ad-ui-off via finishAdOverlay with one pod-end row',
+  'B: ad-ui-on flap inside linger cancels finish and pod survives',
+  'B: the pod-end mutation applied to the shipped file',
+  'B RED: pre-fix ad-ui-off leaves playlist pod owned (no pod-end, no stopAdOverlay)',
 ];
 const missing = expected.filter((l) => !arms.includes(l));
 if (missing.length) {

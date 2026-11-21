@@ -289,10 +289,9 @@ if (HLS_MODE) {
         // normal segment refresh (measured: 0.04-0.888s buffered on jynxzi).
         // Full-segment live sync gives the hidden/visible clean player runway.
         lowLatencyMode: false,
-        // Start on the lowest rendition. A cold standby on the native master
-        // otherwise races a 1080p segment download before the preroll lands;
-        // ABR can step up after the first clean frame.
-        startLevel: 0,
+        // Start level chosen on MANIFEST_PARSED from the lowest-bitrate rung:
+        // index 0 is not guaranteed to be the bottom rendition. ABR still steps up.
+        startLevel: -1,
         pLoader: TwitchAdFilterLoader,
       }
     : {
@@ -312,6 +311,7 @@ if (HLS_MODE) {
   // it stalled on the first refresh. A deliberate user seek later is not
   // overridden because the flag is only reset by a new load.
   let liveJumped = false;
+  let standbyLevelLogged = false;
   const LIVE_TARGET_SEC = 3; // = hlsConfig.liveSyncDuration for the Twitch surface
   const jumpToLiveEdge = () => {
     if (liveJumped) return;
@@ -333,7 +333,28 @@ if (HLS_MODE) {
       V.play().catch(() => { /* autoplay policy */ });
     } catch { /* not ready */ }
   };
-  h.on(Hls.Events.MANIFEST_PARSED, jumpToLiveEdge);
+  h.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
+    if (TWITCH_HLS && !standbyLevelLogged) {
+      const levels = (data && data.levels) || h.levels || [];
+      if (levels.length) {
+        let chosen = 0;
+        let best = Infinity;
+        for (let i = 0; i < levels.length; i++) {
+          const l = levels[i] || {};
+          const br = Number(l.bitrate);
+          const v = Number.isFinite(br) ? br : Infinity;
+          if (v < best) { best = v; chosen = i; }
+        }
+        h.startLevel = chosen;
+        const l = levels[chosen] || {};
+        const name = l.height ? `${l.height}p` : (l.width ? `${l.width}w` : String(chosen));
+        const bitrate = Number(l.bitrate);
+        post({ t: 'ev', e: 'standby-level', d: { chosen, name, bitrate: Number.isFinite(bitrate) ? bitrate : null, count: levels.length } });
+      }
+      standbyLevelLogged = true;
+    }
+    jumpToLiveEdge();
+  });
   h.on(Hls.Events.LEVEL_LOADED, jumpToLiveEdge);
   const st = () => {
     let dur = 0;
@@ -377,9 +398,13 @@ if (HLS_MODE) {
     if (!isFinite(lat) || lat < 0) lat = 0;
     const levels = h.levels || [];
     let q = null;
+    let bw = null;
+    const lv = h.currentLevel >= 0 ? h.currentLevel : null;
     if (h.currentLevel >= 0 && levels[h.currentLevel]) {
       const l = levels[h.currentLevel];
       q = { name: l.height ? `${l.height}p` : `${l.width || ''}w`, w: l.width, h: l.height };
+      const br = Number(l.bitrate);
+      bw = Number.isFinite(br) ? br : null;
     }
     const qualities = levels.map((l, i) => ({
       id: i,
@@ -427,6 +452,8 @@ if (HLS_MODE) {
       q,
       qcount: qualities.length,
       qualities,
+      lv,
+      bw,
     };
   };
   const sendSt = () => post({ t: 'st', st: st() });
@@ -449,6 +476,7 @@ if (HLS_MODE) {
           currentUrl = m.url;
           reloaded = false;
           liveJumped = false;
+          standbyLevelLogged = false;
           h.loadSource(m.url);
           h.attachMedia(V);
           V.play().catch(() => { /* autoplay policy — unlock via gesture */ });
