@@ -2153,3 +2153,24 @@ shows `POD FREEZE native-pod-freeze>=1 ad-tick playing while owned=0`, a hand-ba
 refused:false}` at the reveal with `audio-agreed {wantMuted:false}` when his intent is audible. An
 extension reload does not re-inject content scripts, so a tab opened before this build keeps 0.8.111
 until it goes hidden (`recoverStale`, 0.8.107) or is navigated.
+
+### 2026-11-23, same build, second report: the mute he heard came from a tab the deploy had not reached
+
+Owner, verbatim: *"acabou de trocar o player e mutou sozinho"*. Answered from the ring, oldest row first:
+
+|row|what it says|
+|---|---|
+|`hb {slug:"cellbit", ver:"0.8.111", tw:{ct:295, muted:true, paused:false, rs:4}}` (195 hb rows in the window)|the tab that wrote these rows was still on the build the deploy replaced|
+|`388592 audio-claim {to:"ad"}` + `audio-apply {st:"ad:-1.00 kick:m1.00 twitch:m1.00", vis:"ad"}`|the pod took the claim and silenced the page, which is correct|
+|`388614 overlay-reveal {n:4, lat:3.6, q:"360p", st:{aud:{m:"0"}}}` + `388621 overlay-audio {muted:true, refused:true}` + `388622 audio-agreed {wantMuted:true}`|the clean frame was commanded MUTED while the authority published audible: the sticky refusal 0.8.112 fixed, on the build that predates the fix|
+|`audio-state {vis:"ad", audible:0, el:"1|1.00"}` and `vis-audio {native:{muted:true, paused:false}}` until 563547|page muted AND frame muted: no sound at all for 175 s, with the page's own element playing the ad under the pod|
+|`564270 audio-claim {to:null}` -> `audio-apply {twitch:-1.00}`|the claim released and the sound came back by itself|
+
+Nothing new to fix. What was missing was the ability to say "this row came from another build" without
+opening `hb` by hand, and this is the third diagnosis that cost (2026-11-12, 2026-11-19, today):
+`ko-adlog-verdict.mjs` now prints `BUILDS IN THIS RING` (version, row count, slugs) at the top, and marks
+any version that differs from the manifest `<- STALE TAB: reload it (an extension reload does not
+re-inject)`.
+
+Owed, unchanged: the pod half on 0.8.112 in his own Chrome (`cellbit` reloaded, or hidden once so
+`recoverStale` heals it).

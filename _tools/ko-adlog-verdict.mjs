@@ -645,6 +645,30 @@ if (!log.length) {
 const cutoff = log[log.length - 1].t - SPAN_MS;
 log = log.filter((e) => e.t >= cutoff);
 const eps = episodesOf(log).slice(-EPISODES);
+// WHICH TAB IS RUNNING WHAT. An extension reload re-injects nothing, so a tab
+// opened before the update keeps the old code and answers the owner's reports
+// with rows from a build that is no longer installed (measured twice: 2026-11-12
+// and 2026-11-19). The build a row names is on the row itself, and a reader must
+// not have to open `hb` by hand to find it (2026-11-23: the mute the owner
+// reported came from a `ver:"0.8.111"` tab while the manifest was 0.8.112).
+const builds = new Map();
+for (const e of log) {
+  const d = e.d || {};
+  const v = d.ver || d.version;
+  if (!v || v === '?') continue;
+  const rec = builds.get(v) || { n: 0, slugs: new Set() };
+  rec.n += 1;
+  if (d.slug) rec.slugs.add(d.slug);
+  builds.set(v, rec);
+}
+if (builds.size) {
+  console.log('BUILDS IN THIS RING (which tab is running what)');
+  for (const [v, r] of [...builds.entries()].sort()) {
+    const tag = v === ver ? '' : '  <- STALE TAB: reload it (an extension reload does not re-inject)';
+    console.log(`  ${v}  rows=${r.n}  slug=${[...r.slugs].slice(0, 4).join(',') || '?'}${tag}`);
+  }
+  console.log('');
+}
 let findings = [];
 for (let i = 0; i < eps.length; i += 1) {
   const r = reportEpisode(eps[i], i);
