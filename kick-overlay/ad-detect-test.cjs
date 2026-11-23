@@ -483,6 +483,7 @@ check(
   const freshRec = () => ({ ad: false, adSince: 0, playing: false, lastTick: 0 });
   const makeVideo = () => ({ paused: false, isConnected: true, currentTime: 100, readyState: 4, w: 2560, rs: 4, pause() { this.paused = true; } });
   const HOLD = grab('adUiHold');
+  const FREEZE = grab('freezeNativeForPod');
   const makeTick = (src) => new Function(
     'ctx',
     `const { rec, page, video, log } = ctx;
@@ -492,9 +493,11 @@ check(
      const state = ctx.state || (ctx.state = { heldAt: 0, reasserts: 0, hiddenLogged: false, ownerLogged: false });
      const AD_OVERLAY_ENABLED = true;
      const AD_UI_HOLD_MAX_MS = 12000;
-     const overlay = { adActive: false, standby: false, frame: null, selfPausedAt: 0 };
+     const overlay = ctx.overlay || (ctx.overlay = { adActive: false, standby: false, frame: null, selfPausedAt: 0, revealed: false });
      const ownerAttr = () => page.owner || '';
      const overlayOwnsPlayback = () => !!page.owns;
+     const resumeRefusedByUser = () => !!page.parked;
+     ${FREEZE}
      const adUiDetail = () => ({ kind: 'slate' });
      // Controllable: an episode ENDS when this goes false, which is the only
      // way adUiRelease() runs (and the only way a second pod is a second pod).
@@ -680,6 +683,8 @@ check(
      const adHoldWorthy = () => page.ad !== false;
      const mainVideo = () => video;
      const sampleVideo = () => video;
+     const resumeRefusedByUser = () => !!page.parked;
+     ${grab('freezeNativeForPod')}
      const recLog = (n, d) => log.push(n + (d && d.hold ? ':hold=' + JSON.stringify(d.hold) : ''));
      const adLog = (n, f) => log.push(n + ':' + ((f && (f.why || f.act || f.reason)) || ''));
      const adLogState = (n, f) => log.push(n + ':' + ((f && (f.act || f.reason)) || 'state'));
@@ -736,7 +741,11 @@ check(
     a.video.paused === true && a.count('ad-ui-hold:paused') === 2,
     JSON.stringify(a.log),
   );
-  // POD C - the overlay actually paints: abstain, and SAY SO.
+  // POD C - the overlay actually paints: the HOLD abstains (our picture is up),
+  // and the native is FROZEN under it. The abstention was the whole point of the
+  // `pod-owns` row; the freeze is the missing half (measured in the owner's
+  // 0.8.111 ring: 30 s of `ad-tick {video:{paused:false, rs:4}}` while the clean
+  // frame was revealed, and a hand-back with 1.9 s of runway).
   a.ctx.page.ad = false;
   a.w.tick();
   a.overlay.adActive = true;
@@ -745,10 +754,35 @@ check(
   a.ctx.page.ad = true;
   a.w.tick();
   check(
-    'pod C: a painted pod refuses the hold and names the reason',
-    a.video.paused === false && a.count('ad-ui-hold:pod-owns') === 1,
+    'pod C: a painted pod freezes the native and names the reason',
+    a.video.paused === true && a.count('ad-ui-hold:pod-owns') === 1,
     JSON.stringify(a.log),
   );
+  // POD C2 - Twitch's own ad renderer calls play() again. The next tick must
+  // take the pause back; one pause is not a freeze (the 0.8.51 contract).
+  a.video.paused = false;
+  a.w.tick();
+  check(
+    'pod C2: a page that resumed its own element is frozen again on the next tick',
+    a.video.paused === true,
+    JSON.stringify(a.log),
+  );
+  // POD C3 - a player the USER parked is never resumed or re-paused by us.
+  a.ctx.page.parked = true;
+  a.video.paused = false; // the page's own player took it back
+  a.w.tick();
+  check(
+    'pod C3: a user-parked player is left alone (the freeze refuses)',
+    a.video.paused === false,
+    JSON.stringify(a.log),
+  );
+  a.ctx.page.parked = false;
+  // The painted pod ENDS: stopAdOverlay() hands the picture back and resumes
+  // the native. Without this the release below defers to a pod that owns the
+  // screen (correctly) and the next pod starts from a frozen element.
+  a.overlay.adActive = false;
+  a.overlay.revealed = false;
+  a.video.paused = false;
   // POD D - back to a warm standby: the SAME reason must be able to speak
   // again, which is what a dedupe surviving its episode forbids.
   a.ctx.page.ad = false;
@@ -767,8 +801,14 @@ check(
   // RED: restore the shipped guard (`adActive || standby || frame`) and the
   // same pod B leaves the ad PLAYING - the pod the owner took.
   const revert = (s) => s.split('if (overlay.adActive || overlay.revealed) {').join('if (overlay.adActive || overlay.standby || overlay.frame) {');
-  const redHold = revert(HOLD);
-  const redTick = revert(HOLD_TICK);
+  // The pre-fix branch had no freeze inside it either: stripping the guard
+  // alone would leave the freeze behind and the RED would prove the stop of
+  // the wrong defect.
+  const stripFreeze0 = (s) => s
+    .split('      const pv = freezeNativeForPod();\n').join('      const pv = null;\n')
+    .split('if (overlay.adActive || overlay.revealed) freezeNativeForPod();').join('');
+  const redHold = stripFreeze0(revert(HOLD));
+  const redTick = stripFreeze0(revert(HOLD_TICK));
   check('the leftover-standby mutation applied to the shipped hold', redHold !== HOLD);
   check('the leftover-standby mutation applied to the shipped tick', redTick !== HOLD_TICK);
   if (redHold !== HOLD && redTick !== HOLD_TICK) {
@@ -791,6 +831,27 @@ check(
       'RED: with the leftover standby the pre-fix guard leaves the ad PLAYING (his pod 2)',
       r.video.paused === false && r.count('ad-ui-hold:paused') === 1,
       JSON.stringify(r.log),
+    );
+  }
+
+  // RED: THE MISSING FREEZE ITSELF. Strip it from all three sites (the hold
+  // edge, the tick and the other 500 ms tick) and a painted pod leaves the
+  // native playing behind its own picture - the 30 s of `ad-tick
+  // {video:{paused:false, rs:4}}` that produced the 1.9 s hand-back.
+  const noFreezeHold = stripFreeze0(HOLD);
+  const noFreezeTick = stripFreeze0(HOLD_TICK);
+  const noFreezeBody = stripFreeze0(tickBody);
+  check('the freeze mutation applied to the hold and the tick', noFreezeHold !== HOLD && noFreezeTick !== HOLD_TICK);
+  if (noFreezeHold !== HOLD && noFreezeTick !== HOLD_TICK) {
+    const f = build(noFreezeHold, noFreezeTick, noFreezeBody);
+    f.overlay.adActive = true;
+    f.overlay.revealed = true;
+    f.ctx.page.ad = true;
+    f.w.tick();
+    check(
+      'RED: without the freeze a revealed pod leaves the ad playing behind it',
+      f.video.paused === false,
+      JSON.stringify(f.log),
     );
   }
 }
@@ -1065,11 +1126,15 @@ const expected = [
   'pod A: a detected ad pauses the native and names the hold',
   'pod A releases (native resumed) and its verdict rides on ad-ui-off',
   'pod B: a surviving standby/frame does NOT disarm the hold (native PAUSED)',
-  'pod C: a painted pod refuses the hold and names the reason',
   'pod D: a later pod on the same shape is held and logged again (dedupe is per episode)',
   'the leftover-standby mutation applied to the shipped hold',
   'the leftover-standby mutation applied to the shipped tick',
+  'pod C: a painted pod freezes the native and names the reason',
+  'pod C2: a page that resumed its own element is frozen again on the next tick',
+  'pod C3: a user-parked player is left alone (the freeze refuses)',
   'RED: with the leftover standby the pre-fix guard leaves the ad PLAYING (his pod 2)',
+  'the freeze mutation applied to the hold and the tick',
+  'RED: without the freeze a revealed pod leaves the ad playing behind it',
   'the ownership reader consults #ko-wrap, not the attribute alone',
   'an attribute with NO layer node does not own playback (the 30 s pod)',
   'an attribute WITH a live layer node still owns playback',

@@ -119,6 +119,13 @@ const PRE_FIX_STANDBY_STALE = [[
   // pre-fix state the arm must catch: no teardown AND standby read as a cover.
   '    if (overlay.adActive || overlay.revealed) {',
   '    if (overlay.adActive || overlay.standby || overlay.frame) {',
+], [
+  // AND THE PRE-FIX BRANCH DID NOT FREEZE THE PAGE EITHER (0.8.112). Without
+  // this pair the mutant carries today's `freezeNativeForPod()` inside the
+  // restored guard, pauses the element it was supposed to leave playing, and
+  // the negative arm measures nothing (it reported `paused=true staleRows=0`).
+  '      const pv = freezeNativeForPod();\n',
+  '      const pv = null;\n',
 ]];
 
 const checks = [];
@@ -1981,6 +1988,119 @@ async function main() {
     check('A RED: pre-fix playing-not-healthy omits lv/bw', () => {
       assert(pnh, 'no playing-not-healthy row');
       assert(!('lv' in pnh.d) && !('bw' in pnh.d), `unexpected lv/bw ${JSON.stringify(pnh.d)}`);
+    });
+  }
+  // ---- 15. THE AD IS NOT PLAYED UNDER THE POD ----------------------------
+  // Owner report 2026-11-22, verbatim: "ele dessincroniza a live (nao deixa em
+  // tempo real)". His own 0.8.111 ring has the mechanism as a row:
+  // `ad-tick {video:{ct:260.5, paused:false, rs:4, muted:true}}` under a
+  // REVEALED pod. `hideNativeVideos()` only sets `visibility:hidden`, so the
+  // page kept playing the ad behind the clean picture: the pod consumed the
+  // break in the background, the hand-back found 1.9-2.4 s of forward buffer
+  // (`native-handoff {ct:290.6, buf:292.5}`) and parked at `rs=1`, which is the
+  // freeze and the 21.56 s jump the verdict printed.
+  {
+    const page = makeWorld();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    page.bypass({ type: 'ad-hold' });
+    page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+    await settle(20);
+    page.frameMsg({ t: 'ready' });
+    // Twitch's own player resumes itself while the clean picture is buffering.
+    // This is the measured state (his `ad-tick` row), not an invention: without
+    // it the hold's own pause would make this arm pass with the fix removed.
+    page.video.paused = false;
+    for (let i = 0; i < 3; i++) page.frameMsg(healthySt({ pos: 100, lat: 3 }));
+    await settle(10);
+    check('a revealed pod freezes the native and names it', () => {
+      assert(page.logsOf('overlay-reveal').length === 1, 'precondition: the pod never revealed');
+      assert(page.video.paused === true, `the page kept playing the ad under the clean picture (paused=${page.video.paused})`);
+      const row = page.logsOf('native-pod-freeze').pop();
+      assert(!!row, `no native-pod-freeze row: ${JSON.stringify(page.logsOf('overlay-audio').pop() && page.logsOf('overlay-audio').pop().d)}`);
+    });
+    page.bypass({ type: 'ad-end' });
+    await settle(60);
+    check('...and the hand-back resumes the element it froze', () => {
+      assert(page.video.paused === false, 'the native stayed frozen after the pod ended');
+    });
+  }
+  // RED: the pre-fix reveal raised the frame and left the page playing.
+  {
+    const page = makeWorld({ adSource: mutate([['      const frozen = freezeNativeForPod();', '      const frozen = null;']]) });
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    page.bypass({ type: 'ad-hold' });
+    page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+    await settle(20);
+    page.frameMsg({ t: 'ready' });
+    page.video.paused = false;
+    for (let i = 0; i < 3; i++) page.frameMsg(healthySt({ pos: 100, lat: 3 }));
+    await settle(10);
+    check('RED: without the freeze the ad keeps playing behind the clean picture', () => {
+      assert(page.logsOf('overlay-reveal').length === 1, 'precondition: the mutant never revealed');
+      assert(page.video.paused === false,
+        'the mutant froze it too: this arm is not measuring the freeze');
+    });
+  }
+
+  // ---- 16. A REFUSAL BELONGS TO THE FRAME THAT WAS TESTED -----------------
+  // His 0.8.111 ring: `overlay-audio {muted:true, refused:true}` at EVERY reveal
+  // while the authority published `ad:-1.00` (audible). One autoplay refusal at
+  // boot outlived its frame for the whole page load, so every later pod's clean
+  // player was commanded muted, and the only thing that cleared it was an
+  // unrelated click on the page - which unmuted the pod at a random moment
+  // ("fica mutando e desmutando em hora errada").
+  {
+    const page = makeWorld();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    page.bypass({ type: 'ad-hold' });
+    page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+    await settle(20);
+    page.frameMsg({ t: 'ready' });
+    // The retry window opens 2.5 s after the frame started.
+    await settle(2600);
+    page.frameMsg({ t: 'st', st: { state: 'Buffering', paused: true, muted: true, rs: 1, buffered: 0, pos: 0, lat: 0, dur: 0, q: { name: '360p' } } });
+    await settle(10);
+    check('a frame that cannot autoplay declares policy and mutes itself', () => {
+      const row = page.logsOf('overlay-audio').pop();
+      assert(row, 'no overlay-audio row at all');
+      assert(row.d.refused === true && row.d.muted === true,
+        `the refusal was not declared: ${JSON.stringify(row.d)}`);
+    });
+    for (let i = 0; i < 3; i++) page.frameMsg(healthySt({ pos: 100, lat: 3 }));
+    await settle(10);
+    check('the reveal clears the refusal: a playing frame is audible', () => {
+      assert(page.logsOf('overlay-reveal').length === 1, 'precondition: the pod never revealed');
+      const row = page.logsOf('overlay-audio').pop();
+      assert(!!row, 'the reveal commanded nothing');
+      assert(row.d.muted === false && row.d.refused === false,
+        `revealed a frame muted by a stale refusal: ${JSON.stringify(row.d)}`);
+      const last = page.muteSent().slice(-1)[0];
+      assert(last === false, `last mute command to the clean frame was ${JSON.stringify(page.muteSent())}`);
+    });
+  }
+  // RED: keeping the refusal across the frame is exactly his ring row.
+  {
+    const page = makeWorld({
+      adSource: mutate([[
+        '      overlay.audioRefused = false;\n      overlay.unmuteTried = false;\n      overlay.unmuteTries = 0;',
+        '      overlay.unmuteTried = false;\n      overlay.unmuteTries = 0;',
+      ]]),
+    });
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    page.bypass({ type: 'ad-hold' });
+    page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+    await settle(20);
+    page.frameMsg({ t: 'ready' });
+    await settle(2600);
+    page.frameMsg({ t: 'st', st: { state: 'Buffering', paused: true, muted: true, rs: 1, buffered: 0, pos: 0, lat: 0, dur: 0, q: { name: '360p' } } });
+    await settle(10);
+    for (let i = 0; i < 3; i++) page.frameMsg(healthySt({ pos: 100, lat: 3 }));
+    await settle(10);
+    check('RED: a sticky refusal reveals the clean player muted', () => {
+      assert(page.logsOf('overlay-reveal').length === 1, 'precondition: the mutant never revealed');
+      const row = page.logsOf('overlay-audio').pop();
+      assert(row && row.d.muted === true && row.d.refused === true,
+        `the mutant cleared the refusal too: ${JSON.stringify(row && row.d)}`);
     });
   }
   const failed = checks.filter((c) => c.status === 'FAIL');

@@ -2087,3 +2087,69 @@ CHECKS PASSED`; gate `node _tools/ko-verify.mjs` -> `RESULT PASS checks=23 faile
 
 **Owed:** the live half of 0.8.107 needs one update landed while a Twitch tab sits hidden, then
 `hb {ver:"0.8.107"}` from that tab with no navigation performed by the owner.
+
+## Wave record - 2026-11-22, the page played the ad under our picture, and a refusal outlived its frame (0.8.112)
+
+Owner, verbatim: *"o adblocker ta uma merda. ele dessincroniza a live (nao deixa em tempo real) e fica
+mutando e desmutando em hora errada. arruma imediatamente"*.
+
+Read from his own ring (0.8.111, `twitch.tv/cellbit`, one page load of 21m50.7, 1200 events,
+`node _tools/ko-adlog-verdict.mjs --episodes=1`). The verdict tool could answer part of it and not the
+rest, so the first deliverable was the section that answers the rest:
+
+|row|what it says|
+|---|---|
+|`POD FREEZE native-pod-freeze=0 reasserts=0 ad-tick playing while owned=25 first 1.0s after the reveal`|NEW section: the page's own element played the whole pod behind our picture|
+|`native-handoff {ct:290.6, buf:292.5, resume:0.0s, rs:1}` then `FROZEN 0.2s parked`|the hand-back landed with 1.9 s of runway, `play()` could not start, Twitch refilled its own source|
+|`overlay-audio {muted:true, refused:true, st:{aud:{m:"0"}, clean:{muted:true, paused:true}}}` at reveal #3 and #4, then `audio-agreed {ms:5, wantMuted:true}`|the authority published audible (`data-ko-audio-m=0`) and the frame was commanded MUTED|
+|`audio-mismatch {phase:"late", frameMuted:false, wantMuted:true, sentAgeMs:24584}` twice|the frame unmuted itself 24.5 s later, was classified as report lag, and nothing corrected it|
+|`audio-claim {to:"ad", wanted:{muted:false, volume:1}}` 7.5 s before reveal #3|the claim itself was correct|
+
+Three defects, one per mechanism.
+
+1. **A hidden element is not a stopped element.** `hideNativeVideos()` only sets `visibility:hidden`, and
+   the hold's pause is undone by Twitch's ad renderer (the reason `adUiHoldTick` re-asserts at all). A
+   playlist-opened pod never runs `adUiHoldTick` (no DOM signal), so nothing re-paused the page: it
+   consumed the break in the background and handed back 1.9 s of buffer. `freezeNativeForPod()` is the
+   single door now, called from `revealOverlay()` (logged `native-pod-freeze {ct, rs}`), from both
+   pod-owns branches of `adUiHold`/`adUiHoldTick` (counted once per episode as `ad-ui-hold
+   {act:"reassert", own:"pod"}`), and unconditionally on the 500 ms DOM tick while
+   `overlay.adActive || overlay.revealed`, which is the playlist pod's only clock. A user-parked player
+   is still refused (`resumeRefusedByUser`), and `ad-end` resumes what we froze (arm below).
+2. **A refusal belongs to the frame that was tested.** The autoplay retry declares `audioRefused` when a
+   frame cannot play in its 2.5-9 s window; the verdict then outlived the frame for the whole page load,
+   so every later reveal commanded `mute:true` over an authority that said audible. Only an unrelated
+   click on the page cleared it, which unmuted a pod at a random moment (the "muta e desmuta em hora
+   errada" half). `revealOverlay()` clears `audioRefused`/`unmuteTried`/`unmuteTries` in the same
+   synchronous task as the claim and the command; if Chrome still refuses, the bounded retry declares
+   policy again for THIS frame.
+3. **The verdict tool could not see either one**, so `POD FREEZE` is now a section: `native-pod-freeze`,
+   `reasserts`, and `ad-tick playing while owned` (samples between `overlay-reveal` and `native-handoff`
+   whose page element reported `paused:false`), with a finding naming the build when the freeze row is
+   absent. His ring answers 25 samples, first 1.0 s after the reveal.
+
+Arms, each with a mutation that restores the pre-fix line: `ad-detect` POD C (a painted pod freezes the
+native and names it), C2 (the page resuming its own element is frozen again on the next tick), C3 (a
+user-parked player is left alone), plus the RED that leaves a revealed pod with the ad playing;
+`ad-time-continuity` "a revealed pod freezes the native and names it" / "...and the hand-back resumes the
+element it froze" with its RED, and "the reveal clears the refusal: a playing frame is audible" with the
+RED that reveals it muted. `ARMS 56/56`, `checks=103 failed=0`.
+
+**A negative arm must strip the fix it restores over, not just the line it hates.** `PRE_FIX_STANDBY_STALE`
+reconstructs the pre-fix pod-owns guard and the suite then reported `paused=true staleRows=0 ... it
+measures nothing`: today's `freezeNativeForPod()` sat INSIDE the restored guard, so the mutant paused the
+element the arm expected to keep playing. The mutation now also rewrites `const pv =
+freezeNativeForPod()` to `const pv = null`, and the arm is red for the defect it names again. The same
+class was found in `ad-detect`'s leftover-standby RED in this wave.
+
+Verification: `node ad-time-continuity-test.cjs` -> `RESULT PASS ad-time-continuity checks=103 failed=0`;
+`node ad-detect-test.cjs` -> `ARMS 56/56`, `RESULT PASS`; `node _tools/ko-verify.mjs` ->
+`RESULT PASS checks=25 failed=0` (`silent-census guardShaped=107`); installed copy synced and reloaded ->
+`loaded=0.8.112 staged=0.8.112 changed-since-last-load=no`.
+
+**Owed, and it is the only thing that closes this:** a live pod on 0.8.112 with the ring read afterwards
+shows `POD FREEZE native-pod-freeze>=1 ad-tick playing while owned=0`, a hand-back whose `buf - ct` keeps
+`HEALTH_BUFFER_SEC` of runway (or `native-seek-skipped`), and an `overlay-audio {muted:false,
+refused:false}` at the reveal with `audio-agreed {wantMuted:false}` when his intent is audible. An
+extension reload does not re-inject content scripts, so a tab opened before this build keeps 0.8.111
+until it goes hidden (`recoverStale`, 0.8.107) or is navigated.

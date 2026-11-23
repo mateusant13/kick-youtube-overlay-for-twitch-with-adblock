@@ -431,6 +431,42 @@ function reportEpisode(ep, idx) {
     lines.push('  ON SCREEN');
     for (const s of screenSwaps) lines.push(`    ${fmt(s.t - ep.start).padStart(7)}  ${s.kind.padEnd(16)} ${s.why}${s.extra.length ? '  ' + s.extra.join(' ') : ''}`);
   }
+  // ---- pod freeze: did the page play the ad BEHIND our picture -------------
+  // Owner report 2026-11-22, verbatim: "ele dessincroniza a live (nao deixa em
+  // tempo real)". `hideNativeVideos()` only sets `visibility:hidden`, so a
+  // native element that resumed itself under a REVEALED pod played the break in
+  // the background, ate the hand-back buffer and parked the picture at rs<3.
+  // This is the question the ring could not answer before: between a reveal and
+  // the hand-back, did the page's own element report itself PLAYING?
+  const podFreeze = { freezes: 0, reasserts: 0, playedUnder: [] };
+  {
+    let ownedAt = null;
+    for (const e of evs) {
+      const d = e.d || {};
+      if (e.ev === 'overlay-reveal') ownedAt = e.t;
+      else if (e.ev === 'native-handoff' || e.ev === 'ad-pod-max' || e.ev === 'overlay-stall-stop') ownedAt = null;
+      if (e.ev === 'native-pod-freeze') podFreeze.freezes += 1;
+      if (e.ev === 'ad-ui-hold' && d.act === 'reassert') podFreeze.reasserts += 1;
+      if (e.ev === 'ad-tick' && ownedAt != null && d.video && d.video.paused === false) {
+        podFreeze.playedUnder.push({ t: e.t, age: e.t - ownedAt });
+      }
+    }
+  }
+  if (podFreeze.freezes || podFreeze.reasserts || podFreeze.playedUnder.length) {
+    lines.push('  POD FREEZE (did the page play the ad behind our picture)');
+    const first = podFreeze.playedUnder[0];
+    lines.push(
+      `    native-pod-freeze=${podFreeze.freezes}  reasserts=${podFreeze.reasserts}` +
+        `  ad-tick playing while owned=${podFreeze.playedUnder.length}` +
+        (first ? `  first ${fmt(first.age)} after the reveal` : ''),
+    );
+    if (podFreeze.playedUnder.length) {
+      findings.push(
+        `the page element played ${podFreeze.playedUnder.length}x under a revealed pod` +
+          (podFreeze.freezes ? '' : ' (build < 0.8.112 does not freeze it)'),
+      );
+    }
+  }
   if (adWindows.length) {
     lines.push('  AD WINDOW (how long it played before it was stopped)');
     for (const w of adWindows) {

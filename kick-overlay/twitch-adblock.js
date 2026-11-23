@@ -706,6 +706,30 @@
       return false;
     }
   }
+  // ONE PICTURE, ONE CLOCK. While a pod owns the screen the native element must
+  // not keep playing behind the clean frame. Measured in the owner's own ring
+  // (cellbit, 0.8.111): `ad-ui-hold {act:"skip", why:"pod-owns", revealed:true}`
+  // for the whole pod while `ad-tick {video:{ct:260.5, paused:false, rs:4}}`
+  // advanced 1x - so the element decoded the ad he reported seeing, consumed the
+  // media the hand-back needed, and arrived at `native-handoff {ct:290.6,
+  // buf:292.5}` with 1.9 s of runway: the forward seek was refused as "no data
+  // in hand", the element parked at `rs:1` and the picture jumped 21.6 s
+  // (`display-clock pos:318.51 delta:21.56`). Twitch's own ad renderer calls
+  // play() again, so one pause is not a freeze; the tick re-asserts it, exactly
+  // like the hold has done since 0.8.51.
+  function freezeNativeForPod() {
+    const v = mainVideo();
+    if (!v || !v.isConnected) return null;
+    if (v.paused) return null;
+    if (resumeRefusedByUser(v)) return null; // a user-parked player stays parked
+    try {
+      v.pause();
+    } catch {
+      return null;
+    }
+    overlay.selfPausedAt = Date.now();
+    return v;
+  }
   // Pull the clean player back onto the live edge. Bounded to one seek per 2s
   // so a stalling manifest cannot turn into a seek storm. This replaces the
   // old "only when 20s+ behind" gate: the picture is revealed at real time,
@@ -1364,22 +1388,36 @@
       stopAdOverlay('stale-standby');
       requestStandby(0, true, 'stale-standby');
     }
-    if (!adUiHeldAt) return adUiTickSkip('no-hold');
-    // ONLY A POD THAT OWNS THE PICTURE REFUSES. `overlay.adActive` is the pod's
-    // own claim and `overlay.revealed` is a clean picture actually on screen; a
-    // warm standby and a minted-but-hidden frame are neither. Measured on the
-    // owner's live tab 2026-11-20 (`snap().who`): `{standby:true,
-    // revealed:false, adActive:false, playing:true}` with NO ad on screen, so
-    // the old three-flag guard armed in STEADY STATE and refused every DOM hold
-    // on a page where a standby merely existed.
+    // ONLY A POD THAT OWNS THE PICTURE GETS HERE, AND IT KEEPS THE NATIVE
+    // FROZEN. `overlay.adActive` is the pod's own claim and `overlay.revealed`
+    // is a clean picture actually on screen; a warm standby and a minted-but-
+    // hidden frame are neither. Measured on the owner's live tab 2026-11-20
+    // (`snap().who`): `{standby:true, revealed:false, adActive:false,
+    // playing:true}` with NO ad on screen, so the old three-flag guard armed in
+    // STEADY STATE and refused every DOM hold on a page where a standby merely
+    // existed.
+    //
+    // The freeze is checked BEFORE the hold stamp, because a playlist pod never
+    // runs `adUiHold` (there is no DOM signal to run it), and its own take-over
+    // pause is undone by Twitch's ad renderer within a second. Measured in the
+    // owner's ring above: 30 s of the native playing under a revealed frame.
     if (overlay.adActive || overlay.revealed) {
+      const pv = freezeNativeForPod();
+      if (pv) {
+        adUiReasserts++;
+        if (adUiReasserts === 1) {
+          adLogState('ad-ui-hold', { act: 'reassert', own: 'pod', ct: +Number(pv.currentTime || 0).toFixed(1), n: 1 });
+        }
+      }
       return adUiTickSkip('pod-owns', {
         adActive: !!overlay.adActive,
         revealed: !!overlay.revealed,
         standby: !!overlay.standby,
         frame: !!overlay.frame,
+        froze: !!pv,
       });
     }
+    if (!adUiHeldAt) return adUiTickSkip('no-hold');
     if (overlayOwnsPlayback()) return adUiTickSkip('overlay-owns');
     if (Date.now() - adUiHeldAt > AD_UI_HOLD_MAX_MS) {
       return adUiTickSkip('hold-expired', { heldMs: Date.now() - adUiHeldAt });
@@ -1408,11 +1446,16 @@
     // clean/playing at 129899, the whole 36.6 s native (`ad-tick` paused:false,
     // ct 4.7 -> 34.6), and not one `ad-ui-hold` row in a 1200-event ring.
     if (overlay.adActive || overlay.revealed) {
+      // The pod owns the picture: keep the native frozen here too, so the DOM
+      // edge does not wait up to 500 ms for the tick (Twitch's ad renderer
+      // resumes its own element within that window).
+      const pv = freezeNativeForPod();
       return adUiTickSkip('pod-owns', {
         adActive: !!overlay.adActive,
         revealed: !!overlay.revealed,
         standby: !!overlay.standby,
         frame: !!overlay.frame,
+        froze: !!pv,
       });
     }
     if (overlayOwnsPlayback()) {
@@ -2424,6 +2467,23 @@
       // switched, and its muted").
       audioClaim(true);
       overlay.audioAssertUntil = Date.now() + AUDIO_ASSERT_MS;
+      // A NEW PICTURE IS A NEW AUTOPLAY ATTEMPT. `audioRefused` is a verdict on
+      // THE FRAME THAT WAS TESTED, and it used to outlive it for the whole page
+      // load: one refusal at boot silenced every later pod's clean player
+      // (`overlay-audio {muted:true, refused:true}` at every reveal in the
+      // owner's 0.8.111 ring, while the authority published `ad:-1.00`, i.e.
+      // audible), and the only thing that cleared it was an unrelated click on
+      // the page, which unmuted the pod at a random moment - his "fica mutando e
+      // desmutando em hora errada". The frame in front of us is playing (that is
+      // why it is being revealed), so the unmute is ours to send; if Chrome
+      // still refuses, the bounded retry below declares policy again for THIS
+      // frame.
+      overlay.audioRefused = false;
+      overlay.unmuteTried = false;
+      overlay.unmuteTries = 0;
+      // ...and the native stops in the same tick: see freezeNativeForPod().
+      const frozen = freezeNativeForPod();
+      if (frozen) adLog('native-pod-freeze', { ct: +Number(frozen.currentTime || 0).toFixed(1), rs: frozen.readyState });
       // ...and the frame is COMMANDED in that same tick, unconditionally. The
       // command is diffed against what this frame was last told, and a standby
       // was told `mute:true` when it was created, so the unmute that follows the
@@ -3750,6 +3810,13 @@
       // The same predicate that gates the hold now gates the log and the tick,
       // so `ad-ui-on` can never name a node that is not worth pausing for.
       const ad = adHoldWorthy(adDetail, mainVideo());
+      // A PLAYLIST POD HAS NO DOM SIGNAL TO DRIVE `adUiHoldTick`, so its freeze
+      // is re-asserted here or not at all. Measured (owner ring 0.8.111): the
+      // native ran the whole 30 s pod under a revealed frame and handed back at
+      // `buf - ct = 1.9 s`, which is the freeze at the worst possible moment.
+      // Nothing to do costs one `.paused` read; a re-pause is the page's own
+      // play() being undone, which is the hold's documented job since 0.8.51.
+      if (overlay.adActive || overlay.revealed) freezeNativeForPod();
       if (ad !== rec.ad) {
         const since = rec.adSince;
         // THE EPISODE BOUNDARY IS THE ONLY PLACE A REASON CANNOT GO STALE. The
