@@ -381,6 +381,8 @@ check(
     'stub',
     `let adUiHeldAt = 0;
      let adUiReasserts = 0;
+     let adUiFailedAt = 0;
+     let adUiFailedLogged = false;
      const AD_OVERLAY_ENABLED = true;
      const AD_UI_HOLD_MAX_MS = 12000;
      const overlay = { adActive: false, standby: false, frame: null, selfPausedAt: 0 };
@@ -388,6 +390,7 @@ check(
      const adHoldWorthy = () => true;
      const adLog = () => {};
      const adLogState = () => {};
+     const markAdPark = () => {};
      const mainVideo = () => stub.video;
      const document = { visibilityState: 'visible' };
      ${grab('adUiHold')}
@@ -411,6 +414,8 @@ check(
       'stub',
       `let adUiHeldAt = 0;
        let adUiReasserts = 0;
+       let adUiFailedAt = 0;
+       let adUiFailedLogged = false;
        const AD_OVERLAY_ENABLED = true;
        const AD_UI_HOLD_MAX_MS = 12000;
        const overlay = { adActive: false, standby: false, frame: null, selfPausedAt: 0 };
@@ -418,6 +423,7 @@ check(
        const adHoldWorthy = () => true;
        const adLog = () => {};
        const adLogState = () => {};
+       const markAdPark = () => {};
        const mainVideo = () => stub.video;
        const document = { visibilityState: 'visible' };
        ${grab('adUiHold', mutatedHold)}
@@ -490,7 +496,7 @@ check(
      // The three episode flags are MODULE state in the shipped file, so they are
      // carried on ctx here: a harness that re-initialised them per call would let
      // a per-episode row fire on every tick and then report that as correct.
-     const state = ctx.state || (ctx.state = { heldAt: 0, reasserts: 0, hiddenLogged: false, ownerLogged: false });
+     const state = ctx.state || (ctx.state = { heldAt: 0, reasserts: 0, hiddenLogged: false, ownerLogged: false, failedAt: 0, failedLogged: false });
      const AD_OVERLAY_ENABLED = true;
      const AD_UI_HOLD_MAX_MS = 12000;
      const overlay = ctx.overlay || (ctx.overlay = { adActive: false, standby: false, frame: null, selfPausedAt: 0, revealed: false });
@@ -513,6 +519,11 @@ check(
      // the next one); the stub must do the same or a second pod early-returns.
      const adUiRelease = () => { state.heldAt = 0; state.reasserts = 0; log.push('ad-ui-release'); };
      const adUiHoldTick = () => {};
+     // The park attribute is one DOM write in the ad path; this world has no
+     // documentElement, and its own behaviour is proved by a dedicated arm that
+     // extracts the real pair.
+     const markAdPark = (on) => { page.park = on ? '1' : '0'; };
+     const publishAdPark = () => {};
      // The hold now names its refusals through the same per-episode channel as
      // the tick (adUiTickSkip), so the world must define it or the refusal
      // would be a ReferenceError caught by the tick's own try/catch - a green
@@ -522,8 +533,8 @@ check(
        get visibilityState() { return page.visible ? 'visible' : 'hidden'; },
        getElementById: (id) => (id === 'ko-wrap' && page.wrap !== false ? {} : null),
      };
-     ${HOLD.replace(/\badUiHeldAt\b/g, 'state.heldAt').replace(/\badUiReasserts\b/g, 'state.reasserts').replace(/\badUiHiddenLogged\b/g, 'state.hiddenLogged').replace(/\badUiOwnerLogged\b/g, 'state.ownerLogged')}
-     ${src.replace(/\badUiHeldAt\b/g, 'state.heldAt').replace(/\badUiReasserts\b/g, 'state.reasserts').replace(/\badUiTickWhy\b/g, 'state.tickWhy').replace(/\badUiHiddenLogged\b/g, 'state.hiddenLogged').replace(/\badUiOwnerLogged\b/g, 'state.ownerLogged')}`,
+     ${HOLD.replace(/\badUiHeldAt\b/g, 'state.heldAt').replace(/\badUiReasserts\b/g, 'state.reasserts').replace(/\badUiHiddenLogged\b/g, 'state.hiddenLogged').replace(/\badUiOwnerLogged\b/g, 'state.ownerLogged').replace(/\badUiFailedAt\b/g, 'state.failedAt').replace(/\badUiFailedLogged\b/g, 'state.failedLogged')}
+     ${src.replace(/\badUiHeldAt\b/g, 'state.heldAt').replace(/\badUiReasserts\b/g, 'state.reasserts').replace(/\badUiTickWhy\b/g, 'state.tickWhy').replace(/\badUiHiddenLogged\b/g, 'state.hiddenLogged').replace(/\badUiOwnerLogged\b/g, 'state.ownerLogged').replace(/\badUiFailedAt\b/g, 'state.failedAt').replace(/\badUiFailedLogged\b/g, 'state.failedLogged')}`,
   );
   // (a) the pod is detected while the tab is hidden: the hold is refused and
   //     SAID, not silent. One world, three ticks: hidden, visible, visible.
@@ -666,11 +677,13 @@ check(
     .replace(/\badUiReasserts\b/g, 'S.reasserts')
     .replace(/\badUiHiddenLogged\b/g, 'S.hiddenLogged')
     .replace(/\badUiOwnerLogged\b/g, 'S.ownerLogged')
+    .replace(/\badUiFailedAt\b/g, 'S.failedAt')
+    .replace(/\badUiFailedLogged\b/g, 'S.failedLogged')
     .replace(/\badUiTickWhy\b/g, 'S.why');
   const makeWorld = (holdSrc, holdTickSrc, tickSrc) => new Function(
     'ctx',
     `const { rec, page, video, log, overlay } = ctx;
-     const S = ctx.state || (ctx.state = { heldAt: 0, reasserts: 0, hiddenLogged: false, ownerLogged: false, why: '' });
+     const S = ctx.state || (ctx.state = { heldAt: 0, reasserts: 0, hiddenLogged: false, ownerLogged: false, why: '', failedAt: 0, failedLogged: false });
      const AD_OVERLAY_ENABLED = true;
      const AD_UI_HOLD_MAX_MS = 12000;
      const ownerAttr = () => '';
@@ -684,6 +697,11 @@ check(
      const mainVideo = () => video;
      const sampleVideo = () => video;
      const resumeRefusedByUser = () => !!page.parked;
+     // markAdPark writes one attribute on the page the ad path owns; here the
+     // fact lands on page.park so an arm can read it. publishAdPark is the
+     // derived clear, and it is the real pair that ships (proved by its own arm).
+     const markAdPark = (on) => { page.park = on ? '1' : '0'; };
+     const publishAdPark = () => { page.park = (overlay.adActive || overlay.revealed || !!S.heldAt) ? '1' : '0'; };
      ${grab('freezeNativeForPod')}
      const recLog = (n, d) => log.push(n + (d && d.hold ? ':hold=' + JSON.stringify(d.hold) : ''));
      const adLog = (n, f) => log.push(n + ':' + ((f && (f.why || f.act || f.reason)) || ''));
@@ -798,6 +816,112 @@ check(
     JSON.stringify(a.log),
   );
 
+  // POD E - THE HOLD'S BUDGET RUNS OUT WITH NO PICTURE. This is the freeze the
+  // owner reported on 0.8.112 (`ad-ui-hold {why:"hold-expired", heldMs:12498}`
+  // and then `hb {paused:true, ct:1023.3, rs:4}` at one position for 71 s).
+  // Three things must happen, and each of them was missing:
+  //   1. the element is handed back (a pause with no picture is a freeze),
+  //   2. the stamp is CLEARED, or every later tick returns `hold-expired` again,
+  //   3. the park is withdrawn, so content.js's stall watchdog may recover it.
+  a.ctx.page.ad = false;
+  a.overlay.adActive = false;
+  a.overlay.revealed = false;
+  a.overlay.standby = false;
+  a.w.tick(); // pod D ends; the hand-back resumes
+  a.ctx.page.ad = true;
+  a.w.tick(); // pod E takes its hold
+  const ePausedAtHold = a.video.paused;
+  // The ad is STILL on screen (`page.ad` stays true) and no clean source ever
+  // became healthy; the stamp is aged past AD_UI_HOLD_MAX_MS (12 s).
+  a.w.S.heldAt = Date.now() - 13000;
+  a.w.tick();
+  check(
+    'pod E: an expired hold hands the picture back, clears the stamp and withdraws the park',
+    ePausedAtHold === true && a.video.paused === false
+      && a.w.S.heldAt === 0
+      && a.count('ad-ui-hold:release') === 1
+      && a.count('ad-ui-hold:hold-failed') === 1
+      && a.ctx.page.park === '0',
+    JSON.stringify({ ePausedAtHold, paused: a.video.paused, heldAt: a.w.S.heldAt, park: a.ctx.page.park, failed: a.count('ad-ui-hold:hold-failed'), release: a.count('ad-ui-hold:release') }),
+  );
+  // ...and the SAME episode must not take the hold again: Twitch's own renderer
+  // resumes the element, and a hold that re-pauses it every 500 ms is a stutter
+  // on an ad the user is watching (the 12 s hold would restart, fail, restart).
+  a.video.paused = false; // the page resumed its own element after our release
+  const beforeRehold = a.count('ad-ui-hold:paused');
+  a.w.tick();
+  a.w.tick();
+  check(
+    'pod E2: the failed episode is not re-held (the picture stays his)',
+    a.video.paused === false && a.count('ad-ui-hold:paused') === beforeRehold,
+    JSON.stringify({ paused: a.video.paused, failedAt: a.w.S.failedAt, heldAt: a.w.S.heldAt, n: a.count('ad-ui-hold:paused'), beforeRehold }),
+  );
+  // POD F - the NEXT pod starts clean: the failure is per episode, not per load.
+  a.ctx.page.ad = false;
+  a.w.tick();
+  a.ctx.page.ad = true;
+  a.w.tick();
+  check(
+    'pod F: a later pod takes its hold again after the failed one (episode reset)',
+    a.video.paused === true && a.count('ad-ui-hold:paused') === beforeRehold + 1,
+    JSON.stringify(a.log),
+  );
+  a.ctx.page.ad = false;
+  a.w.tick();
+
+  // THE PARK ATTRIBUTE ITSELF. `content.js` lives in the isolated world and can
+  // only see the page through its DOM, so the ad path's own pause has to be
+  // declared there; a reader that finds nothing reads "a healthy parked player
+  // stays parked" (the 71 s). These two functions are the whole contract, run
+  // here rather than through a stub.
+  {
+    const MARK = grab('markAdPark');
+    const PUB = grab('publishAdPark');
+    const make = (pubSrc) => new Function(
+      'overlay',
+      `let adUiHeldAt = 0;
+       let adParkShown = false;
+       const document = { documentElement: { a: {}, setAttribute(k, v) { this.a[k] = v; }, getAttribute(k) { return this.a[k] === undefined ? null : this.a[k]; } } };
+       ${MARK}
+       ${pubSrc}
+       return { markAdPark, publishAdPark, doc: document, hold(v) { adUiHeldAt = v; } };`,
+    );
+    const w = make(PUB)({ adActive: false, revealed: false });
+    w.markAdPark(true);
+    const setOnPause = w.doc.documentElement.getAttribute('data-ko-adpark');
+    w.markAdPark(false);
+    const cleared = w.doc.documentElement.getAttribute('data-ko-adpark');
+    // A hold with no overlay is still a park, and the tick's derivation must say
+    // so; a pod is a park; neither is a park once the episode ends.
+    w.hold(Date.now());
+    w.publishAdPark();
+    const onHold = w.doc.documentElement.getAttribute('data-ko-adpark');
+    w.hold(0);
+    w.publishAdPark();
+    const offHold = w.doc.documentElement.getAttribute('data-ko-adpark');
+    w.publishAdPark(); // an unchanged derivation writes nothing
+    const stillOff = w.doc.documentElement.getAttribute('data-ko-adpark');
+    check(
+      'the park attribute is written before the pause and derived clear by the tick',
+      setOnPause === '1' && cleared === '0' && onHold === '1' && offHold === '0' && stillOff === '0',
+      JSON.stringify({ setOnPause, cleared, onHold, offHold, stillOff }),
+    );
+    // RED: derive it from the overlay alone and a HOLD with no frame is
+    // invisible to content.js - exactly his expired hold.
+    const redPub = PUB.replace(' || adUiHeldAt)', ')');
+    check('the park-derivation mutation applied to the shipped publisher', redPub !== PUB);
+    if (redPub !== PUB) {
+      const r2 = make(redPub)({ adActive: false, revealed: false });
+      r2.hold(Date.now());
+      r2.publishAdPark();
+      check(
+        'RED: a hold with no overlay is invisible to the page (his expired hold)',
+        r2.doc.documentElement.getAttribute('data-ko-adpark') === null,
+        String(r2.doc.documentElement.getAttribute('data-ko-adpark')),
+      );
+    }
+  }
+
   // RED: restore the shipped guard (`adActive || standby || frame`) and the
   // same pod B leaves the ad PLAYING - the pod the owner took.
   const revert = (s) => s.split('if (overlay.adActive || overlay.revealed) {').join('if (overlay.adActive || overlay.standby || overlay.frame) {');
@@ -852,6 +976,31 @@ check(
       'RED: without the freeze a revealed pod leaves the ad playing behind it',
       f.video.paused === false,
       JSON.stringify(f.log),
+    );
+  }
+
+  // RED: THE PRE-FIX HOLD-EXPIRED LINE ITSELF. `return adUiTickSkip('hold-expired')`
+  // kept the stamp (so the tick re-judged the same expired hold forever) and
+  // resumed nothing - his 71 s at `ct:1023.3`. The mutant restores exactly that
+  // line, so the arm above would read a paused element and a set stamp.
+  const oldExpiry = (s) => {
+    const live = /if \(Date\.now\(\) - adUiHeldAt > AD_UI_HOLD_MAX_MS\) \{[\s\S]*?\n    \}\n    const v = mainVideo\(\);/;
+    if (!live.test(s)) return s;
+    return s.replace(live, "if (Date.now() - adUiHeldAt > AD_UI_HOLD_MAX_MS) return adUiTickSkip('hold-expired');\n    const v = mainVideo();");
+  };
+  const redExpiryTick = oldExpiry(HOLD_TICK);
+  check('the hold-expiry mutation applied to the shipped tick', redExpiryTick !== HOLD_TICK && /adUiTickSkip\('hold-expired'\)/.test(redExpiryTick));
+  if (redExpiryTick !== HOLD_TICK) {
+    const x = build(HOLD, redExpiryTick, tickBody);
+    x.ctx.page.ad = true;
+    x.w.tick();
+    x.w.S.heldAt = Date.now() - 13000;
+    x.w.tick();
+    x.w.tick();
+    check(
+      'RED: the pre-fix expiry leaves the element parked and keeps re-judging it (his 71 s)',
+      x.video.paused === true && x.w.S.heldAt > 0 && x.count('ad-ui-hold:release') === 0,
+      JSON.stringify({ paused: x.video.paused, heldAt: x.w.S.heldAt, log: x.log }),
     );
   }
 }
@@ -1127,6 +1276,14 @@ const expected = [
   'pod A releases (native resumed) and its verdict rides on ad-ui-off',
   'pod B: a surviving standby/frame does NOT disarm the hold (native PAUSED)',
   'pod D: a later pod on the same shape is held and logged again (dedupe is per episode)',
+  'pod E: an expired hold hands the picture back, clears the stamp and withdraws the park',
+  'pod E2: the failed episode is not re-held (the picture stays his)',
+  'pod F: a later pod takes its hold again after the failed one (episode reset)',
+  'the hold-expiry mutation applied to the shipped tick',
+  'the park attribute is written before the pause and derived clear by the tick',
+  'the park-derivation mutation applied to the shipped publisher',
+  'RED: a hold with no overlay is invisible to the page (his expired hold)',
+  'RED: the pre-fix expiry leaves the element parked and keeps re-judging it (his 71 s)',
   'the leftover-standby mutation applied to the shipped hold',
   'the leftover-standby mutation applied to the shipped tick',
   'pod C: a painted pod freezes the native and names the reason',

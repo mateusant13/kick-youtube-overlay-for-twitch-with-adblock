@@ -2174,3 +2174,91 @@ re-inject)`.
 
 Owed, unchanged: the pod half on 0.8.112 in his own Chrome (`cellbit` reloaded, or hidden once so
 `recoverStale` heals it).
+
+## Wave record - 2026-11-24, the hold that expired and parked his live, and the reload he asked about (0.8.113)
+
+Owner, verbatim: *"acabei de tomar anuncio e travou a live"*, *"as vezes a live para e a pagina
+recarrega sozinha"*, and the order that shaped the second half: *"nao sei se é necessario isso ou se da
+pra ter o mesmo efeito com menos INTERRUPCAO notavel pelo usuario. veja se e possivel e implementa"*.
+
+Both reports are one chain, read from his own ring (`twitch.tv/cellbit`, 0.8.112, 1200 rows) oldest
+first:
+
+|ms|row|what it says|
+|---|---|---|
+|1017640|`ad-rewind-skip {reason:"standby", ms:1017640}`|the pod opens on a break the break detector never announced|
+|1019256|`overlay-reveal {reason:"reveal-timeout", lat:6.7, q:"360p"}`|the clean picture went up late, at 360p, 6.7 s behind|
+|1027875|`ad-ui-on {kind:"slate", adSec:0}`|the slate text arrives AFTER the reveal|
+|1197654|`native-handoff {podAgeMs:180012, ct:1018.2, buf:1026.1}`|the pod ran its whole 180 s ceiling|
+|1197660|`native-edge-recover {asked:1189, behind:175.9}` -> clamped|the hand-back fed a wall-clock deficit into the DVR window|
+|1198884|`ad-ui-hold {act:"paused", ct:1023.1}`|the break was STILL on screen, so the hold took the element again|
+|1211382|`ad-ui-hold {act:"skip", why:"hold-expired", heldMs:12498}`|the hold's budget ran out - and that was the end of every decision|
+|1211383..|`hb {tw:{ct:1023.3, paused:true, rs:4}}` + `display-clock verdict:PAUSED`|**71 s at one position**, `adSec` climbing to 195 s|
+|8652773|`pagehide` -> `script-start {ms:520}` -> `boot {version:"0.8.112"}`|the page reloaded itself, same version, no `stale-tab` row|
+
+Three defects, each with its own row and its own arm:
+
+1. **`hold-expired` returned and did nothing.** `adUiHoldTick` logged `return adUiTickSkip('hold-expired')`:
+   no resume, and `adUiHeldAt` stayed set, so every later 500 ms tick re-judged the same expired hold. It
+   now FAILS OPEN, like the cold-cover bound: clears the stamp and the re-assert count, writes
+   `ad-ui-hold {act:"release", why:"hold-expired", heldMs, ct, paused}`, withdraws the park and calls
+   `resumeNative(..., 'hold-expired', {seek:false})`. `adUiHold` refuses to re-take a hold in the same
+   episode (`ad-ui-hold {act:"skip", why:"hold-failed"}`, once), because re-pausing every tick is a
+   stutter on an ad he IS watching; `adUiRelease` clears the failure so the next pod starts clean.
+2. **The ad path's pause was unattributable from the isolated world.** `freezeNativeForPod()` never
+   registered the pause as ours, and `nativeStallWatch` reads a paused element with media in front of it
+   as "a healthy parked player stays parked" - so the safety net could not see a freeze it did not cause.
+   The ad path now declares its park in `data-ko-adpark` (written BEFORE the pause it describes, derived
+   clear on every 500 ms tick so no exit path can leak it), the `pause` stamp carries `adpark`, and the
+   watchdog gives that pause `AD_PARK_BUDGET_MS = 14000` (the 12 s hold plus the tick that has to notice)
+   and then recovers it under its own name: `native-stall {why:"ad-park-expired"}`.
+3. **The reload was answered, not theorised.** Our only page reload is `recoverStale()` (hidden tabs,
+   once per version). It now REFUSES to reload while `data-ko-adpark === '1'` and says so once
+   (`stale-tab {act:"wait-pod"}`): a reload tears down the clean frame, its claim and every timer that
+   owns it, and the heartbeat re-asks in 8 s, so waiting costs nothing. A marker nobody clears must not
+   block the heal for the life of the page, so a park older than every ceiling this extension has
+   (`STALE_PARK_MAX_MS = 300000`) is a leak, not an ad: it heals and says `stale-tab
+   {act:"wait-pod-stale", ms}`. Asked "was this reload ours", the
+   ring previously answered with a `pagehide` + `boot` pair carrying the SAME version on both sides -
+   indistinguishable between the heal, his F5 and Twitch's own player recovery. Every boot now writes
+   `boot-nav {nav, heal}`: `nav` is the browser's own navigation type and `heal` is the marker written
+   800 ms before our one sanctioned reload.
+
+The suite said the same thing before the fix, and it is the reason this wave needed new arms rather than a
+new arm: `ad-detect` drove the hold and never the EXPIRY, and `content-fix` N1/N2 drove pauses the page or
+the user made and never one the ad path made.
+
+Arms: `ad-detect` pods E (release), E2 (no re-hold in the failed episode), F (the next pod still holds),
+the real `markAdPark`/`publishAdPark` pair, and two REDs (the pre-fix `return adUiTickSkip('hold-expired')`
+mutant leaves the element parked with the stamp set; deriving the park from the overlay alone makes a
+hold invisible) - `ARMS 64/64`, `RESULT PASS`. `content-fix` N3 (attributed at the pause, left alone
+inside the budget, recovered past it as `ad-park-expired`, plus its two mutations) and P2r (a pod is
+never reloaded under, a deferred reload still heals afterwards, and `bootProvenance()` names our reload
+and only ours) - `ALL CONTENT.JS FIX CHECKS PASSED`, `ARMS 35/35 present`.
+
+**The reader was repaired in the same wave, because it answered the wrong question.** `--file=dump.json`
+was silently IGNORED (`argOf` only understood `--file VALUE`), so a verdict run "on the dump" read the
+live ring instead; and a phrase like `NOTHING SAW AN AD in this page load` was printed from a
+30-minute WINDOW, which is a different population. `--flag=value` now parses, a `WINDOW` line names how
+many rows the cutoff excluded, and the absence claim is scoped to what was read. Two new sections answer
+the two reports directly: `HOLD EXPIRY (the hold ran out: did the picture come back)` prints
+`held= / release= / cured=` per expiry and raises a finding when nothing resumed, and `RELOADS (who
+navigated this page)` prints `pagehide= / boot-nav= / nav= / heal=`, saying `NOT-MEASURABLE` for builds
+that do not stamp it. Known-answer run on his dump:
+`HOLD EXPIRY 16m02.2 held=12.5s release=NEVER cured=NONE` and the finding `a hold expired and NOTHING
+resumed the picture (12.5s held; build < 0.8.113 leaves it frozen)` - the defect the arm list proves
+fixed, observed from the log the way he asked.
+
+**A fixture that froze its own clock measured the wrong guard.** The gate run that followed this wave
+failed `cold-cover-fixture` on the SPARSE arm (`no overlay-reveal after one healthy sample;
+adlog=[..."playing-not-healthy"]`) while the same suite passed three times on its own. The sparse limb
+slept 1700 ms and then fed the SAME sample (`pos:30`); under load that `settle` overshoots 2 s, and
+`posFrozen` (previous report >2000 ms old with `pos` moved <0.05) refused the sample, so the arm was
+measuring the pos-frozen guard instead of the sparse gate. A real throttled frame keeps decoding
+between the two reports it gets, so the second sample now carries `pos:31.7`. The product guard is
+untouched and keeps its own arm in `ad-time-continuity`.
+
+**Owed, and it is the only thing that closes this:** a pod on 0.8.113 whose hold expires must show
+`ad-ui-hold {act:"release"}` inside the 500 ms tick and either a resumed element or
+`native-stall {why:"ad-park-expired"}`, with no page reload afterwards. An extension reload does not
+re-inject content scripts: `cellbit` heals on its next navigation, or once hidden (`recoverStale`).

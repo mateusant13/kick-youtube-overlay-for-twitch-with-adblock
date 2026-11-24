@@ -20,7 +20,14 @@ import { readFileSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const argv = process.argv.slice(2);
+// `--flag value` AND `--flag=value`, because the second form was silently
+// ignored: `--file=dump.json` fell back to the LIVE ring, and a reader that
+// answers from a different population than the one it was pointed at is worse
+// than no reader (measured 2026-11-24: the dump's pod was outside the 1200-row
+// live window, so the verdict reported "no ad signal" for a dump that had one).
 const argOf = (name, dflt) => {
+  const eq = argv.find((a) => a.startsWith(name + '='));
+  if (eq) return eq.slice(name.length + 1);
   const i = argv.indexOf(name);
   return i >= 0 ? argv[i + 1] : dflt;
 };
@@ -467,6 +474,57 @@ function reportEpisode(ep, idx) {
       );
     }
   }
+  // ---- hold expiry: did anything resume the picture -------------------------
+  // Owner report 2026-11-24, verbatim: "acabei de tomar anuncio e travou a live"
+  // and "as vezes a live para e a pagina recarrega sozinha". The hold's budget
+  // ran out with no clean source, `ad-ui-hold {why:"hold-expired"}` fired, and
+  // NOTHING resumed the element: 71 s at one `ct` until the page reloaded. A
+  // hold that expires must name its release, or the ring cannot tell "the
+  // extension chose to leave it" from "the extension forgot it".
+  const holdExpiry = [];
+  for (let i = 0; i < evs.length; i += 1) {
+    const d = evs[i].d || {};
+    if (evs[i].ev !== 'ad-ui-hold' || d.why !== 'hold-expired' || d.act === 'release') continue;
+    let released = null;
+    let cured = null;
+    for (let j = i + 1; j < evs.length; j += 1) {
+      const e2 = evs[j];
+      const d2 = e2.d || {};
+      if (e2.ev === 'ad-ui-hold' && (d2.act === 'release' || d2.why === 'hold-failed')) released = e2.t;
+      if (released != null && e2.ev === 'native-resume') { cured = 'native-resume'; break; }
+      if (released != null && e2.ev === 'native-stall-resume') { cured = 'native-stall-resume'; break; }
+      if (e2.ev === 'pagehide' || e2.ev === 'boot') break;
+    }
+    holdExpiry.push({ t: evs[i].t, heldMs: d.heldMs, released, cured });
+  }
+  if (holdExpiry.length) {
+    lines.push('  HOLD EXPIRY (the hold ran out: did the picture come back)');
+    for (const h of holdExpiry) {
+      lines.push(
+        `    ${fmt(h.t - ep.start).padStart(7)}  held=${h.heldMs == null ? '?' : fmt(h.heldMs)}` +
+          `  release=${h.released == null ? 'NEVER' : fmt(h.released - h.t)}  cured=${h.cured || 'NONE'}`,
+      );
+      if (h.released == null) {
+        findings.push(
+          `a hold expired and NOTHING resumed the picture (${fmt(h.heldMs)} held; build < 0.8.113 leaves it frozen)`,
+        );
+      }
+    }
+  }
+  // ---- whose reload was it --------------------------------------------------
+  // `pagehide` + `boot` with the SAME version on both sides is indistinguishable
+  // between the version heal, his F5 and Twitch's own player recovery. 0.8.113
+  // stamps `boot-nav {nav, heal}`; before that the ring answers CANNOT-MEASURE.
+  {
+    const navs = evs.filter((e) => e.ev === 'boot-nav').map((e) => e.d || {});
+    const hides = evs.filter((e) => e.ev === 'pagehide').length;
+    if (hides || navs.length) {
+      lines.push('  RELOADS (who navigated this page)');
+      lines.push(`    pagehide=${hides}  boot-nav=${navs.length}`);
+      for (const n of navs) lines.push(`    nav=${n.nav || '?'}  heal=${n.heal || '-'}`);
+      if (hides && !navs.length) lines.push('    author=NOT-MEASURABLE (build < 0.8.113 does not stamp boot-nav)');
+    }
+  }
   if (adWindows.length) {
     lines.push('  AD WINDOW (how long it played before it was stopped)');
     for (const w of adWindows) {
@@ -568,8 +626,12 @@ function reportEpisode(ep, idx) {
     lines.push(`    worker-hook-fail: ${defence.hookFails.map((h) => (h.d && h.d.err) || '?').join(' | ').slice(0, 160)}`);
   }
   if (!defence.adUi && !defence.adHold && !defence.playlists) {
-    lines.push('    NOTHING SAW AN AD in this page load: no DOM signal, no playlist probe, no hold.');
-    findings.push('no ad signal at all in this page load (ad-ui-on=0 ad-hold=0 worker-playlist=0)');
+    // SCOPED TO THE WINDOW, because the window is what was read: a pod outside
+    // it produces this same silence, and claiming it of the whole page load sent
+    // one diagnosis chasing a detector that had worked (2026-11-24).
+    const scope = WIN_TAG;
+    lines.push(`    NOTHING SAW AN AD ${scope}: no DOM signal, no playlist probe, no hold.`);
+    findings.push(`no ad signal ${scope} (ad-ui-on=0 ad-hold=0 worker-playlist=0)`);
   }
   if (!defence.hooks.length) {
     // `worker-hook` is written WHEN the constructor is patched, so an empty list
@@ -643,7 +705,16 @@ if (!log.length) {
   process.exit(2);
 }
 const cutoff = log[log.length - 1].t - SPAN_MS;
+const beforeWindow = log.length;
 log = log.filter((e) => e.t >= cutoff);
+// A WINDOW IS NOT A PAGE LOAD. Measured 2026-11-24: a ring whose pod sat 17 min
+// in and whose last row was 21 min later lost `ad-ui-on`, `ad-overlay-reveal`
+// and the whole hand-back to the default 30 min cutoff, and the verdict then
+// printed "NOTHING SAW AN AD in this page load" - the loudest possible wrong
+// answer, on the one report it exists to answer. Every section that says
+// "nothing" now says it about a named window, with the count it dropped.
+const droppedByWindow = beforeWindow - log.length;
+const WIN_TAG = droppedByWindow ? 'in this window' : 'in this page load';
 const eps = episodesOf(log).slice(-EPISODES);
 // WHICH TAB IS RUNNING WHAT. An extension reload re-injects nothing, so a tab
 // opened before the update keeps the old code and answers the owner's reports
@@ -660,6 +731,13 @@ for (const e of log) {
   rec.n += 1;
   if (d.slug) rec.slugs.add(d.slug);
   builds.set(v, rec);
+}
+if (droppedByWindow) {
+  console.log(
+    `WINDOW last ${Math.round(SPAN_MS / 60000)}m: ${droppedByWindow} older row(s) EXCLUDED` +
+      ' (widen with --span MILLISECONDS; an absence below is an absence in this window)',
+  );
+  console.log('');
 }
 if (builds.size) {
   console.log('BUILDS IN THIS RING (which tab is running what)');

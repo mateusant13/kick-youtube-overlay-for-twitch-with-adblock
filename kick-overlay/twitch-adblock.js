@@ -717,11 +717,35 @@
   // (`display-clock pos:318.51 delta:21.56`). Twitch's own ad renderer calls
   // play() again, so one pause is not a freeze; the tick re-asserts it, exactly
   // like the hold has done since 0.8.51.
+  // OUR PAUSE MUST BE ATTRIBUTABLE FROM THE ISOLATED WORLD. `content.js`'s
+  // stall watchdog cannot tell a page that parked its own player from a hold
+  // that parked it, and it answers "a healthy parked player stays parked" -
+  // which is how a hold that expired left his picture frozen (measured
+  // 2026-11-24, twitch.tv/cellbit, 0.8.112: `hb {paused:true, ct:1023.3, rs:4}`
+  // at the same position for 71 s after `ad-ui-hold {act:"skip",
+  // why:"hold-expired", heldMs:12498}`, cured only by the page reload).
+  // One attribute, written BEFORE the pause it describes so the `pause` event
+  // can never be stamped with the previous value, and cleared by the 500 ms
+  // tick's own derivation so no exit path can leak it.
+  function markAdPark(on) {
+    try {
+      const root = document.documentElement;
+      if (root) root.setAttribute('data-ko-adpark', on ? '1' : '0');
+    } catch { /* document tearing down */ }
+  }
+  let adParkShown = false;
+  function publishAdPark() {
+    const want = !!(overlay.adActive || overlay.revealed || adUiHeldAt);
+    if (want === adParkShown) return;
+    adParkShown = want;
+    markAdPark(want);
+  }
   function freezeNativeForPod() {
     const v = mainVideo();
     if (!v || !v.isConnected) return null;
     if (v.paused) return null;
     if (resumeRefusedByUser(v)) return null; // a user-parked player stays parked
+    markAdPark(true);
     try {
       v.pause();
     } catch {
@@ -1291,6 +1315,11 @@
   // native is the black screen he photographed), and resuming is the release.
   let adUiHeldAt = 0;
   let adUiReasserts = 0;
+  // A hold that OUTLIVED its budget without a clean picture hands the page back
+  // and must not re-take the SAME episode (see the tick's `hold-expired`
+  // branch). Module state, cleared at the episode's own end.
+  let adUiFailedAt = 0;
+  let adUiFailedLogged = false;
   // One `ad-skip {reason:'hidden-tab'}` per detected episode, not one per tick.
   let adUiHiddenLogged = false;
   // One `ad-skip {reason:'overlay-owns'}` per detected episode, for the same
@@ -1420,7 +1449,36 @@
     if (!adUiHeldAt) return adUiTickSkip('no-hold');
     if (overlayOwnsPlayback()) return adUiTickSkip('overlay-owns');
     if (Date.now() - adUiHeldAt > AD_UI_HOLD_MAX_MS) {
-      return adUiTickSkip('hold-expired', { heldMs: Date.now() - adUiHeldAt });
+      // THE HOLD'S BUDGET EXPIRING IS NOT A FREEZE. Measured in the owner's own
+      // ring (twitch.tv/cellbit, 0.8.112, 2026-11-24): the pod handed back onto a
+      // break that was still running, `ad-ui-hold {act:"paused", ct:1023.1}`
+      // took the element, a clean source that never became healthy
+      // (`playing-not-healthy buffered 0.4-2.8` for 200 s) meant no cover
+      // arrived, `ad-ui-hold {why:"hold-expired", heldMs:12498}` fired - and then
+      // NOTHING resumed it. Two defects in that one line: the stamp stayed set
+      // (so every later tick returned here instead of judging afresh) and the
+      // pause outlived the hold, reading `{paused:true, ct:1023.3, rs:4}` on
+      // every heartbeat for 71 s until Twitch reloaded the page himself.
+      // FAIL OPEN, like the cold cover does: an ad the user can SEE beats a
+      // picture that never moves, which is the report ("travou a live").
+      const heldMs = Date.now() - adUiHeldAt;
+      adUiHeldAt = 0;
+      adUiReasserts = 0;
+      adUiFailedAt = Date.now();
+      if (!adUiFailedLogged) {
+        adUiFailedLogged = true;
+        adLog('ad-ui-hold', { act: 'skip', why: 'hold-failed', heldMs: Math.round(heldMs) });
+      }
+      const v0 = mainVideo();
+      const ct0 = v0 ? +Number(v0.currentTime || 0).toFixed(1) : null;
+      // A release is a transition: one row for the episode, with the numbers.
+      adLogState('ad-ui-hold', { act: 'release', why: 'hold-expired', heldMs: Math.round(heldMs), ct: ct0, paused: !!(v0 && v0.paused) });
+      markAdPark(false);
+      // Keep a source warming so the REST of this break can still be covered if
+      // one becomes ready; the episode itself stays failed (see `adUiHold`).
+      requestStandby(1200, false, 'hold-expired');
+      if (v0 && v0.isConnected && v0.paused) resumeNative(v0, 'hold-expired', { seek: false });
+      return;
     }
     const v = mainVideo();
     if (!v || !v.isConnected) return adUiTickSkip('no-video');
@@ -1458,6 +1516,18 @@
         froze: !!pv,
       });
     }
+    // ONE FAILED HOLD PER EPISODE. A hold that ran out its budget without a
+    // picture moving did not fail for lack of asking: re-taking it every tick
+    // would pause the page for 12 s, fail open, pause again - a stutter on the
+    // ad the user IS watching. The episode is given the page back and the next
+    // pod starts clean (`adUiRelease` clears this).
+    if (adUiFailedAt) {
+      if (!adUiFailedLogged) {
+        adUiFailedLogged = true;
+        adLog('ad-ui-hold', { act: 'skip', why: 'hold-failed', ageMs: Math.round(Date.now() - adUiFailedAt) });
+      }
+      return;
+    }
     if (overlayOwnsPlayback()) {
       // NAMED, ONCE PER EPISODE. A refusal the ring cannot see is how a whole
       // 30 s pod read as "NOTHING SAW AN AD" (measured 2026-11-19). `own` is
@@ -1492,6 +1562,7 @@
       return;
     }
     adUiHeldAt = Date.now();
+    markAdPark(true);
     try { v.pause(); } catch { /* ignore */ }
     // The pod's take-over reads `v.paused` to decide whether the USER parked the
     // player, and this pause is ours: stamp it or the hand-back refuses to
@@ -1521,6 +1592,11 @@
     // poisoned the per-episode dedupe for the rest of the page load: the ring
     // got its one row, and every later pod on the same reason was silent.
     adUiTickWhy = '';
+    // A NEW EPISODE STARTS WITH A FULL BUDGET. The failed flag is per episode
+    // for the same reason the reason-dedupe is (the 2026-11-20 wave): a refusal
+    // that outlives its pod makes every later pod silent or, here, unheld.
+    adUiFailedAt = 0;
+    adUiFailedLogged = false;
     const wasHeld = !!adUiHeldAt;
     const heldMs = wasHeld ? Date.now() - adUiHeldAt : 0;
     const reasserts = adUiReasserts;
@@ -3898,6 +3974,10 @@
         recLog(playing ? (ad ? 'ad-video-play' : 'content-play') : 'content-stop', { ad });
       }
       if (ad) adUiHoldTick();
+      // THE PARK FLAG IS DERIVED, so no exit path can leave it set: a pod that
+      // ended, a hold that expired and a page that resumed itself all clear it
+      // here within one tick. `content.js` reads it when stamping a pause.
+      publishAdPark();
       if (ad && Date.now() - rec.lastTick > 1000) {
         rec.lastTick = Date.now();
         recLog('ad-tick', { adSec: Number(((Date.now() - rec.adSince) / 1000).toFixed(1)) });

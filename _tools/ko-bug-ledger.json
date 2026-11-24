@@ -1206,6 +1206,25 @@
     "Live half OWED: the fix needs one update landed while a twitch tab sits hidden, then `hb {ver:<new>}` after a heartbeat with no user navigation."
    ],
    "owner_validation": "pending"
+  },
+{
+    "id": "KO-20261124-01",
+    "state": "fixed",
+    "author": "lane",
+    "reported": "2026-11-24",
+    "fixed_in": "0.8.113",
+    "commit": null,
+    "verified": false,
+    "title": "An expired ad hold paused the live and nothing resumed it: the picture stayed frozen at one position until Twitch reloaded the page",
+    "hypothesis": "The DOM/slate pod covered a break whose clean source never became healthy, so after the 180 s ceiling the hand-back landed on an ad that was still running and adUiHold paused the native at ct 1023.1. When that hold expired (AD_UI_HOLD_MAX_MS = 12000) adUiHoldTick only returned adUiTickSkip(\"hold-expired\"): it did not resume the element and did not clear adUiHeldAt, so every later tick re-judged the same expired hold. content.js could not help either, because freezeNativeForPod never registered the pause as ours and nativeStallWatch reads a paused element with media in front of it as \"a healthy parked player stays parked\". Measured in his own ring (twitch.tv/cellbit, 0.8.112): ad-ui-hold {act:\"skip\", why:\"hold-expired\", heldMs:12498} then hb {paused:true, ct:1023.3, rs:4} at ONE position for 71 s, ending in a page reload. Not attributable: the ad path wrote no park marker, so the isolated world could not tell its pause from the page own.",
+    "falsifier": "Drive the real tick and the real hold in ad-detect: with the ad still on screen and the stamp aged past 12 s, the element must be RESUMED, the stamp cleared, the park attribute withdrawn, one release row and one hold-failed row written, and the same episode must not take the hold again (pods E/E2), while a later pod still does (F). The RED restores the pre-fix return and requires a parked element with the stamp still set. In content-fix, N3 requires an ad park inside AD_PARK_BUDGET_MS to be left alone, past it to be recovered with native-stall {why:\"ad-park-expired\"} plus native-stall-resume {action:\"play\"}, and the pause stamp to carry adpark from data-ko-adpark; its REDs remove the budget gate and the attribute read and must reproduce the frozen picture.",
+    "evidence": [
+      "node content-fix-test.cjs -> \"N3 ad park: attributed at the pause, budgeted, then cured - OK\", \"ALL CONTENT.JS FIX CHECKS PASSED\", \"ARMS 35/35 present\".",
+      "node ad-detect-test.cjs -> pods E, E2, F, the park-attribute pair and both REDs OK, \"ARMS 64/64\", \"RESULT PASS\".",
+      "Known-answer run of the reader on his ring dump: node _tools/ko-adlog-verdict.mjs --file G:/Temp/ko-scratch/ring.json --episodes=4 -> HOLD EXPIRY 16m02.2 held=12.5s release=NEVER cured=NONE and the finding \"a hold expired and NOTHING resumed the picture (12.5s held; build < 0.8.113 leaves it frozen)\".",
+      "Live half OWED: a pod on 0.8.113 whose hold expires must show ad-ui-hold {act:\"release\"} inside the 500 ms tick and either a resumed element or a native-stall {why:\"ad-park-expired\"} recovery, with no page reload afterwards."
+    ],
+    "owner_validation": "pending"
   }
  ]
 }

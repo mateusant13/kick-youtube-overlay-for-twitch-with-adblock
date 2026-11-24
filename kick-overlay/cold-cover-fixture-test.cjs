@@ -266,7 +266,14 @@ async function main() {
       // 10-30s. The gate must reveal on that single healthy sample instead of
       // counting to three and letting the bound stop a healthy player.
       await settle(1700);
-      page.frameMsg(healthySt());
+      // A real throttled frame keeps DECODING between the two reports it gets:
+      // its playhead advances by the wall-clock gap. A sample that repeats the
+      // same `pos` after >2 s is exactly what the product's pos-frozen guard
+      // refuses (`playing-not-healthy {why:'pos-frozen'}`), so a fixture that
+      // held pos at 30 measured the guard instead of the sparse gate whenever
+      // this settle overshot 2 s on a loaded box (measured 2026-11-24, gate run
+      // under load: `no overlay-reveal after one healthy sample`).
+      page.frameMsg(healthySt({ pos: 31.7 }));
       await settle(60);
     } else {
       for (let i = 0; i < 3; i++) page.frameMsg(healthySt());

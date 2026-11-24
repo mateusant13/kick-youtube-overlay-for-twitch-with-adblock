@@ -2469,6 +2469,90 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     };
     await run();
   }
+  // P2r: NEVER RELOAD UNDER A POD, AND SAY WHOSE RELOAD IT WAS.
+  // Owner 2026-11-24, verbatim: "as vezes a live para e a pagina recarrega
+  // sozinha ... nao sei se é necessario isso ou se da pra ter o mesmo efeito com
+  // menos INTERRUPCAO notavel pelo usuario". A reload that lands on a pod tears
+  // down the clean frame, its claim and every timer that owns it; the heartbeat
+  // re-asks in 8 s, so waiting costs nothing. And "did OUR code reload this
+  // page" was unanswerable from the ring: `pagehide`+`boot` with one version on
+  // both sides reads the same whether it was the heal, his F5 or Twitch's own
+  // player recovery - so the boot now stamps the navigation type and the marker
+  // this file writes 800 ms earlier.
+  {
+    const run = async () => {
+      const bootRows = () => swCalls.filter((m) => m && m.__koDiag && m.__koDiag.ev === 'boot-nav').map((m) => m.__koDiag.data);
+      const tabRows = () => swCalls.filter((m) => m && m.__koDiag && m.__koDiag.ev === 'stale-tab').map((m) => m.__koDiag.data);
+      manifestVersion = '0.9.4';
+      mountDoc.hidden = true;
+      sessionStore.clear();
+      mountDoc.documentElement.setAttribute('data-ko-adpark', '1');
+      reloads.length = 0;
+      const mark = swCalls.length;
+      mountApi.recoverStale();
+      await new Promise((r) => setTimeout(r, 900));
+      const waited = tabRows().filter((d) => d && d.act === 'wait-pod');
+      assert.strictEqual(reloads.length, 0, 'a stale tab was reloaded UNDER A POD (the interruption he asked to remove)');
+      assert.strictEqual(waited.length, 1, `the deferral was silent: ${JSON.stringify(tabRows())}`);
+      assert.strictEqual(sessionStore.has('ko.staleReload'), false, 'a deferred reload still marked itself as done');
+      // A PARK THAT OUTLIVES EVERY CEILING IS A LEAK, NOT AN AD: a marker nobody
+      // clears must not block the heal for the life of the page - 300 s is past
+      // the 180 s pod ceiling and the 12 s hold, so nothing of ours is waiting.
+      mountApi.KO.staleParkSince = Date.now() - 400000;
+      mountApi.KO.stalePark = 'wait-pod';
+      sessionStore.clear();
+      reloads.length = 0;
+      const leakMark = swCalls.length;
+      mountApi.recoverStale();
+      await new Promise((r) => setTimeout(r, 900));
+      const leakRows = swCalls.slice(leakMark).filter((m) => m && m.__koDiag && m.__koDiag.ev === 'stale-tab' && m.__koDiag.data && m.__koDiag.data.act === 'wait-pod-stale');
+      assert.strictEqual(reloads.length, 1, 'a leaked park blocked the heal forever (the tab would run old code for the life of the page)');
+      assert.strictEqual(leakRows.length, 1, `the leaked park was healed silently: ${JSON.stringify(swCalls.slice(leakMark).filter((m) => m && m.__koDiag))}`);
+      assert.strictEqual(sessionStore.get('ko.staleReload'), manifestVersion, 'the leak-healed reload was not marked as ours');
+      mountApi.KO.staleParkSince = 0;
+      mountApi.KO.stalePark = '';
+      // The same ask, once the pod is over: it heals, and the marker names it.
+      mountDoc.documentElement.setAttribute('data-ko-adpark', '0');
+      mountApi.recoverStale();
+      await new Promise((r) => setTimeout(r, 900));
+      assert.strictEqual(reloads.length, 1, 'the tab never healed after the pod ended');
+      assert.strictEqual(sessionStore.get('ko.staleReload'), manifestVersion, 'the reload was not marked as ours');
+      // A boot that follows OUR reload says so; a boot with no marker does not.
+      const KO_VER = (src.match(/const KO_VER = '([^']+)'/) || [])[1];
+      assert.ok(KO_VER, 'P2r: the script version literal is not in the source');
+      sessionStore.clear();
+      sessionStore.set('ko.staleReload', KO_VER);
+      const prov = () => new Function('window', 'document', 'location', 'navigator', src + '\n;return {bootProvenance};')(
+        global, mountDoc, global.location, global.navigator,
+      ).bootProvenance();
+      const ours = prov();
+      sessionStore.clear();
+      const theirs = prov();
+      assert.strictEqual(ours.heal, 'stale-reload', `a reload of ours was not attributed at boot: ${JSON.stringify(ours)}`);
+      assert.strictEqual(theirs.heal, null, `a navigation we did not make was claimed as ours: ${JSON.stringify(theirs)}`);
+      assert.ok(theirs.nav === null || typeof theirs.nav === 'string', `the navigation type is not a string or null: ${JSON.stringify(theirs)}`);
+      // RED: without the deferral the same ask reloads under the pod.
+      const podGuard = "  if (parked) {";
+      assert.ok(src.includes(podGuard), 'P2r RED: the pod guard is not where the arm expects it');
+      const red = new Function('window', 'document', 'location', 'navigator', src.replace(
+        podGuard,
+        '  if (false && parked) { // RED: pre-fix, the heal never asks whether a pod is up',
+      ) + '\n;return {recoverStale};')(global, mountDoc, global.location, global.navigator);
+      mountDoc.documentElement.setAttribute('data-ko-adpark', '1');
+      sessionStore.clear();
+      reloads.length = 0;
+      red.recoverStale();
+      await new Promise((r) => setTimeout(r, 900));
+      assert.strictEqual(reloads.length, 1, 'P2r RED: the pre-fix heal reloaded a page the pod owned (proves the deferral is load-bearing)');
+      mountDoc.documentElement.setAttribute('data-ko-adpark', '0');
+      mountDoc.hidden = false;
+      manifestVersion = '0.8.82';
+      sessionStore.clear();
+      void bootRows;
+      console.log('P2r stale-tab: a pod is never reloaded under, and a reload names its author - OK');
+    };
+    await run();
+  }
   // P2j: the LOG must answer the owner's questions. Every report of 2026-11-11/12
   // (an ad/player fight, a switch that lost the mute, a native left paused) asked
   // "who had the screen, what changed, and why" - and content.js sent those
@@ -3473,6 +3557,139 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
 
     reset();
     console.log('N2 native decisions: resumed/refused rows, hidden tab, owned picture and the ceiling - OK');
+  }
+
+  // ---- N3: the pause the AD PATH made is attributed, budgeted and then cured --
+  // Measured 2026-11-24 in the owner's own ring (twitch.tv/cellbit, 0.8.112):
+  // `ad-ui-hold {act:"skip", why:"hold-expired", heldMs:12498}` and then
+  // `hb {paused:true, ct:1023.3, rs:4}` at ONE position for 71 s, until the page
+  // reloaded itself. Two holes, both here: the ad path's pause looked like a page
+  // park ("a healthy parked player stays parked"), and nothing in this file could
+  // tell it apart from his own pause.
+  {
+    const mkVideo3 = (bfr) => {
+      const v = videoEl('nativeStall3');
+      v.paused = true;
+      v.readyState = 4;
+      v.currentTime = 100;
+      v.duration = Infinity;
+      v.playCount = 0;
+      v.loadCount = 0;
+      v.buffered = bfr;
+      v.play = function () { this.playCount += 1; this.paused = false; return Promise.resolve(); };
+      v.load = function () { this.loadCount += 1; this.readyState = 1; this.currentTime = 0; };
+      fakeVideos.length = 0;
+      fakeVideos.push(v);
+      return v;
+    };
+    // A parked element with plenty of media in front of it: the shape that used
+    // to be "healthy parked, leave it" no matter who parked it.
+    const roomy = () => ({ length: 1, start: () => 90, end: () => 130 });
+    // A mutated copy of the file with its own state, timers disabled: the same
+    // shape N2 uses, kept local so this section owns its own REDs.
+    const mk = (source) => {
+      const realSetInterval = global.setInterval;
+      global.setInterval = () => 0;
+      try {
+        return new Function('window', 'document', 'location', 'navigator', source
+          + '\n;return {KO, dispSample, twitchVideo, installNativeStamp};')(global, doc, global.location, global.navigator);
+      } finally {
+        global.setInterval = realSetInterval;
+      }
+    };
+    let b0 = 0;
+    const rowsN3 = (ev) => swCalls.slice(b0).filter((m) => m && m.__koDiag && m.__koDiag.ev === ev).map((m) => m.__koDiag.data);
+    const parkSeed = (v, at, adpark, K = KO) => {
+      K.nat = null;
+      K.disp = { srf: 'twitch', pos: v.currentTime, movedAt: Date.now() - 12000, verdict: 'PAUSED', loggedAt: 0, last: null };
+      K.natPause = { el: v, at, ct: v.currentTime, rs: 4, hidden: false, inputAgeMs: null, input: null, ours: false, adpark };
+      K.lastInputAt = 0;
+      K.lastInputWhat = '';
+      K.ownerAttr = null;
+      K.wrap = null;
+      K.enabled = true;
+      K.player = 'twitch';
+      K.kickState = null;
+      K.twPaused.clear();
+    };
+    // (a) INSIDE the budget the park is ours and nothing is touched - a hold may
+    //     still hand the picture back, and resuming under it is the pause/resume
+    //     fight of 0.8.9x.
+    b0 = swCalls.length;
+    doc.hidden = false;
+    let v3 = mkVideo3(roomy());
+    parkSeed(v3, Date.now() - 5000, true);
+    api.dispSample();
+    assert.strictEqual(v3.playCount, 0, 'an ad park inside its budget was resumed (the hold may still hand it back)');
+    assert.strictEqual(rowsN3('native-stall').length, 0, 'an ad park inside its budget was named a stall');
+    const inRef = rowsN3('native-stall-refused');
+    assert.strictEqual(inRef.length, 1, `the in-budget park did not name itself once: ${JSON.stringify(inRef)}`);
+    assert.strictEqual(inRef[0].why, 'ad-park', `the in-budget row blamed the wrong reason: ${JSON.stringify(inRef[0])}`);
+    api.dispSample();
+    api.dispSample();
+    assert.strictEqual(rowsN3('native-stall-refused').length, 1, 'the in-budget row was written once per sample (a site that fires on unchanged state)');
+    // (b) PAST the budget it is a freeze, and the row names the author and the
+    //     number: "the ad path parked this and stopped waiting".
+    b0 = swCalls.length;
+    v3 = mkVideo3(roomy());
+    parkSeed(v3, Date.now() - 20000, true);
+    api.dispSample();
+    const bStall = rowsN3('native-stall');
+    assert.strictEqual(bStall.length, 1, `the expired ad park was not named: ${JSON.stringify(bStall)}`);
+    assert.strictEqual(bStall[0].why, 'ad-park-expired', `the row blamed the wrong cause: ${JSON.stringify(bStall[0])}`);
+    const bRes = rowsN3('native-stall-resume');
+    assert.strictEqual(bRes.length, 1, `the expired ad park was not recovered: ${JSON.stringify(bRes)}`);
+    assert.strictEqual(bRes[0].action, 'play', `the cheapest action was not used: ${JSON.stringify(bRes[0])}`);
+    assert.strictEqual(v3.playCount, 1, "his frozen picture was never resumed");
+    assert.strictEqual(v3.loadCount, 0, 'the element was reloaded instead of resumed (the preroll risk)');
+    {
+      // Pre-fix: the park was never stale, so the picture stayed frozen.
+      const gate = "    if (p.adpark && now - p.at < AD_PARK_BUDGET_MS) {";
+      assert.ok(src.includes(gate), 'N3 RED: the budget gate is gone from the source');
+      const m = mk(src.replace(
+        gate + "\n      return nativeStallRefuse('ad-park', { ct, rs, buf: runway, heldMs: Math.round(now - p.at), budgetMs: AD_PARK_BUDGET_MS });\n    }",
+        "    if (p.adpark) return nativeStallIdle(); // RED: pre-fix, any ad park is left alone",
+      ));
+      const mv = mkVideo3(roomy());
+      parkSeed(mv, Date.now() - 20000, true, m.KO);
+      fakeVideos.length = 0;
+      fakeVideos.push(mv);
+      const bb = swCalls.length;
+      m.dispSample();
+      assert.strictEqual(mv.playCount, 0, 'N3 RED: without the budget the expired park is still left alone (his 71 s)');
+      assert.strictEqual(swCalls.slice(bb).filter((x) => x && x.__koDiag && x.__koDiag.ev === 'native-stall').length, 0, 'N3 RED: the pre-fix watchdog never named the parked element');
+    }
+    // (c) THE STAMP ITSELF: the ad path declares `data-ko-adpark` before it
+    //     pauses, and the isolated world can only read it at the pause event.
+    //     Driven through the REAL listener, not a regex.
+    {
+      const v4 = mkVideo3(roomy());
+      KO.natPause = null;
+      assert.ok((docListeners.pause || []).length > 0, 'the pause stamp listener is not installed');
+      doc.documentElement.setAttribute('data-ko-adpark', '1');
+      fireDoc('pause', { type: 'pause', target: v4 });
+      const stampedAd = KO.natPause && KO.natPause.adpark === true && KO.natPause.el === v4;
+      doc.documentElement.setAttribute('data-ko-adpark', '0');
+      fireDoc('pause', { type: 'pause', target: v4 });
+      const stampedPage = KO.natPause && KO.natPause.adpark === false;
+      assert.ok(stampedAd, `a pause with the park declared was not attributed to the ad path: ${JSON.stringify(KO.natPause && KO.natPause.adpark)}`);
+      assert.ok(stampedPage, `a page pause was attributed to the ad path: ${JSON.stringify(KO.natPause && KO.natPause.adpark)}`);
+      KO.natPause = null;
+      // RED: drop the attribute read and the two pauses become indistinguishable.
+      const m = mk(src.replace(
+        "              return String((document.documentElement && document.documentElement.getAttribute('data-ko-adpark')) || '') === '1';",
+        '              return false; // RED: pre-fix, every pause is the page\'s',
+      ));
+      m.installNativeStamp(); // the mutated module's own listener; the real one is already installed
+      m.KO.natPause = null;
+      doc.documentElement.setAttribute('data-ko-adpark', '1');
+      fireDoc('pause', { type: 'pause', target: v4 });
+      assert.ok(m.KO.natPause && m.KO.natPause.el === v4, 'N3(c) RED: the mutated stamp never saw the pause');
+      assert.strictEqual(m.KO.natPause.adpark, false, 'N3(c) RED: without the read an ad park still reads as the page\'s pause');
+      doc.documentElement.setAttribute('data-ko-adpark', '0');
+      KO.natPause = null;
+    }
+    console.log('N3 ad park: attributed at the pause, budgeted, then cured - OK');
   }
 
   // ---- O1: the DEATH PATH publishes the loss of the picture ----------------

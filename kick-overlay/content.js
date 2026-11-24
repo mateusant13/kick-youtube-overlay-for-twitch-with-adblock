@@ -292,6 +292,14 @@ const DISP_BEHIND_SEC = 8; // CLEAN_LAT_MAX: past this the picture is not live
 // was already being taken once a second.
 const NATIVE_STALL_MS = 4000; // a stalled episode this long is the "travou" he reports
 const NATIVE_STALL_BUFFER_SEC = 1.5; // less forward media than this is not a re-buffer
+// How long the ad path's own park may last before this watchdog treats it as a
+// freeze: `AD_UI_HOLD_MAX_MS` (twitch-adblock.js) is 12 s, plus the 500 ms tick
+// that has to notice and resume. Measured 2026-11-24: a hold expired at 12.5 s
+// and the element stayed parked for 71 s.
+const AD_PARK_BUDGET_MS = 14000;
+// A park marker older than every ceiling this extension has is a leak, and a
+// leak that blocked the stale-tab heal would keep a tab on old code forever.
+const STALE_PARK_MAX_MS = 300000;
 const NATIVE_USER_PAUSE_MS = 2000; // a pause this soon after real input is HIS
 const NATIVE_RECOVER_GAP_MS = 10000; // between attempts: a loop here is the defect
 const NATIVE_RECOVER_MAX = 2; // resume inside held media, then ONE source refresh
@@ -610,6 +618,20 @@ function installNativeStamp() {
           inputAgeMs: KO.lastInputAt ? Date.now() - KO.lastInputAt : null,
           input: KO.lastInputWhat || null,
           ours: KO.twPaused.has(t),
+          // A PAUSE THE AD PATH MADE IS OURS, NOT THE PAGE'S. The ad path parks
+          // the element while a hold or a pod owns the picture and declares it
+          // in `data-ko-adpark` (written BEFORE its own pause). Without this,
+          // `nativeStallWatch` sees "a healthy parked player" and leaves it:
+          // measured 2026-11-24 (twitch.tv/cellbit, 0.8.112), a hold expired
+          // with no clean picture and the element stayed paused at the same
+          // `ct` for 71 s until Twitch reloaded the page.
+          adpark: (() => {
+            try {
+              return String((document.documentElement && document.documentElement.getAttribute('data-ko-adpark')) || '') === '1';
+            } catch {
+              return false;
+            }
+          })(),
         };
       },
       true,
@@ -758,6 +780,7 @@ function nativeStallWatch(v, now, sample) {
     }
     return nativeStallIdle();
   }
+  let adParkStale = false;
   if (v.paused) {
     const p = KO.natPause && KO.natPause.el === v ? KO.natPause : null;
     if (!p) {
@@ -778,7 +801,26 @@ function nativeStallWatch(v, now, sample) {
     }
     if (p.hidden) return nativeStallRefuse('hidden', { ct, rs, buf: runway });
     if (p.ours) return nativeStallIdle(); // we parked it: by design
-    if (!starved) return nativeStallIdle(); // a healthy parked player stays parked
+    // A PAUSE THE AD PATH MADE GETS ITS BUDGET, THEN THE PICTURE IS THE USER'S.
+    // The ad path declares its own park (`data-ko-adpark`, stamped above), and
+    // while it owns the screen the branch above already refused. What is left is
+    // the case that cost his picture: the hold ran out with no clean source,
+    // nothing resumed, and this watchdog read `paused:true, rs:4, buf:1166` as
+    // "a healthy parked player stays parked" - measured 2026-11-24
+    // (twitch.tv/cellbit, 0.8.112) as 71 s at one `ct` until the page reloaded.
+    // AD_UI_HOLD_MAX_MS is 12 s, so past 14 s no hold of ours is still waiting.
+    // INSIDE THE BUDGET IS A DECISION, AND IT NAMES ITSELF ONCE: `nativeStallRefuse`
+    // writes one row per reason until the episode changes, so this is one line per
+    // hold - not the per-heartbeat dump this ring already paid for, and not a
+    // silent "the extension never noticed" either.
+    if (p.adpark && now - p.at < AD_PARK_BUDGET_MS) {
+      return nativeStallRefuse('ad-park', { ct, rs, buf: runway, heldMs: Math.round(now - p.at), budgetMs: AD_PARK_BUDGET_MS });
+    }
+    if (p.adpark) {
+      adParkStale = true; // the hold is stale, and a stale hold is a freeze
+    } else if (!starved) {
+      return nativeStallIdle(); // a healthy parked player stays parked
+    }
     if (now - p.at < NATIVE_STALL_MS) return; // give the page's own reload a beat
   } else if (!(rs < 3 || sample.frozen)) {
     // `starved` deliberately absent: a thin forward buffer on an ADVANCING
@@ -794,7 +836,7 @@ function nativeStallWatch(v, now, sample) {
   if (now - nat.since < NATIVE_STALL_MS) return;
   if (!nat.logged) {
     nat.logged = true;
-    nat.why = v.paused ? 'page-pause-starved' : rs < 3 ? 'no-future-data' : 'clock-frozen';
+    nat.why = v.paused ? (adParkStale ? 'ad-park-expired' : 'page-pause-starved') : rs < 3 ? 'no-future-data' : 'clock-frozen';
     // NAMES ITSELF. "Was it the page, us, or him" is answered here: `inputAgeMs`
     // is the distance from the last real input to the pause, `ours` is whether
     // this extension had parked the element, and `owner` is who the extension
@@ -946,7 +988,7 @@ const NOT_CHANNEL = new Set([
 
 // Build marker for the diag stream — lets us tell which code a tab runs
 // (content scripts of pre-reload tabs survive extension reloads).
-const KO_VER = '0.8.112';
+const KO_VER = '0.8.113';
 // How long a lost picture may last before the native player is allowed to
 // reclaim the screen (owner 2026-11-11: an ad and the player fighting).
 const OWNER_GRACE_MS = 6000;
@@ -2429,6 +2471,23 @@ function syncOwner() {
 // One reload per version, recorded in sessionStorage so it can never loop, and a
 // VISIBLE page is never reloaded under the user - the tab heals the next time it
 // goes to the background, or on his own navigation.
+// WHO RELOADED THIS PAGE, asked once at boot. `nav` is the browser's own
+// navigation type; `heal` is the marker `recoverStale()` writes 800 ms before
+// its ONE sanctioned reload, so a `pagehide` + `boot` pair can name its author
+// instead of leaving it to a reading of this file (owner report 2026-11-24:
+// "as vezes a live para e a pagina recarrega sozinha").
+function bootProvenance() {
+  let nav = null;
+  try {
+    const e = performance.getEntriesByType('navigation')[0];
+    if (e && e.type) nav = String(e.type);
+  } catch { /* engine without the entry */ }
+  let heal = null;
+  try {
+    if (sessionStorage.getItem('ko.staleReload') === KO_VER) heal = 'stale-reload';
+  } catch { /* private mode */ }
+  return { nav, heal };
+}
 function recoverStale() {
   let live = '';
   try { live = chrome.runtime.getManifest().version; } catch { return; }
@@ -2443,11 +2502,40 @@ function recoverStale() {
     }
     return;
   }
-  try { sessionStorage.setItem('ko.staleReload', live); } catch { /* private */ }
-  diag('stale-tab', { script: KO_VER, manifest: live, hidden: true, act: 'reload' });
-  // The ONE sanctioned reload of the page (ko-verify section 3): once per
-  // version, hidden tabs only, proven by arm P2p.
-  setTimeout(() => { try { location.reload(); } catch { /* teardown */ } }, 800); // ko-versioned-reload
+  // NEVER UNDER A POD. A reload tears down the clean picture, its frame and
+  // every timer that owns it, and the one page reload measured in his ring
+  // (2026-11-24) landed right after a pod's hand-back. The heartbeat re-asks in
+  // 8 s, so the deferral costs nothing: the tab heals as soon as the ad is over.
+  // `wait-pod` is said once per stall at the pod, not once per heartbeat: a
+  // sample that repeats unchanged state is the dump this ring already paid for.
+  const parkAttr = String((document.documentElement && document.documentElement.getAttribute('data-ko-adpark')) || '');
+  let parked = parkAttr === '1';
+  if (!parked) {
+    KO.staleParkSince = 0;
+  } else {
+    if (!KO.staleParkSince) KO.staleParkSince = Date.now();
+    // A PARK THAT OUTLIVES EVERY CEILING IS A LEAK, NOT AN AD. The pod ceiling is
+    // 180 s and a hold is 12 s, so nothing of ours is still waiting at 300 s -
+    // and a marker nobody clears would block this heal for the life of the page,
+    // which is the failure the heal exists to stop (0.8.82). Say it and heal.
+    parked = Date.now() - KO.staleParkSince < STALE_PARK_MAX_MS;
+    if (!parked && KO.stalePark !== 'wait-pod-stale') {
+      KO.stalePark = 'wait-pod-stale';
+      diag('stale-tab', { script: KO_VER, manifest: live, hidden: true, act: 'wait-pod-stale', ms: Date.now() - KO.staleParkSince });
+    }
+  }
+  if (parked) {
+    if (KO.stalePark !== 'wait-pod') {
+      KO.stalePark = 'wait-pod';
+      diag('stale-tab', { script: KO_VER, manifest: live, hidden: true, act: 'wait-pod' });
+    }
+  } else {
+    try { sessionStorage.setItem('ko.staleReload', live); } catch { /* private */ }
+    diag('stale-tab', { script: KO_VER, manifest: live, hidden: true, act: 'reload' });
+    // The ONE sanctioned reload of the page (ko-verify section 3): once per
+    // version, hidden tabs only, proven by arm P2p.
+    setTimeout(() => { try { location.reload(); } catch { /* teardown */ } }, 800); // ko-versioned-reload
+  }
 }
 
 // Does the selected overlay layer actually have a picture of its own right now?
@@ -4785,6 +4873,14 @@ const koHbTick = () => {
   injectStyles();
   startWatchers();
   diag('boot', { ver: KO_VER, url: location.href.slice(0, 70), slug: currentSlug(), enabled: KO.enabled, player: KO.player, kickSlug: KO.kickSlug, hidden: document.hidden });
+  // WHOSE RELOAD WAS IT. The owner reports "a pagina recarrega sozinha" (2026-11-24)
+  // and the ring could not say whether the navigation was ours (the version
+  // heal), his, or Twitch's own player recovery: `pagehide` + `boot` with the
+  // SAME version on both sides was all it said. `nav` is the browser's own
+  // navigation type and `heal` is the marker THIS file writes 800 ms before its
+  // one sanctioned reload, so the next report names the author instead of
+  // leaving it to a reading of this file.
+  diag('boot-nav', bootProvenance());
   recoverStale();
   document.addEventListener('visibilitychange', () => recoverStale(), true);
   try {
