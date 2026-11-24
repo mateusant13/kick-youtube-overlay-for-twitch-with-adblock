@@ -2263,6 +2263,73 @@ untouched and keeps its own arm in `ad-time-continuity`.
 `native-stall {why:"ad-park-expired"}`, with no page reload afterwards. An extension reload does not
 re-inject content scripts: `cellbit` heals on its next navigation, or once hidden (`recoverStale`).
 
+## Wave record - 2026-11-24, 0.8.114: his own gestures, the banner squeeze, and the seek that fought back
+
+Four reports from the same session, closed as one build and one gate:
+*"to voltando a live pelo player que a nossa extensao usa (voltando a live pra ver o replay) e ele fica
+voltando pro ai vivo. ta brigando comigo no controle do seek"*, the squeezeback screenshot
+(`chrome_CowUqxBb3r.png`: the picture shrunk inside the same player with a banner under it and black
+strips), the pause fight in `player=twitch` (the extension re-paused whenever he unpaused), and a mute
+he unmuted coming back.
+
+**1. YouTube's own mute button was refused as "not a volume control".** `.ytp-mute-button` carries no
+`aria-label` and no `data-a-target`, so `volumeCapableTarget()` answered false, `audio-refused
+{why:"not-volume-control"}` fired and `apply()` re-asserted `muted:false, volume:1` over his click.
+The YouTube player chrome (`.ytp-mute-button`, `.ytp-volume-panel`, `.ytp-volume-slider`, …) is now in
+`VOLUME_CONTROL_SEL`. Live in the guest: `muted:false vol:1` -> click `muted:true vol:0.56` held ->
+click `muted:false vol:0.56`, the level preserved.
+
+**A certified gesture now wins inside a claim.** `ko-audio.js` records positive control evidence
+(`lastInputCertified`) and opens a drag window on a volume-control `pointerdown`, closed by
+`pointerup`/`pointercancel`; the machine-window guard is `machineWindow && !!el.muted && !certified`.
+The qualification matters: a bare `[role="slider"]` is every seek bar too (YouTube's progress bar is
+one), so a generic slider counts only when its own or an ancestor's name says volume. Arm: *a bare
+role="slider" (a seek bar) does not authorize a mute*.
+
+**2. The squeeze is painted pixels, not a ratio, and that was measured before it was coded.** Real
+guest DOM on a healthy page (extension injected, no ad): `video` 714x325 inside
+`[data-a-target="video-player"]` 714x402, and the permanent `stream-display-ad__wrapper` present at
+714x325 `visibility:hidden opacity:0` with a 160x90 inner. So a video-vs-player ratio fires on a
+healthy page and the hidden shell looks like an ad by size. The detector is a PAINTED wrapper whose
+largest painted descendant reaches 50% of the player WIDTH (the old 50%-of-area gate refused his wide
+lower third at 12%), never the permanent hidden shell; a wrapper covering the height stays a normal
+held ad. The fix is exactly reversible: save the inline styles of `.video-player__container`,
+`.video-ref`, `<video>` and the wrapper, hide the wrapper, set the free height, and restore the saved
+values on release; a missing node is reported (`ad-layout {skipped:"missing-node"}`) instead of
+guessed.
+
+**3. The pause fight was a writer with no owner.** `freezeNativeForPod()` paused unconditionally and
+was re-run every 500 ms while `overlay.adActive || overlay.revealed`, so his own play was undone
+within one tick. `markUserInput` now latches a real gesture on the page video for 1500 ms, the hold
+and the tick refuse while `userResumedHeld()`, and the pause is attributed (`data-ko-adpark`) so the
+stall watchdog judges it with `AD_PARK_BUDGET_MS` and never mistakes it for a dead layer.
+
+**4. The seekbar was converting a rewind into a fresh live mint.** `kickSeekTo()` turned
+`edge - t <= KICK_EDGE_GO_LIVE_SEC` into `kickBackToLive()` from `endDrag`, which is the "volta pro ao
+vivo" he described. A release at the edge now sends `{t:'seek', s:t}` in place (`live_seek
+{why:'drag-edge'}`); a deep rewind loads the replay; a replay `Ended`/error re-loads the user's offset
+once (`dvr-ended-rescue`) before a second failure may mint; the explicit `#ko-golive` chip and explicit
+seek-to-live keep their mint and name it. Every entry point writes one decision row with
+`{target, t, edge, lat, dur, onDvr, win, why}`.
+
+**Evidence.** `node _tools/ko-verify.mjs` -> `RESULT PASS checks=25 failed=0`; `mute-decision` 76,
+`ad-detect` `ARMS 83/83`, `ad-time-continuity` 114, `content-fix` `ARMS 39/39 present`; commit
+`a6eebfc86f`; installed copy `loaded=0.8.114 staged=0.8.114 changed-since-last-load=no`.
+
+**Two harness defects paid for in the same wave.** The lanes' patches came back with CRLF in LF-only
+files and `check('line-endings')` would have refused them, so the four files were normalized with
+`sd '\r\n' '\n'` and the gate re-run. And `content-fix` P2r (`a stale tab was reloaded UNDER A POD`)
+failed only inside the gate: a reload timer an earlier arm scheduled fires 800 ms later and lands in
+the next block when the loop is loaded (green alone). The arm now drains 1000 ms before it starts
+counting, which is longer than the product's 800 ms reload delay.
+
+**Owed, and only a live run on his Chrome closes it** (the tab must be navigated or heal while hidden,
+because an extension reload does not re-inject): pausing during a hold stays paused and unmuting during
+a pod stays unmuted (`audio-intent {origin:"user:..."}`, no `native-resume` win); a banner ad writes
+`ad-layout {act:"restore"}` then `release` with the picture full-size and no resolution change; an ad
+after a 360p reveal is held (`ad-ui-hold {act:"ad-after-reveal"}`); and a DVR offset survives a
+hand-back (`native-timeline-reset` or no seek to the live edge).
+
 ## Performance budget - measured 2026-11-24 post-reboot, before any perf work
 
 Read from `G:/watcher-state/status/events.jsonl` (last 6 h; the primary `perf-history-6h.md` did not
