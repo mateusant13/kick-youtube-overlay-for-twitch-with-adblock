@@ -2405,10 +2405,11 @@ directories took 10.5 s. That is the shape: ~120 ms per file touched, whatever t
 - **One git command at a time, scoped.** A per-lane merge runs one `git status --porcelain -- <paths>`
   and one `git diff -- <paths>`; never a whole-tree diff, never two git commands in parallel. The whole
   tree is inspected once per wave, not once per lane.
-- **Loose objects are scattered files, so they cost like scattered files.** Measured: `.git` holds
-  1336 loose objects, 0 packs, 26.78 MB. Packing them (`git repack -ad` / `git gc`) is a real reduction
-  in file count, not a throttle; the before/after is `git rev-list --objects --all | wc -l` wall time on
-  the same instrument, taken with no lane writing.
+- **Loose objects are scattered files, so they cost like scattered files.** Measured: `.git` held
+  1336 loose objects, 0 packs, 26.78 MB. Packing them (`git repack -ad`) is a real reduction in file
+  count, not a throttle, and it was measured with the same command on both sides the same day:
+  `git rev-list --objects --all` took **3 s** with 1350 loose objects / 0 packs, and **0 s** after the
+  repack (37 loose + one pack of 1313 objects); the repack itself wrote 30 s, once.
 - **No recursive scan from the repo root.** Scoped paths only (`_tools/`, `kick-overlay/`), excluding
   `state/`, `_scratch/`, `.git`, `.codeintel`, and the sibling projects (`cookie-extension/`,
   `instagram-followguard/`).
