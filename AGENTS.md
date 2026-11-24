@@ -2262,3 +2262,57 @@ untouched and keeps its own arm in `ad-time-continuity`.
 `ad-ui-hold {act:"release"}` inside the 500 ms tick and either a resumed element or
 `native-stall {why:"ad-park-expired"}`, with no page reload afterwards. An extension reload does not
 re-inject content scripts: `cellbit` heals on its next navigation, or once hidden (`recoverStale`).
+
+## Performance budget - measured 2026-11-24 post-reboot, before any perf work
+
+Read from `G:/watcher-state/status/events.jsonl` (last 6 h; the primary `perf-history-6h.md` did not
+exist yet) plus the tail of `I:/!watcher/docs/INCIDENTS.md`. Three measured patterns, and what each one
+orders for this project:
+
+1. **The notifier refused the biggest I/O offenders, so a green card proves nothing.** 615
+   `herdr_dm_refused` in the window; the largest I/O `aggregate` rows (1033.8, 1020.0, 801.7, 787.3)
+   are all `pwsh.exe(24176)` refused as `exempt-cooldown`/`min-interval`, with 568 `action_exempt` and
+   306 `action_skip`. The INCIDENTS tail has the same gap in the CPU dimension (a pane's OWN 6-9 cores
+   were invisible because every card ranks a TREE and exempts the pane image). A quiet reading under a
+   suppressed card is not a quiet box: when the machine stutters, read the raw rates, not the cards.
+2. **The churn was `python.exe` children of `omp.exe`.** 784 `action_soft_cap`, top by
+   `evidence.cpu_pct_of_core` (88.7, 87.5, 77.6, 75.0, 62.5, and 20 at 50.0), with `git.exe` and
+   `gh.exe` in the same family. One job per question, not a family of capped children, and never a
+   retry that re-spawns the work it already did.
+3. **The cage itself was looping:** 2576 `action_restore` against 784 `action_soft_cap`, 525
+   `action_cap_minute`, 482 `policy_churn` in 6 h. A cap that is applied and reverted thousands of
+   times is a cost with no protection; make the work cheaper at the source (do less, once, cached,
+   incremental, drop the duplicate) and let a cap be the last resort.
+
+Rules this section adds to the 2026-11-11 order above: declare the ceiling (threads, MB RSS, MB/s,
+GiB, window) in the command that starts a heavy step, BEFORE it runs; the guest browser and the gate
+are the only heavy steps this project starts, one at a time; a failure is read, never re-launched as a
+retry chain; `I:` is a slow SMR volume, so its I/O is reduced by deleting, batching, caching and
+async, NEVER by moving stored data off `I:`.
+
+### Guest start: one navigation instead of two - measured before/after 2026-11-24
+
+`ko-guest.mjs` launched Chrome on the destination URL and then navigated the same tab again after
+`Extensions.loadUnpacked`, with a fixed 3 s pre-wait and a fixed 8 s post-wait. The first load ran
+without the extension and was thrown away: two full Twitch renders for one measurement, on the box the
+owner was already reporting as slow.
+
+|phase (same channel `titiltei`, same build)|before|after|
+|---|---|---|
+|launch -> READY (guest log)|11.43 s (17:12:21.782 -> 17:12:33.214)|**0.94 s** (17:55:42.889 -> 17:55:43.830)|
+|extension world seen after navigate|fixed 8 s sleep|`EXT INJECTED true (252ms)`|
+|harness end-to-end `start`|—|**15 s**, `ready {ko:true, enabled:true, player:kick}`|
+
+Chrome now starts on `about:blank`, the browser target is polled instead of slept for, and the single
+navigation is followed by a 250 ms poll of the execution contexts (the extension world appears when the
+content script runs, which is the only fact the step needs). No fixed wait remains in the start path.
+
+### Store and scratch, measured 2026-11-24
+
+`G:/Temp/ko-harness` = 945 M in three dirs: `profile` 326 M and `manual` 381 M are both LIVE defaults of
+the two launchers, and one timestamped dir 239 M is the "previous run" that `pruneProfiles(keep=1)`
+deliberately retains, so the declared retention is satisfied and nothing is droppable there (a blind
+`rm -rf` of it was refused by the delete guard, correctly: the newest file in a tree is evidence).
+This lane's four scratch scripts under `G:/Temp/ko-scratch` were removed by exact path
+(`inspect-twitch.mjs`, `inspect-twitch2.mjs`, `yt-mute-click.mjs`, `yt-trusted-click.mjs`); the root
+remains 2.6 M of suite outputs.

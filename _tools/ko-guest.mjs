@@ -120,7 +120,11 @@ const args = [
   // every unmute and reports it as `unmute-blocked` (measured 2026-11-08):
   // audio arms cannot be measured without this flag.
   '--autoplay-policy=no-user-gesture-required',
-  URL_,
+  // The destination is navigated to ONCE, after the extension is loaded
+  // (2026-11-24). Launching Chrome on the URL and then navigating it again
+  // loaded the page twice: the first load ran without the extension, was
+  // thrown away, and cost a full network+render pass on a slow box.
+  'about:blank',
 ];
 log('chrome args', args.join(' '));
 const child = spawn(CHROME, args, { stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'], windowsHide: true });
@@ -163,7 +167,13 @@ const send = (method, params = {}, sessionId) => new Promise((res) => {
 });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-await sleep(3000);
+// Chrome answers the pipe as soon as the browser target exists; 3 s was a
+// guess that every start paid whether or not it was needed (2026-11-24).
+for (let i = 0; i < 40; i++) {
+  const t = await send('Target.getTargets', {});
+  if ((t.result?.targetInfos || []).some((x) => x.type === 'page')) break;
+  await sleep(200);
+}
 const lu = await send('Extensions.loadUnpacked', { path: EXT.replaceAll('/', '\\') });
 log('loadUnpacked', JSON.stringify(lu).slice(0, 300));
 const extId = lu.result?.id || null;
@@ -179,12 +189,23 @@ if (pages.length) {
     await send('Page.enable', {}, sess);
     await send('Runtime.enable', {}, sess);
     ctxSink.clear();
-    log('reload page for content scripts');
-    await send('Page.navigate', { url: URL_ }, sess);
-    await sleep(8000);
-    const origins = [...ctxSink];
-    log('worlds', JSON.stringify(origins));
-    log('EXT INJECTED', origins.some(o => o.startsWith('chrome-extension://')));
+    if (URL_ && URL_ !== 'about:blank') {
+      log('navigate', URL_);
+      await send('Page.navigate', { url: URL_ }, sess);
+      // The fixed 8 s wait both overpaid on a fast load and underpaid under
+      // load (2026-11-24). Poll the context list: the extension world appears
+      // when the content script runs, and that is the only fact this step needs.
+      const t0 = Date.now();
+      let injected = false;
+      for (let i = 0; i < 120; i++) {
+        if ([...ctxSink].some((o) => o.startsWith('chrome-extension://'))) { injected = true; break; }
+        await sleep(250);
+      }
+      log('worlds', JSON.stringify([...ctxSink]));
+      log('EXT INJECTED', injected, `(${Date.now() - t0}ms)`);
+    } else {
+      log('EXT INJECTED', 'n/a (about:blank)');
+    }
   }
 }
 log('READY extId=' + extId + ' port=' + PORT);
