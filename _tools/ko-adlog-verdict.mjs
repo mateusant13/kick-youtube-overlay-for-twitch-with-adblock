@@ -556,7 +556,7 @@ function reportEpisode(ep, idx) {
             ? 'recovery NEVER RAN (build < 0.8.96 does not log the decision inputs)'
             : h.podAgeMs === null
               ? 'recovery NEVER RAN (the wall clock was never stamped at take-over)'
-            : `no recovery ran (pod age ${fmt(h.podAgeMs / 1000)}s, stamped at ct=${h.holdCt}) - deficit under the 1.5s floor or the element reloaded`,
+            : `no recovery ran (pod age ${fmt(h.podAgeMs)}, stamped at ct=${h.holdCt}) - deficit under the 1.5s floor or the element reloaded`,
       ].filter(Boolean);
       lines.push(`    ${fmt(h.t - ep.start).padStart(7)}  ${bits.join('  ')}`);
       if (h.rs != null && h.rs < 3) findings.push(`hand-back at ${fmt(h.t - ep.start)} resumed at rs=${h.rs} (parked)`);
