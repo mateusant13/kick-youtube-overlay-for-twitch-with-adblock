@@ -2358,6 +2358,13 @@ Verification: `RESULT PASS checks=25 failed=0` (`silent-census guardShaped=111`,
 `ad-time-continuity checks=117`, `mute-decision checks=95`, `content-fix ARMS 41/41`). Wall 3885 s on the
 `I:` spindle (12 GB free, ~120 ms per file touched) - that is the volume, not the gate.
 
+**The owed rows are read, not grepped.** `ko-adlog-verdict.mjs` now prints `LAYOUT` (a squeeze saved
+and whether it was released), `HIS GESTURES DURING A POD` (his pause/unpause with the pod type) and
+`DVR RESCUE` (`dur`, the target, `wentLive`), and ANSWER carries `gestures: pause= resume= squeeze=
+dvrRescue= minted=`. Known-answer run on a fixture built from those exact shapes: both findings fired
+(`his pause during a pod was overridden by a native-resume 1.0s later`, `a replay error minted a live
+url`), so the reader can fail.
+
 **Owed, and only a live run on his Chrome closes it** (an extension reload does not re-inject; the tab must
 navigate or heal while hidden): pausing during a pod stays paused at hand-back and unmuting during a pod
 stays unmuted, both as `ad-ui-hold {act:'user-pause'}` / `audio-intent {origin:'user:...'}`; a squeeze

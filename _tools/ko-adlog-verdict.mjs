@@ -511,6 +511,60 @@ function reportEpisode(ep, idx) {
       }
     }
   }
+  // ---- the four 0.8.115 owed checks, each a transition it can be read from --
+  // Owner reports 2026-11-24 that produced these rows: a banner squeeze that
+  // changed the picture size, a pause during a pod that came back playing, an
+  // unpause that was re-paused, and a rewind that minted live. The rows exist
+  // to be READ here, not grepped out of a dump.
+  const layouts = evs.filter((e) => e.ev === 'ad-layout').map((e) => ({ t: e.t, d: e.d || {} }));
+  if (layouts.length) {
+    lines.push('  LAYOUT (a squeeze: was the picture changed, and did it come back)');
+    let restored = 0;
+    let released = 0;
+    for (const l of layouts) {
+      const d = l.d;
+      const size = d.banner ? `${d.banner.w}x${d.banner.h}` : '-';
+      lines.push(
+        `    ${fmt(l.t - ep.start).padStart(7)}  ${String(d.act || '?').padEnd(8)}  banner=${size}` +
+          (d.skipped ? `  skipped=${d.skipped}${d.missing ? `(${d.missing.join(',')})` : ''}` : '') +
+          (d.stale ? `  stale=${d.stale}` : ''),
+      );
+      if (d.act === 'restore') restored += 1;
+      if (d.act === 'release') released += 1;
+    }
+    if (restored > released) {
+      findings.push(`a squeeze layout was saved ${restored}x and released ${released}x (the picture may stay shrunk)`);
+    }
+  }
+  const userPauses = evs.filter((e) => e.ev === 'ad-ui-hold' && (e.d || {}).act === 'user-pause');
+  const userResumes = evs.filter((e) => e.ev === 'ad-ui-hold' && (e.d || {}).act === 'user-resume');
+  if (userPauses.length || userResumes.length) {
+    lines.push('  HIS GESTURES DURING A POD (who won)');
+    for (const g of [...userPauses, ...userResumes].sort((a, b) => a.t - b.t)) {
+      const d = g.d || {};
+      lines.push(`    ${fmt(g.t - ep.start).padStart(7)}  ${String(d.act).padEnd(11)}  pod=${d.pod || 'hold'}  ct=${d.ct ?? '?'}`);
+    }
+    // A pause he made must not be undone by a resume OUR side issued before his
+    // next play. A `user-resume` is his own play, so it is not one of those.
+    for (const g of userPauses) {
+      const after = evs.find((e) => e.t > g.t && e.ev === 'native-resume');
+      const play = userResumes.find((r) => r.t > g.t);
+      if (after && (!play || after.t < play.t)) {
+        findings.push(`his pause during a pod was overridden by a native-resume ${fmt(after.t - g.t)} later`);
+      }
+    }
+  }
+  const rescues = evs.filter((e) => e.ev === 'dvr-ended-rescue').map((e) => ({ t: e.t, d: e.d || {} }));
+  if (rescues.length) {
+    lines.push('  DVR RESCUE (a replay error: reload the offset, or mint live)');
+    for (const r of rescues) {
+      lines.push(
+        `    ${fmt(r.t - ep.start).padStart(7)}  dur=${r.d.dur ?? '?'}  want=${r.d.want ?? '?'}  target=${r.d.target ?? '?'}` +
+          `  wentLive=${r.d.wentLive === true ? 'YES' : 'no'}`,
+      );
+      if (r.d.wentLive === true) findings.push('a replay error minted a live url (his "voltou pro ao vivo")');
+    }
+  }
   // ---- whose reload was it --------------------------------------------------
   // `pagehide` + `boot` with the SAME version on both sides is indistinguishable
   // between the version heal, his F5 and Twitch's own player recovery. 0.8.113
@@ -666,6 +720,13 @@ function reportEpisode(ep, idx) {
   lines.push(
     `    mute by USER=${mutedByUser.length}  by CODE=${mutedByCode.length}  unattributed=${unattributed.length}`,
   );
+  if (layouts.length || userPauses.length || userResumes.length || rescues.length) {
+    lines.push(
+      `    gestures: pause=${userPauses.length} resume=${userResumes.length}` +
+        `  squeeze=${layouts.filter((l) => l.d.act === 'restore').length}` +
+        `  dvrRescue=${rescues.length} minted=${rescues.filter((r) => r.d.wentLive === true).length}`,
+    );
+  }
   const agreedMs = sound.filter((s) => typeof s.ms === 'number').map((s) => s.ms);
   if (agreedMs.length) {
     lines.push(
