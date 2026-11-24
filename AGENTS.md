@@ -2330,6 +2330,41 @@ a pod stays unmuted (`audio-intent {origin:"user:..."}`, no `native-resume` win)
 after a 360p reveal is held (`ad-ui-hold {act:"ad-after-reveal"}`); and a DVR offset survives a
 hand-back (`native-timeline-reset` or no seek to the live edge).
 
+## Wave record - 2026-11-24, 0.8.115: the four fixes REFUTED, and what actually closes them
+
+A read-only review (RefuteLane) was given the 0.8.114 diff and the two live ring reds, and it refuted four
+of the five claims at exact lines. Every hole below was verified in the source before a lane was briefed,
+and each fix carries an arm plus a RED mutation that restores the pre-fix line.
+
+|hole|what the code did|what now happens|
+|---|---|---|
+|unpause in a PLAYLIST pod|`adUiUserResumeAt` was stamped only when `adUiHeldAt` existed; a pod opened by `ad-hold` never sets it, so the next 500 ms tick re-paused the element he just resumed|a fresh user play while `overlay.adActive \|\| overlay.revealed` stamps the resume for both pod types and logs one `ad-ui-hold {act:'user-resume', pod}`|
+|pause during the pod|`resumeRefusedByUser()` knew only a hidden tab and a pre-take-over pause, so the hand-back and its four retries resumed a player he parked|a real post-take-over `pause` (ours is stamped first) sets `userPausedInPod`, which refuses every hand-back resume until a fresh play; `ad-ui-hold {act:'user-pause'}` once per pod|
+|banner squeeze behind a logo|`adSurfaceRect()` broke at the FIRST painted descendant >20x20, so a 40x20 logo hid a 600x120 banner from the 50%-width gate|the walk keeps the WIDEST painted node, bounded at 256 nodes per 500 ms tick (a bound, not a heuristic)|
+|layout restore|only `height` was saved, `nodes.persistent` was read without being in the `missing` check (it threw into `adUiDetail`'s catch and disabled detection), and a replaced node kept our hidden style|`height`/`width`/`max-height` on container, `.video-ref` and `<video>`; `persistent` in the missing check; detached nodes restored onto the connected replacement with `ad-layout {stale:N}`|
+|DVR rescue with no duration|`dur = 0` failed `inside`, so the rescue fell through to `kickBackToLive('dvr-failed')` and MINTED a live url|an unknown duration reloads the replay at the requested offset under the same one-shot budget; a second failure still mints|
+|extension disabled by a partial write|`KO.enabled = !!s.enabled` in `chrome.storage.onChanged`: any `ko.v2` write without the key turned the extension off, and `nativeStallWatch` returns idle there (`bryandutra`, his ring: `enabled:false` and 71 s at one position with zero recovery rows)|a missing key preserves the current value; explicit `false` still applies|
+|`native-handoff` without a pod|`!wasStandby` alone logged a hand-back, and a stale `holdAt` from an earlier episode printed 8 rows at `ct=32` with pod ages 12.4-122.4 s|the row requires an unconsumed take-over stamp, is emitted once per pod end, and consumes `holdAt`/`holdCt` after `resumeNative` read them|
+|verdict pod age|`fmt()` divides ms by 1000 and the line divided again, so a 122 s pod printed `0.1s` and read as "the clock was never stamped"|known-answer on his ring: `pod age 12.4s / 27.4s / 43.4s`|
+|`[aria-label*="ute"]`|certified any label containing those letters ("Absolute", "Route")|`/\b(?:un)?mut(?:e|ed|ing)\b/i` on the element or an ancestor|
+
+Two harness defects, both the same shape as earlier waves: the global `core.autocrlf=true` rewrote lane
+patches to CRLF and the LF-only gate refused them (`cold-cover-fixture` then failed because its exact-LF
+mutation could not apply) - `.gitattributes` now pins LF for product, suites and tools; and the lane patches
+added 9 guard-shaped silent exits, so the census refused `72 > budget 63`. They were restructured, never
+budgeted: `120 -> 111` guard-shaped with no ceiling change.
+
+Verification: `RESULT PASS checks=25 failed=0` (`silent-census guardShaped=111`, `ad-detect ARMS 91/91`,
+`ad-time-continuity checks=117`, `mute-decision checks=95`, `content-fix ARMS 41/41`). Wall 3885 s on the
+`I:` spindle (12 GB free, ~120 ms per file touched) - that is the volume, not the gate.
+
+**Owed, and only a live run on his Chrome closes it** (an extension reload does not re-inject; the tab must
+navigate or heal while hidden): pausing during a pod stays paused at hand-back and unmuting during a pod
+stays unmuted, both as `ad-ui-hold {act:'user-pause'}` / `audio-intent {origin:'user:...'}`; a squeeze
+writes `ad-layout {act:'restore'}` and a release restores the full-size picture; an ad after a 360p reveal is
+held (`ad-ui-hold {act:'ad-after-reveal'}`); and a replay error with no duration re-loads the replay instead
+of minting (`dvr-ended-rescue {dur:0, wentLive:false}`).
+
 ## Performance budget - measured 2026-11-24 post-reboot, before any perf work
 
 Read from `G:/watcher-state/status/events.jsonl` (last 6 h; the primary `perf-history-6h.md` did not
@@ -2356,6 +2391,29 @@ GiB, window) in the command that starts a heavy step, BEFORE it runs; the guest 
 are the only heavy steps this project starts, one at a time; a failure is read, never re-launched as a
 retry chain; `I:` is a slow SMR volume, so its I/O is reduced by deleting, batching, caching and
 async, NEVER by moving stored data off `I:`.
+
+### I: is ONE SMR spindle with 12 GB free (measured 2026-11-24 18:20Z, watcher DM dm-716515cbf460f5257d8f)
+
+The watcher's IOCTL window read `busy 1549%, q_avg 15.49, 123 ops in 906 ms, r=1.36 MB/s, w=0.15 MB/s,
+lat=114 ms` on the volume that holds this checkout. My own measurement of the same volume, scoped and
+sequential: `du -sh` over 4 MB in `kick-overlay/ _tools/ _evidence/` took **21.9 s**, and three small
+directories took 10.5 s. That is the shape: ~120 ms per file touched, whatever the byte count.
+
+- **Scratch and probe output never land on `I:`.** Every throwaway script, log and dump goes to
+  `G:/Temp/ko-scratch` and is removed by exact path. `_scratch/` under the repo is 595 KB of old logs
+  and is gitignored; nothing new is written there.
+- **One git command at a time, scoped.** A per-lane merge runs one `git status --porcelain -- <paths>`
+  and one `git diff -- <paths>`; never a whole-tree diff, never two git commands in parallel. The whole
+  tree is inspected once per wave, not once per lane.
+- **Loose objects are scattered files, so they cost like scattered files.** Measured: `.git` holds
+  1336 loose objects, 0 packs, 26.78 MB. Packing them (`git repack -ad` / `git gc`) is a real reduction
+  in file count, not a throttle; the before/after is `git rev-list --objects --all | wc -l` wall time on
+  the same instrument, taken with no lane writing.
+- **No recursive scan from the repo root.** Scoped paths only (`_tools/`, `kick-overlay/`), excluding
+  `state/`, `_scratch/`, `.git`, `.codeintel`, and the sibling projects (`cookie-extension/`,
+  `instagram-followguard/`).
+- A cap would only bound a cost that is already too high; the levers here are fewer files touched, one
+  command instead of a family, and a cache instead of a re-read.
 
 ### Guest start: one navigation instead of two - measured before/after 2026-11-24
 

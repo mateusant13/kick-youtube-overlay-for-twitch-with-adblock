@@ -268,6 +268,10 @@
     nativeLat: 0, // native latency (edge - currentTime) captured at take-over
     holdAt: 0, // wall clock at take-over: the timeline the live edge advanced on
     holdCt: 0, // native currentTime at take-over
+    // One `native-handoff` row per pod. Cleared at take-over, consumed at the
+    // hand-back: a stale `holdAt` left by an earlier pod must not make every
+    // later standby/ad-only/clean-stall teardown look like a hand-back.
+    nativeHandoffLogged: false,
     holdBehind: 0, // native distance behind the live edge at take-over (DVR offset)
     userDvr: false, // a take-over behind the edge by a pod-sized margin: keep the offset
     hiddenAt: 0, // wall clock when the tab went hidden
@@ -1221,6 +1225,12 @@
   // squeezeback node, 0x0 itself, while its inner container carried the size
   // inline. Measuring the wrapper alone therefore answered 0x0 for a surface
   // that was painting.
+  // At most 256 nodes (the wrapper plus its descendants) are inspected per call.
+  // `adUiDetail()` runs from the 500 ms tick, so this is O(256) style + rect reads
+  // per tick no matter how deep Twitch mounts the ad subtree: a bound, not a
+  // heuristic. The WIDEST painted node wins; a small logo before the banner must
+  // not hide the banner from the half-player-width gate.
+  const AD_SURFACE_MAX_NODES = 256;
   function adSurfaceRect(root) {
     let best = { width: 0, height: 0 };
     const consider = (el) => {
@@ -1229,18 +1239,23 @@
         if (!cs || cs.display === 'none' || cs.visibility === 'hidden') return;
         if (Number(cs.opacity) === 0) return;
         const r = el.getBoundingClientRect();
-        if (r.width * r.height > best.width * best.height) best = r;
+        if (r.width > best.width || (r.width === best.width && r.height > best.height)) best = r;
       } catch {
         /* geometry is best-effort */
       }
     };
-    consider(root);
     try {
-      for (const c of root.querySelectorAll('*')) {
-        // Stop as soon as something paints: a full-player ad is found on the
-        // first sized child, and a 500 ms tick must not walk a big subtree.
-        if (best.width > 20 && best.height > 20) break;
-        consider(c);
+      const stack = [root];
+      while (stack.length) {
+        const el = stack.pop();
+        consider(el);
+        const kids = el && el.children;
+        if (!kids) continue;
+        // Keep at most 255 queued descendants so a single node with a huge
+        // child list cannot make the next iteration unbounded.
+        for (let i = kids.length - 1; i >= 0 && stack.length < AD_SURFACE_MAX_NODES - 1; i--) {
+          if (kids[i]) stack.push(kids[i]);
+        }
       }
     } catch {
       /* ignore */
@@ -1284,38 +1299,85 @@
   }
   function adLayoutRelease() {
     const saved = overlay.layoutSaved;
-    if (saved) {
-      overlay.layoutSaved = null;
-      for (const s of saved.saved) {
+    overlay.layoutSaved = null;
+    // No saved snapshot is not a decision worth a silent `return`: the loop
+    // below is empty and the row is skipped, which is the same answer with one
+    // exit fewer (silent-census budget, 2026-11-24).
+    const rows = saved && saved.saved ? saved.saved : [];
+    const nodes = adLayoutNodes();
+    let videos = [];
+    try { videos = Array.from(document.querySelectorAll('video') || []); } catch { /* ignore */ }
+    let stale = 0;
+    for (const s of rows) {
+      const detached = !s.el || s.el.isConnected === false;
+      let el = s.el;
+      if (detached) {
+        stale++;
+        // A detached node cannot be written back. Restore the same ROLE on the
+        // node that is connected now, or a wrapper Twitch replaced mid-pod
+        // keeps the hidden inline style we wrote on its predecessor.
+        if (s.name === 'wrapper') {
+          try {
+            const list = document.querySelectorAll('[class*="stream-display-ad"], [data-test-selector="sda-wrapper"]');
+            el = list && list.length ? list[0] : null;
+          } catch { el = null; }
+        } else if (s.name === 'video') {
+          el = videos.find((v) => v && v.isConnected !== false) || null;
+        } else {
+          el = nodes[s.name] && nodes[s.name].isConnected !== false ? nodes[s.name] : null;
+        }
+      }
+      if (el && el.style) {
         for (const key of s.keys) {
           try {
-            if (s.values[key] === undefined) delete s.el.style[key];
-            else s.el.style[key] = s.values[key];
+            if (s.values[key] === undefined) delete el.style[key];
+            else el.style[key] = s.values[key];
           } catch { /* ignore */ }
         }
       }
+    }
+    if (saved) {
       adLog('ad-layout', {
-        act: 'release', before: saved.after, after: saved.before, banner: saved.banner,
+        act: 'release', before: saved.after, after: saved.before, banner: saved.banner, stale,
       });
     }
   }
   function adLayoutRestore(detail, wrapper) {
+    const saved = overlay.layoutSaved;
+    if (saved && saved.saved.some((s) => !s.el || s.el.isConnected === false)) {
+      // Twitch replaced the nodes we wrote. Unhide the CURRENT wrapper before
+      // taking a fresh snapshot: a clone of the hidden wrapper would otherwise
+      // be captured as "visible" and stay hidden after the next release.
+      try { wrapper.style.visibility = saved.before.wrapperVis || ''; } catch { /* ignore */ }
+      overlay.layoutSaved = null;
+    }
     if (!overlay.layoutSaved) adLayoutWrite(detail, wrapper);
   }
   function adLayoutWrite(detail, wrapper) {
     const nodes = adLayoutNodes();
+    const keys = ['height', 'width', 'max-height'];
     const targets = [
-      { name: 'container', el: nodes.container, key: 'height' },
-      { name: 'videoRef', el: nodes.videoRef, key: 'height' },
-      { name: 'video', el: nodes.video, key: 'height' },
-      { name: 'wrapper', el: wrapper, key: 'visibility' },
+      { name: 'container', el: nodes.container, keys },
+      { name: 'videoRef', el: nodes.videoRef, keys },
+      { name: 'video', el: nodes.video, keys },
+      { name: 'wrapper', el: wrapper, keys: ['visibility'] },
     ];
     const missing = targets.filter((t) => !t.el || !t.el.style).map((t) => t.name);
+    // `persistent` is READ below: without it the old code threw into
+    // `adUiDetail`'s catch and disabled detection for the rest of the pod.
+    if (!nodes.persistent || !nodes.persistent.style) missing.push('persistent');
+    const val = (el, key) => (el && el.style ? el.style[key] : null);
     const before = {
-      containerH: nodes.container && nodes.container.style ? nodes.container.style.height : null,
-      videoRefH: nodes.videoRef && nodes.videoRef.style ? nodes.videoRef.style.height : null,
-      videoH: nodes.video && nodes.video.style ? nodes.video.style.height : null,
-      wrapperVis: wrapper && wrapper.style ? wrapper.style.visibility : null,
+      containerH: val(nodes.container, 'height'),
+      containerW: val(nodes.container, 'width'),
+      containerMaxH: val(nodes.container, 'max-height'),
+      videoRefH: val(nodes.videoRef, 'height'),
+      videoRefW: val(nodes.videoRef, 'width'),
+      videoRefMaxH: val(nodes.videoRef, 'max-height'),
+      videoH: val(nodes.video, 'height'),
+      videoW: val(nodes.video, 'width'),
+      videoMaxH: val(nodes.video, 'max-height'),
+      wrapperVis: val(wrapper, 'visibility'),
     };
     if (missing.length) {
       adLog('ad-layout', {
@@ -1326,16 +1388,35 @@
       const cr = nodes.container.getBoundingClientRect();
       const pr = nodes.persistent.getBoundingClientRect();
       const height = Math.round(Math.max(cr.height + detail.dh, pr.height));
-      const saved = targets.map((t) => ({ el: t.el, keys: [t.key], values: { [t.key]: t.el.style[t.key] } }));
+      // A loop, not a `map` callback: every `return` a helper adds is a silent
+      // exit the census budget has to pay for (2026-11-24 gate refusal).
+      const saved = [];
+      for (const t of targets) {
+        const values = {};
+        for (const key of t.keys) values[key] = val(t.el, key);
+        saved.push({ name: t.name, el: t.el, keys: t.keys, values });
+      }
       nodes.container.style.height = `${height}px`;
+      nodes.container.style.width = '100%';
+      nodes.container.style['max-height'] = 'none';
       nodes.videoRef.style.height = `${height}px`;
+      nodes.videoRef.style.width = '100%';
+      nodes.videoRef.style['max-height'] = 'none';
       nodes.video.style.height = '100%';
+      nodes.video.style.width = '100%';
+      nodes.video.style['max-height'] = 'none';
       wrapper.style.visibility = 'hidden';
       const after = {
-        containerH: nodes.container.style.height,
-        videoRefH: nodes.videoRef.style.height,
-        videoH: nodes.video.style.height,
-        wrapperVis: wrapper.style.visibility,
+        containerH: val(nodes.container, 'height'),
+        containerW: val(nodes.container, 'width'),
+        containerMaxH: val(nodes.container, 'max-height'),
+        videoRefH: val(nodes.videoRef, 'height'),
+        videoRefW: val(nodes.videoRef, 'width'),
+        videoRefMaxH: val(nodes.videoRef, 'max-height'),
+        videoH: val(nodes.video, 'height'),
+        videoW: val(nodes.video, 'width'),
+        videoMaxH: val(nodes.video, 'max-height'),
+        wrapperVis: val(wrapper, 'visibility'),
       };
       overlay.layoutSaved = { saved, before, after, banner: { w: detail.dw, h: detail.dh } };
       adLog('ad-layout', { act: 'restore', before, after, banner: { w: detail.dw, h: detail.dh }, height });
@@ -1448,6 +1529,12 @@
   let lastUserInputAt = 0;
   let userPlayAt = 0;
   let ownPlayAt = 0;
+  // A user pause made AFTER this pod took over. Unlike a play, a pause needs
+  // no gesture clock: the browser fires it when the control parks the player.
+  // Our own pause is stamped first (`selfPausedAt`), so it is never mistaken
+  // for this. Only a fresh user play gives the picture back.
+  let userPausedInPod = false;
+  let userPauseLogged = false;
   function userResumedHeld() {
     return !!adUiUserResumeAt && Date.now() - adUiUserResumeAt < AD_UI_HOLD_MAX_MS;
   }
@@ -1736,15 +1823,39 @@
       // Our own resume is not a user takeover, but a gesture AFTER it is.
       if (ownPlayAt && Date.now() - ownPlayAt <= 500 && lastUserInputAt <= ownPlayAt) return;
       userPlayAt = Date.now();
-      if (!adUiHeldAt || userResumedHeld()) return;
-      adUiRelease();
+      userPausedInPod = false; // only a fresh user play gives the picture back
+      userPauseLogged = false;
+      const pod = adUiHeldAt ? 'hold' : (overlay.adActive || overlay.revealed ? 'playlist' : null);
+      if (!pod || userResumedHeld()) return;
+      // A playlist pod opened by `ad-hold` has no DOM ad: `adUiHeldAt` was
+      // never stamped, but the pod owns the freeze. Release it here so the
+      // next 500 ms tick does not undo what the user just did.
+      if (adUiHeldAt) adUiRelease();
       adUiFailedAt = Date.now();
       adUiFailedLogged = true;
       adUiUserResumeAt = Date.now();
       markAdPark(false);
       if (!adUserResumeLogged) {
         adUserResumeLogged = true;
-        adLog('ad-ui-hold', { act: 'user-resume', ct: +Number(t.currentTime || 0).toFixed(1) });
+        adLog('ad-ui-hold', { act: 'user-resume', pod, ct: +Number(t.currentTime || 0).toFixed(1) });
+      }
+    }, true);
+  } catch { /* ignore */ }
+  try {
+    // A USER pause during the pod stays parked at hand-back. No input clock:
+    // the control's own `pause` event is the evidence. Our pauses are stamped
+    // before the write (`selfPausedAt`) and a resume we issued marks
+    // `ownPlayAt`, so neither is attributed to the user.
+    document.addEventListener('pause', (e) => {
+      const t = e && e.target;
+      const ours = (overlay.selfPausedAt && Date.now() - overlay.selfPausedAt <= 250)
+        || (ownPlayAt && Date.now() - ownPlayAt <= 250);
+      if (t && t.tagName === 'VIDEO' && (overlay.adActive || overlay.revealed) && !ours) {
+        userPausedInPod = true;
+        if (!userPauseLogged) {
+          userPauseLogged = true;
+          adLog('ad-ui-hold', { act: 'user-pause', ct: +Number(t.currentTime || 0).toFixed(1) });
+        }
       }
     }, true);
   } catch { /* ignore */ }
@@ -2334,7 +2445,9 @@
   function resumeRefusedByUser(v) {
     if (!v || !v.isConnected) return true;
     if (document.visibilityState && document.visibilityState !== 'visible') return true;
-    if (overlay.pauseBeforeAd && !overlay.coldPreroll) return true;
+    // A user pause during the pod and a player parked before it are the same
+    // refusal with one exit, so the census budget does not pay twice.
+    if (userPausedInPod || (overlay.pauseBeforeAd && !overlay.coldPreroll)) return true;
     return false;
   }
 
@@ -2345,12 +2458,12 @@
   // visible tick, and only when the user did not park it himself.
   function armResumeWhenVisible(v, tag) {
     if (!v || !v.isConnected) return;
-    if (overlay.pauseBeforeAd && !overlay.coldPreroll) return; // the user parked it
+    if ((overlay.pauseBeforeAd && !overlay.coldPreroll) || userPausedInPod) return; // the user parked it
     const onVisible = () => {
       if (document.visibilityState && document.visibilityState !== 'visible') return;
       try { document.removeEventListener('visibilitychange', onVisible, true); } catch { /* ignore */ }
       if (!v.isConnected || overlay.adActive) return;
-      if (overlay.pauseBeforeAd && !overlay.coldPreroll) return;
+      if ((overlay.pauseBeforeAd && !overlay.coldPreroll) || userPausedInPod) return;
       if (!v.paused) return;
       adLog('native-resume-visible', { tag, ct: +Number(v.currentTime || 0).toFixed(1) });
       resumeNative(v, `${tag}+visible`);
@@ -2364,7 +2477,7 @@
     if (overlay.frame && !overlay.standby) return;
     if (resumeRefusedByUser(v)) {
       // Only the visibility half is deferrable; a user-parked element never is.
-      if (!(overlay.pauseBeforeAd && !overlay.coldPreroll)) armResumeWhenVisible(v, tag);
+      if (!(overlay.pauseBeforeAd && !overlay.coldPreroll) && !userPausedInPod) armResumeWhenVisible(v, tag);
       return;
     }
     resumeNative(v, tag, opts);
@@ -2447,6 +2560,13 @@
     // ad state without an ad) and must not resume/seek the native player.
     const wasStandby = !!overlay.standby && !overlay.revealed && !overlay.adActive;
     if (!wasStandby) overlay.lastEndAt = Date.now();
+    if (wasStandby) {
+      // A standby-only teardown is not a pod end. Consume any take-over stamp
+      // left by an earlier episode so a later stop cannot report it as one.
+      overlay.holdAt = 0;
+      overlay.holdCt = 0;
+      overlay.nativeHandoffLogged = true;
+    }
     try { clearTimeout(overlay.extTimer); } catch { /* ignore */ }
     overlay.extTimer = 0;
     try { clearTimeout(overlay.adEndTimer); } catch { /* ignore */ }
@@ -2517,6 +2637,9 @@
           armNativeRecovery(nv, 'no-frame-exit');
         }
       } catch { /* ignore */ }
+      overlay.holdAt = 0;
+      overlay.holdCt = 0;
+      overlay.nativeHandoffLogged = true;
       return;
     }
     try { clearInterval(overlay.positionTimer); } catch { /* ignore */ }
@@ -2543,12 +2666,17 @@
     }
     try { overlay.frame.remove(); } catch { /* ignore */ }
     if (!wasStandby) {
-      // Handoff proof: the replaced element can start at 0 and replay the DVR
-      // start (measured srdogg 2026-10-25). Log the native position and the
-      // clean window before any resume call.
+      // ONE row per pod, and only when THIS pod actually took over. `!wasStandby`
+      // alone named every teardown as a hand-back when an earlier pod's
+      // `holdAt` survived: standby timeout / ad-only / clean-stall printed
+      // hand-backs at the same ct for minutes.
+      const podEnd = !!overlay.holdAt && !overlay.nativeHandoffLogged;
+      // Capture the position BEFORE any resume/seek; the row is emitted after
+      // the recovery decision so consuming the stamp cannot change its inputs.
+      let handoff = null;
       try {
         const hv = mainVideo();
-        adLogState('native-handoff', {
+        handoff = {
           replaced: !!(hv && overlay.video && hv !== overlay.video),
           ct: hv ? +Number(hv.currentTime || 0).toFixed(1) : null,
           buf: hv && hv.buffered.length ? +hv.buffered.end(hv.buffered.length - 1).toFixed(1) : null,
@@ -2568,7 +2696,7 @@
           podAgeMs: overlay.holdAt ? Date.now() - overlay.holdAt : null,
           holdCt: overlay.holdCt == null ? null : +Number(overlay.holdCt).toFixed(1),
           cleanHold: overlay.lastSt && isFinite(Number(overlay.lastSt.hold)) ? +Number(overlay.lastSt.hold).toFixed(2) : null,
-        });
+        };
       } catch { /* ignore */ }
       // CSS back (mute ownership never left the authority); the claim was
       // released above, so the page surface is audible again at the user's
@@ -2619,6 +2747,12 @@
             resumeNativeIfAllowed(nv, 'watch');
           }, 1000);
         }
+      }
+      if (podEnd || overlay.holdAt) {
+        if (podEnd && handoff) adLogState('native-handoff', handoff);
+        overlay.holdAt = 0;
+        overlay.holdCt = 0;
+        overlay.nativeHandoffLogged = true;
       }
     }
     if (wasStandby) {
@@ -3813,6 +3947,7 @@
         // anuncio e da troca de player". Both ends are captured here: the
         // position at take-over and the wall clock that owns the edge.
         overlay.holdAt = Date.now();
+        overlay.nativeHandoffLogged = false;
         overlay.holdCt = Number(v.currentTime || 0);
         const edgeAt = nativeEdge(v);
         overlay.holdBehind = edgeAt > 0 ? Math.max(0, edgeAt - overlay.holdCt) : 0;
@@ -4188,6 +4323,10 @@
         adUiHiddenLogged = false;
         adUiUserResumeAt = 0;
         adUserResumeLogged = false;
+        // A new episode starts with no user pause recorded: the stamp exists to
+        // survive THIS pod's hand-back, not the page load.
+        userPausedInPod = false;
+        userPauseLogged = false;
         if (!overlay.revealed) adAfterRevealLogged = false;
         adUiOwnerLogged = false;
         if (ad) {

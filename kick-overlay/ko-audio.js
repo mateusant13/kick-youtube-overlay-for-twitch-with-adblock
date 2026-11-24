@@ -603,13 +603,39 @@
   // the rest of the tab. A MUTE is only his when the input could have changed a
   // volume: our own bar, or a control inside the player's control bar. An
   // UNMUTE stays his from any fresh input - refusing it would trap a silent tab.
+  // A LABEL CERTIFIES MUTE/UNMUTE ONLY AS A WORD. `[aria-label*="ute"]` certified
+  // any label containing those letters ("Absolute", "Route", "Computer"), so a
+  // click on an unrelated labelled button could be read as a volume gesture.
+  // CSS has no case-insensitive word boundary; the selector keeps the real
+  // controls, and this test makes the wording exact.
+  const MUTE_WORD_RE = /\b(?:un)?mut(?:e|ed|ing)\b/i;
+  function labelledMute(el) {
+    try {
+      if (!el || typeof el.getAttribute !== 'function') return null;
+      const label = el.getAttribute('aria-label');
+      return typeof label === 'string' && MUTE_WORD_RE.test(label) ? el : null;
+    } catch {
+      return null;
+    }
+  }
+  function muteLabelHit(el) {
+    try {
+      for (let e = el; e; e = e.parentElement) {
+        const hit = labelledMute(e);
+        if (hit) return hit;
+      }
+    } catch {
+      /* a detached stub has no ancestor chain */
+    }
+    return null;
+  }
   const VOLUME_CONTROL_SEL = [
     '#ko-wrap', '#ko-volwrap', '#ko-mute', '#ko-vol',
     '[data-a-target="player-volume-slider"]',
     '[data-a-target="player-mute-unmute-button"]',
     '[data-a-target*="volume"]',
     '[data-a-target*="mute"]',
-    '[aria-label*="olume"]', '[aria-label*="ute"]',
+    '[aria-label*="olume"]',
     // YOUTUBE'S OWN PLAYER CHROME CARRIES NEITHER. Measured 2026-11-24 on the
     // owner's tab (`youtube.com/watch?v=BuC4wthYlLU`): `.ytp-mute-button` is a
     // 40x40 visible button with `aria-label:null` and no `data-a-target`, so
@@ -642,13 +668,15 @@
       // the mute the player writes next be recorded as his - the 2026-11-15
       // picture-click defect in a new shape. A bare slider counts only when its
       // own name/class, or an ancestor's, says volume.
-      const hit = t.closest && t.closest(VOLUME_CONTROL_SEL);
+      const labelHit = muteLabelHit(t);
+      const hit = labelHit || (t.closest && t.closest(VOLUME_CONTROL_SEL));
       if (hit) {
         let named = null;
         let generic = false;
         try {
-          named = hit.closest && hit.closest('[class*="volume"],[aria-label*="olume"],[aria-label*="ute"],[data-a-target*="volume"],[data-a-target*="mute"]');
+          named = hit.closest && hit.closest('[class*="volume"],[aria-label*="olume"],[data-a-target*="volume"],[data-a-target*="mute"]');
         } catch { named = null; }
+        if (!named && labelHit) named = labelHit;
         try {
           generic = typeof hit.matches === 'function' && hit.matches('[role="slider"]');
         } catch { generic = false; }

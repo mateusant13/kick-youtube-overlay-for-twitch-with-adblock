@@ -1,0 +1,12 @@
+# The LF-only gate (`line-endings`) and every suite that mutates a source file
+# by exact LF text require these to be LF in the working tree. The machine's
+# global `core.autocrlf=true` rewrote lane patches to CRLF (measured 2026-11-24:
+# the gate refused `twitch-adblock.js` and `content.js`), so the dialect is
+# pinned here instead of being re-normalized by hand after every merge.
+kick-overlay/*.js text eol=lf
+kick-overlay/*.cjs text eol=lf
+kick-overlay/*.json text eol=lf
+kick-overlay/*.html text eol=lf
+kick-overlay/*.css text eol=lf
+_tools/*.mjs text eol=lf
+*.md text eol=lf

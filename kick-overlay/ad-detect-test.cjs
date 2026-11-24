@@ -36,6 +36,21 @@ function check(label, ok, detail) {
   }
 }
 
+// Runs the same predicate against a source that restores the pre-fix line.
+// It MUST fail there; the failure is printed as a RED line and is not counted
+// as a suite failure, so one run shows the red mutation and the green arm.
+function redArm(label, mutantSrc, run) {
+  arms.push(label);
+  let detail = null;
+  const ok = run(mutantSrc, (d) => { detail = d; });
+  if (ok) {
+    failures++;
+    console.log(`  - FAIL ${label} (the mutation did not break the arm)`);
+  } else {
+    console.log(`  - FAIL RED ${label}${detail ? ` (${detail})` : ''}`);
+  }
+}
+
 // Pull one top-level `function name(` body out of the shipped file by brace
 // matching, so the suite always executes the code the browser gets.
 function grab(name, src = SRC) {
@@ -54,6 +69,7 @@ function grab(name, src = SRC) {
 }
 const core = (src = SRC) => [
   'let adUiDetailOverride = null;',
+  'const AD_SURFACE_MAX_NODES = 256;',
   'const mainVideo = () => null;',
   'const adLog = () => {}, overlay = { layoutSaved: null };',
   grab('adSurfaceRect', src), grab('isOurOwnVideo', src), grab('adWrapperPaint', src),
@@ -241,19 +257,23 @@ function squeezeRun(src, o = {}) {
     bw = 1340, bh = 90,
     fullscreen = false, ownFrame = false, shellHidden = false,
     noWrapper = false, noNodes = false, persistentH = 751, wrapperW = cw,
+    logoFirst = false, logoW = 40, logoH = 24, replaceMidPod = false,
   } = o;
   const logs = [];
   const box = { display: 'block', visibility: 'visible', opacity: '1', position: 'relative' };
-  const container = squeezeNode({ rect: [cw, ch], style: { ...box, height: '' } });
-  const videoRef = squeezeNode({ rect: [cw, ch], style: { height: '' } });
+  const container = squeezeNode({ rect: [cw, ch], style: { ...box, height: '', width: '', 'max-height': '' } });
+  const videoRef = squeezeNode({ rect: [cw, ch], style: { height: '', width: '', 'max-height': '' } });
+  const videoStyle = { width: '960px', height: '540px', 'max-height': '540px' };
   const persistent = squeezeNode({ rect: [cw, persistentH] });
   const wrapper = squeezeNode({
     rect: [wrapperW, bh], cls: 'stream-display-ad__wrapper',
     style: shellHidden ? { visibility: 'hidden', opacity: '0' } : { visibility: '' },
   });
   const painted = squeezeNode({ rect: [bw, bh] });
-  wrapper.querySelectorAll = () => [painted];
-  const video = squeezeNode({ rect: [vw, vh], style: { width: '960px', height: '540px' } });
+  const logo = squeezeNode({ rect: [logoW, logoH] });
+  wrapper.children = logoFirst ? [logo, painted] : [painted];
+  wrapper.querySelectorAll = () => wrapper.children;
+  const video = squeezeNode({ rect: [vw, vh], style: { ...videoStyle } });
   video.tagName = 'VIDEO';
   if (ownFrame) video.closest = () => ({});
   const playerEl = squeezeNode({ rect: [cw, ch] });
@@ -279,14 +299,44 @@ function squeezeRun(src, o = {}) {
   ];
   const fn = new Function(
     'document', 'NodeFilter', 'getComputedStyle', 'overlay', 'adLog', 'mainVideo', 'video', 'wrapper', 'container', 'videoRef', 'logs',
-    `let adUiDetailOverride = null;\n${names.map((n) => grab(n, src)).join('\n')}
+    `const AD_SURFACE_MAX_NODES = 256;\nlet adUiDetailOverride = null;\n${names.map((n) => grab(n, src)).join('\n')}
      return { detail: adUiDetail(), release: adLayoutRelease, holdWorthy: adHoldWorthy, video, wrapper, container, videoRef, logs };`,
   );
-  return fn(
+  const result = fn(
     doc, { SHOW_TEXT: 4 }, (el) => (el === wrapper && shellHidden
       ? { ...box, visibility: 'hidden', opacity: '0' } : box),
     { layoutSaved: null }, (ev, d) => logs.push({ ev, d }), () => video, video, wrapper, container, videoRef, logs,
   );
+  if (replaceMidPod) {
+    // Twitch swaps the player nodes mid-pod. The new wrapper is a clone of the
+    // one we hid, so a release that writes into the DETACHED saved wrapper
+    // leaves the visible page hidden.
+    const repContainer = squeezeNode({ rect: [cw, ch], style: { ...container.style } });
+    const repVideoRef = squeezeNode({ rect: [cw, ch], style: { ...videoRef.style } });
+    const repVideo = squeezeNode({ rect: [vw, vh], style: { ...video.style } });
+    repVideo.tagName = 'VIDEO';
+    const repWrapper = squeezeNode({
+      rect: [wrapperW, bh], cls: wrapper.className, style: { visibility: 'hidden' },
+    });
+    const repPainted = squeezeNode({ rect: [bw, bh] });
+    repWrapper.children = [repPainted];
+    repWrapper.querySelectorAll = () => [repPainted];
+    for (const n of [container, videoRef, video, wrapper]) n.isConnected = false;
+    doc.querySelector = (sel) => {
+      if (sel.includes('video-player__container')) return repContainer;
+      if (sel.includes('video-ref')) return repVideoRef;
+      if (sel.includes('persistent-player')) return persistent;
+      if (sel.includes('video-player')) return playerEl;
+      return null;
+    };
+    doc.querySelectorAll = (sel) => {
+      if (sel.includes('stream-display-ad')) return [repWrapper];
+      if (sel === 'video') return [repVideo];
+      return [];
+    };
+    Object.assign(result, { repWrapper, repContainer, repVideoRef, repVideo });
+  }
+  return result;
 }
 check(
   'a healthy 714x325 video in a 714x402 player is NOT a squeeze',
@@ -1414,6 +1464,70 @@ check(
   }
 }
 
+
+// ---- 4c. A SMALL LOGO BEFORE THE BANNER MUST NOT HIDE THE BANNER ----------
+// The shipped walk stopped at the first painted descendant that was bigger
+// than 20x20. A 40x24 logo before a 900x120 banner left `best` below the
+// half-player-width gate and the squeeze was ignored.
+function logoFirstArm(src, note) {
+  const r = squeezeRun(src, {
+    logoFirst: true, cw: 1000, ch: 751, vw: 1000, vh: 605,
+    wrapperW: 40, bw: 900, bh: 120,
+  });
+  const ok = !!r.detail && r.detail.kind === 'banner-squeeze' && r.detail.dw === 900
+    && r.holdWorthy(r.detail, r.video) === true;
+  if (note) note(JSON.stringify(r.detail));
+  return ok;
+}
+const earlyBreakSrc = SRC.replace(
+  '        for (let i = kids.length - 1; i >= 0 && stack.length < AD_SURFACE_MAX_NODES - 1; i--) {\n          if (kids[i]) stack.push(kids[i]);\n        }',
+  '        for (let i = kids.length - 1; i >= 0; i--) {\n          if (kids[i]) stack.push(kids[i]);\n        }\n        if (best.width > 20 && best.height > 20) break;',
+);
+check('the early-break mutation applied to the shipped walk', earlyBreakSrc !== SRC);
+redArm('the old first-paint break hides a banner behind a logo', earlyBreakSrc, logoFirstArm);
+check(
+  'a logo before a wide banner still yields the banner and a hold-worthy squeeze',
+  logoFirstArm(SRC),
+);
+
+// ---- 4d. A MID-POD NODE SWAP MUST NOT LEAVE THE NEW WRAPPER HIDDEN --------
+function replacedNodesArm(src, note) {
+  const r = squeezeRun(src, { replaceMidPod: true });
+  r.release();
+  const row = r.logs.find((l) => l.ev === 'ad-layout' && l.d.act === 'release');
+  const ok = !!r.detail && !!row && Number(row.d.stale) >= 1
+    && r.repWrapper.style.visibility === ''
+    && r.repVideo.style.height === '540px' && r.repVideo.style.width === '960px';
+  if (note) note(JSON.stringify({ visibility: r.repWrapper.style.visibility, row: row && row.d }));
+  return ok;
+}
+const staleBlindSrc = SRC.replace(
+  '      const detached = !s.el || s.el.isConnected === false;',
+  '      const detached = false;',
+);
+check('the stale-node mutation applied to the shipped release', staleBlindSrc !== SRC);
+redArm('the pre-fix release leaves a replaced wrapper hidden', staleBlindSrc, replacedNodesArm);
+check('a mid-pod node swap is released onto the connected wrapper', replacedNodesArm(SRC));
+
+const props = squeezeRun(SRC);
+props.release();
+const restoreRow = props.logs.find((l) => l.ev === 'ad-layout' && l.d.act === 'restore' && !l.d.skipped);
+check(
+  'layout save/restore covers height, width and max-height on all three elements',
+  !!restoreRow && ['container', 'videoRef', 'video'].every((n) =>
+    `${n}W` in restoreRow.d.before && `${n}MaxH` in restoreRow.d.before)
+    && props.container.style.width === '' && props.container.style['max-height'] === ''
+    && props.videoRef.style.width === '' && props.videoRef.style['max-height'] === ''
+    && props.video.style.width === '960px' && props.video.style['max-height'] === '540px',
+  JSON.stringify(restoreRow && restoreRow.d),
+);
+check(
+  'a missing persistent player is named and never throws',
+  missingNodeRun.logs.some((l) => l.ev === 'ad-layout' && l.d.skipped === 'missing-node'
+    && Array.isArray(l.d.missing) && l.d.missing.includes('persistent')),
+  JSON.stringify(missingNodeRun.logs),
+);
+
 // ---- anti-vacuity --------------------------------------------------------
 const expected = [
   'a wrapper that is 0x0 with a permanent __wrapper-hidden class is still an ad when its container paints',
@@ -1499,6 +1613,14 @@ const expected = [
   'RED: without the layout restore the picture stays shrunk',
   'the width-gate mutation applied to the shipped file',
   'RED: the old area gate refuses the wide lower third',
+  'the early-break mutation applied to the shipped walk',
+  'the old first-paint break hides a banner behind a logo',
+  'a logo before a wide banner still yields the banner and a hold-worthy squeeze',
+  'the stale-node mutation applied to the shipped release',
+  'the pre-fix release leaves a replaced wrapper hidden',
+  'a mid-pod node swap is released onto the connected wrapper',
+  'layout save/restore covers height, width and max-height on all three elements',
+  'a missing persistent player is named and never throws',
 ];
 const missing = expected.filter((l) => !arms.includes(l));
 if (missing.length) {

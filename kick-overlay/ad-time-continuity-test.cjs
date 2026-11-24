@@ -71,7 +71,7 @@ const PRE_FIX_INTENT = [[
 ]];
 // 4. resume any paused native, in any visibility.
 const PRE_FIX_RESUME = [[
-  '    if (document.visibilityState && document.visibilityState !== \'visible\') return true;\n    if (overlay.pauseBeforeAd && !overlay.coldPreroll) return true;\n',
+  '    if (document.visibilityState && document.visibilityState !== \'visible\') return true;\n    // A user pause during the pod and a player parked before it are the same\n    // refusal with one exit, so the census budget does not pay twice.\n    if (userPausedInPod || (overlay.pauseBeforeAd && !overlay.coldPreroll)) return true;\n',
   '',
 ]];
 
@@ -140,6 +140,35 @@ function check(name, fn) {
   } catch (error) {
     checks.push({ name, status: 'FAIL', detail: error.message });
     console.log(`FAIL ${name}  ${error.message}`);
+  }
+}
+
+// Runs the SAME arm against a source whose fix line was restored to the
+// pre-fix behaviour. The arm MUST fail there; the failure is printed as a RED
+// line (and not counted as a suite failure) so one run shows red -> green.
+async function redArm(label, source, fn) {
+  let error = null;
+  try {
+    await fn(source);
+  } catch (e) {
+    error = e;
+  }
+  if (!error) {
+    checks.push({ name: `RED ${label} did not fail`, status: 'FAIL', detail: 'the mutation did not break the arm' });
+    console.log(`FAIL RED ${label}  the mutation did not break the arm`);
+    return;
+  }
+  console.log(`FAIL RED ${label}  ${error.message}`);
+}
+
+async function greenArm(label, fn) {
+  try {
+    await fn();
+    checks.push({ name: label, status: 'PASS' });
+    console.log(`PASS ${label}`);
+  } catch (error) {
+    checks.push({ name: label, status: 'FAIL', detail: error.message });
+    console.log(`FAIL ${label}  ${error.message}`);
   }
 }
 function assert(cond, msg) {
@@ -1244,8 +1273,8 @@ async function main() {
   // release the hold and the very next tick re-paused the user's unpause.
   {
     const blind = mutate([[
-      '      if (!adUiHeldAt || userResumedHeld()) return;',
-      '      return;',
+      "      const pod = adUiHeldAt ? 'hold' : (overlay.adActive || overlay.revealed ? 'playlist' : null);",
+      "      if (!adUiHeldAt || userResumedHeld()) return;\n      const pod = null;",
     ]]);
     const page = makeWorld({ adSource: blind });
     setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
@@ -2309,6 +2338,108 @@ async function main() {
         `the mutant cleared the refusal too: ${JSON.stringify(row && row.d)}`);
     });
   }
+
+  // ---- 17. A PLAYLIST POD MUST NOT UNDO A USER RESUME --------------------
+  // `ad-hold` opens this pod with no DOM ad, so `adUiHeldAt` is never stamped.
+  // The shipped play handler returned at that guard, the freeze stamp stayed
+  // set, and the next real 500 ms tick paused the element the user resumed.
+  const playlistResumeRed = mutate([[
+    "      const pod = adUiHeldAt ? 'hold' : (overlay.adActive || overlay.revealed ? 'playlist' : null);",
+    "      if (!adUiHeldAt || userResumedHeld()) return;\n      const pod = null;",
+  ]]);
+  async function playlistResumeArm(src) {
+    const page = makeWorld({ adSource: src });
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    page.bypass({ type: 'ad-hold' });
+    await settle(10);
+    assert(page.video.paused === true, 'precondition: ad-hold did not pause the native');
+    assert(page.stats().adUiHeldAt() === 0, 'precondition: a DOM hold was stamped');
+    page.document.fire({ type: 'pointerdown' }); // a fresh gesture, not a machine play
+    page.video.play();
+    page.document.fire({ type: 'play', target: page.video }); // the REAL play listener
+    await settle(600); // at least one real 500 ms tick body
+    assert(page.video.paused === false,
+      `the pod's next tick re-paused the user resume (paused=${page.video.paused})`);
+    const rows = page.logsOf('ad-ui-hold').filter((l) => l.d.act === 'user-resume');
+    assert(rows.length === 1, `user-resume rows=${JSON.stringify(rows.map((r) => r.d))}`);
+    assert(rows[0].d.pod === 'playlist', `pod=${JSON.stringify(rows[0].d.pod)}`);
+  }
+  await redArm('a playlist-pod user resume is re-paused by the next tick', playlistResumeRed, playlistResumeArm);
+  await greenArm('a fresh user play releases a playlist pod and is not re-paused', () => playlistResumeArm(SOURCE));
+
+  // ---- 18. A USER PAUSE DURING THE POD SURVIVES HAND-BACK ----------------
+  // A real `pause` event (no gesture: the user used the control) after the
+  // take-over is the user's decision. The four ad-end retries must not start
+  // that element again; only a later fresh play clears the decision.
+  const userPauseRed = mutate([[
+    '    if (userPausedInPod || (overlay.pauseBeforeAd && !overlay.coldPreroll)) return true;',
+    '    if (overlay.pauseBeforeAd && !overlay.coldPreroll) return true;',
+  ]]);
+  async function userPauseArm(src) {
+    const page = makeWorld({ adSource: src });
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    await pod(page);
+    await settle(300); // let OUR take-over pause stamp age out
+    page.document.fire({ type: 'pointerdown' });
+    page.video.play();
+    page.document.fire({ type: 'play', target: page.video });
+    await settle(10);
+    page.video.pause();
+    page.document.fire({ type: 'pause', target: page.video }); // the REAL pause listener
+    await settle(10);
+    assert(page.video.paused === true, 'precondition: the user pause did not park the element');
+    const beforeEnd = page.logsOf('native-resume').length;
+    page.bypass({ type: 'ad-end' });
+    await settle(4300); // 300 / 1200 / 2500 / 4000 ms hand-back retries
+    assert(page.video.paused === true,
+      `hand-back resumed a player the user parked (paused=${page.video.paused})`);
+    assert(page.logsOf('native-resume').length === beforeEnd,
+      `a retry resumed the user-parked element: ${JSON.stringify(page.logsOf('native-resume').map((l) => l.d.tag))}`);
+  }
+  await redArm('a user pause during the pod is resumed at hand-back', userPauseRed, userPauseArm);
+  await greenArm('a user pause during the pod stays paused across all four hand-back retries', () => userPauseArm(SOURCE));
+
+  // ---- 19. native-handoff BELONGS TO A POD END ---------------------------
+  const handoffRed = mutate([
+    ['      const podEnd = !!overlay.holdAt && !overlay.nativeHandoffLogged;', '      const podEnd = !wasStandby;'],
+    [
+      '        overlay.holdAt = 0;\n        overlay.holdCt = 0;\n        overlay.nativeHandoffLogged = true;\n      }',
+      '      }',
+    ],
+  ]);
+  async function handoffArm(src) {
+    const idle = makeWorld({ adSource: src });
+    setNative(idle, { ct: 397, edge: 400, bufferedEnd: 400 });
+    for (let i = 0; i < 3; i++) {
+      // A frame without an `ad-hold` take-over: the standby-timeout / ad-only /
+      // clean-stall shape that used to print a hand-back with no pod at all.
+      idle.bypass({ type: 'ad-start', url: `https://clean.example/live${i}.m3u8`, channel: 'rodil', switch: true });
+      await settle(15);
+      idle.bypass({ type: 'ad-end' });
+      await settle(15);
+    }
+    assert(idle.logsOf('native-handoff').length === 0,
+      `no pod took over but ${idle.logsOf('native-handoff').length} hand-backs were logged`);
+    const page = makeWorld({ adSource: src });
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    await pod(page);
+    page.bypass({ type: 'ad-end' });
+    await settle(60);
+    assert(page.logsOf('native-handoff').length === 1,
+      `one real pod end logged ${page.logsOf('native-handoff').length} rows`);
+    for (let i = 0; i < 3; i++) {
+      // The real pod ended. These three teardowns have no NEW take-over, but
+      // the old `holdAt` survived when no recovery seek consumed it.
+      page.bypass({ type: 'ad-start', url: `https://clean.example/after${i}.m3u8`, channel: 'rodil', switch: true });
+      await settle(15);
+      page.bypass({ type: 'ad-end' });
+      await settle(15);
+    }
+    assert(page.logsOf('native-handoff').length === 1,
+      `stale take-over stamp logged ${page.logsOf('native-handoff').length} hand-backs`);
+  }
+  await redArm('stale teardowns print native-handoff rows without a pod', handoffRed, handoffArm);
+  await greenArm('three podless teardowns log nothing; one real pod end logs exactly one hand-back', () => handoffArm(SOURCE));
   const failed = checks.filter((c) => c.status === 'FAIL');
   console.log('');
   console.log(`RESULT ${failed.length ? 'FAIL' : 'PASS'} ad-time-continuity checks=${checks.length} failed=${failed.length}`);

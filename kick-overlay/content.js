@@ -991,7 +991,7 @@ const NOT_CHANNEL = new Set([
 
 // Build marker for the diag stream — lets us tell which code a tab runs
 // (content scripts of pre-reload tabs survive extension reloads).
-const KO_VER = '0.8.114';
+const KO_VER = '0.8.115';
 // How long a lost picture may last before the native player is allowed to
 // reclaim the screen (owner 2026-11-11: an ad and the player fighting).
 const OWNER_GRACE_MS = 6000;
@@ -1184,7 +1184,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     !!s.enabled !== !!prev.enabled ||
     (s.player || 'kick') !== (prev.player || 'kick') ||
     JSON.stringify(s.mappings || {}) !== JSON.stringify(prev.mappings || {});
-  KO.enabled = !!s.enabled;
+  KO.enabled = s.enabled === undefined ? KO.enabled : !!s.enabled;
   KO.adblock = s.adblock === undefined ? true : !!s.adblock;
   if (typeof s.playerAt === 'number') KO.playerAt = s.playerAt; // popup intent marker (echoes preserve it)
   const nextPlayer = s.player === 'twitch' ? 'twitch' : s.player === 'youtube' ? 'youtube' : 'kick';
@@ -2387,9 +2387,14 @@ function kickDvrRescue(why, reportedDur) {
   const want = Number(KO.kickDvrTarget);
   const target = want > 0 ? want : Math.max(0, Number(st.pos) || 0);
   const young = Date.now() - (KO.kickDvrLoadedAt || 0) < KICK_DVR_RESCUE_MS;
-  const inside = dur > 12 && target > 0 && target < dur;
+  // An Ended/error before the first duration report is not a request to go
+  // live: the user asked for an offset and the replay never published an edge.
+  // There is nothing to clamp against, so keep the target verbatim under the
+  // same one-shot budget as a rescue with a known duration.
+  const unknownDur = dur === 0 && want > 0;
+  const inside = unknownDur || (dur > 12 && target > 0 && target < dur);
   if (KO.kickOnDvr && KO.kickDvrUrl && inside && !(KO.kickDvrClamped && young)) {
-    const at = Math.max(0, Math.min(target, dur - 6));
+    const at = unknownDur ? target : Math.max(0, Math.min(target, dur - 6));
     KO.kickDvrClamped = true;
     KO.kickDvrLoadedAt = Date.now();
     KO.kickDvrTarget = at;

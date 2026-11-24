@@ -995,6 +995,199 @@ async function main() {
       assert(page.audio.intent('twitch').muted === false, 'the mutant accepted it: the arm measures nothing');
     });
   }
+  // ---- 2c10: a fresh user UNMUTE while an ad claim covers the page -------
+  // The claim's frame is the one voice: it SHARES the twitch intent, so the
+  // unmute accepted on the covered page element is heard there. The covered
+  // element itself stays silent (one voice), and the mute-only enforcement
+  // tick must not close the frame. The refuted claim said the frame stayed
+  // muted and the page element was re-closed on the 400 ms tick.
+  {
+    const page = makeWorld();
+    await runPod(page, { mutedBeforeAd: true });
+    assert(page.audio.visible() === 'ad', 'precondition: the ad claim covers the page');
+    assert(page.attrMuted() === '1', 'precondition: the heard surface is muted');
+    assert(page.video.muted === true, 'precondition: the covered page element is silent');
+    await new Promise((r) => setTimeout(r, 900)); // past the claim's own-write TTL
+    const muteBtn = {
+      tagName: 'BUTTON',
+      closest: (sel) => (String(sel).includes('[data-a-target="player-mute-unmute-button"]') ? {} : null),
+    };
+    page.clickDocumentTarget(muteBtn);
+    page.machineSetsNative(false, 1);
+    check('a fresh unmute under a claim opens the one voice at his intent', () => {
+      assert(page.audio.intent('twitch').muted === false, 'the unmute did not reach the shared intent');
+      assert(page.audio.wanted('ad').muted === false, `the claim frame wanted muted=${page.audio.wanted('ad').muted}`);
+      assert(page.attrMuted() === '0', `the claim frame publishes muted=${page.attrMuted()}`);
+      assert(page.video.muted === true, 'the covered page element was opened: a second voice');
+    });
+    check('the accepted unmute row names origin:user:pointer under the claim', () => {
+      const rows = page.logsOf('audio-intent');
+      const row = rows[rows.length - 1];
+      assert(!!row, 'no audio-intent row was written');
+      assert(row.d.origin === 'user:pointer', `origin=${JSON.stringify(row.d.origin)}`);
+      assert(row.d.after && row.d.after.muted === false, `after=${JSON.stringify(row.d && row.d.after)}`);
+      assert(row.d.visible === 'ad' && row.d.claimed === 'ad', `visible=${row.d.visible}, claimed=${row.d.claimed}`);
+    });
+    page.audio.enforceSilence();
+    await new Promise((r) => setTimeout(r, 450)); // and the real 400 ms tick
+    check('the claim frame stays unmuted across enforceSilence', () => {
+      assert(page.video.muted === true, `the covered page element opened: muted=${page.video.muted}`);
+      assert(page.attrMuted() === '0', `the one voice was closed: muted=${page.attrMuted()}`);
+      assert(page.audio.intent('twitch').muted === false, 'the intent drifted while enforcing silence');
+    });
+  }
+  {
+    // RED: restore the visible-blind want(). The covered page element then
+    // opens too, so the one-voice arm above fails on a second audible surface.
+    const blind = AUDIO
+      .split('muted: !!(it.muted || policy.has(surface) || visibleNow() !== surface),')
+      .join('muted: !!(it.muted || policy.has(surface)),');
+    check('mutation: the visible rule exists to be disarmed', () => {
+      assert(blind !== AUDIO, 'the visible rule was not found');
+    });
+    const page = makeWorld({ audioSource: blind });
+    await runPod(page, { mutedBeforeAd: true });
+    await new Promise((r) => setTimeout(r, 900));
+    const muteBtn = { tagName: 'BUTTON', closest: (sel) => (String(sel).includes('[data-a-target="player-mute-unmute-button"]') ? {} : null) };
+    page.clickDocumentTarget(muteBtn);
+    page.machineSetsNative(false, 1);
+    check('RED: a visible-blind want() opens the covered page element too', () => {
+      assert(page.video.muted === false, 'the mutant kept one voice: this arm is not measuring the visible rule');
+    });
+  }
+  {
+    // RED: restore the unlabelled intent write. The same unmute is accepted,
+    // but its row no longer names the gesture that produced it.
+    const blind = AUDIO
+      .split("origin: 'user:pointer', ev: gestureEvidence")
+      .join("origin: 'code:UNLABELLED', ev: gestureEvidence");
+    check('mutation: the gesture origin exists to be disarmed', () => {
+      assert(blind !== AUDIO, 'the gesture origin was not found');
+    });
+    const page = makeWorld({ audioSource: blind });
+    await runPod(page, { mutedBeforeAd: true });
+    await new Promise((r) => setTimeout(r, 900));
+    const muteBtn = { tagName: 'BUTTON', closest: (sel) => (String(sel).includes('[data-a-target="player-mute-unmute-button"]') ? {} : null) };
+    page.clickDocumentTarget(muteBtn);
+    page.machineSetsNative(false, 1);
+    const rows = page.logsOf('audio-intent');
+    check('RED: an unlabelled unmute hides its gesture origin', () => {
+      const row = rows[rows.length - 1];
+      assert(!!row && row.d.origin !== 'user:pointer', `origin=${row && row.d.origin}: the arm measures nothing`);
+    });
+  }
+  {
+    // RED: restore the world where the claim surface had its own intent and
+    // a gesture was not carried to the visible surface. With the frame muted
+    // by hand, the user's unmute no longer reaches the one voice.
+    const blind = AUDIO
+      .split('const surfaceOf = (s) => shares[s] || s;')
+      .join('const surfaceOf = (s) => s;')
+      .split("      if (now && now !== owner) setIntent(now, patch, { silent: true, origin: 'user:pointer->visible', ev: gestureEvidence });")
+      .join('      /* pre-fix: no carry to the claimed surface */');
+    check('mutation: the shared intent and the carry exist to be disarmed', () => {
+      assert(blind !== AUDIO, 'the sharing/carry mutation did not apply');
+    });
+    const page = makeWorld({ audioSource: blind });
+    await runPod(page, { mutedBeforeAd: true });
+    page.audio.setIntent('ad', { muted: true, volume: 1 }, { persist: false, origin: 'code:test' });
+    await new Promise((r) => setTimeout(r, 900));
+    const muteBtn = { tagName: 'BUTTON', closest: (sel) => (String(sel).includes('[data-a-target="player-mute-unmute-button"]') ? {} : null) };
+    page.clickDocumentTarget(muteBtn);
+    page.machineSetsNative(false, 1);
+    check('RED: without sharing and carry the frame stays muted after the unmute', () => {
+      assert(page.attrMuted() === '1', `the mutant unmuted the frame: muted=${page.attrMuted()}`);
+    });
+  }
+  // A MACHINE unmute under the claim is the opposite direction: no gesture,
+  // no accepted intent. It is refused as stale input and apply() re-closes the
+  // page element; the frame stays at the intent the user left (muted).
+  {
+    const page = makeWorld();
+    await runPod(page, { mutedBeforeAd: true });
+    assert(page.attrMuted() === '1', 'precondition: the heard surface is muted');
+    await new Promise((r) => setTimeout(r, 1600)); // past TTL and INPUT_FRESH_MS
+    const before = page.logsOf('audio-intent').length;
+    page.machineSetsNative(false, 1);
+    const refused = page.logsOf('audio-refused').pop();
+    check('a machine unmute under a claim is refused without becoming intent', () => {
+      assert(page.audio.intent('twitch').muted === true, 'a machine unmute became the user choice');
+      assert(page.attrMuted() === '1', `the claim frame opened: muted=${page.attrMuted()}`);
+      assert(page.video.muted === true, `the covered page element stayed open: muted=${page.video.muted}`);
+      assert(page.logsOf('audio-intent').length === before, 'an intent row was written for the machine unmute');
+      assert(!!refused && refused.d.why === 'stale-input', `why=${refused && refused.d.why}`);
+    });
+  }
+  {
+    // RED: restore the pre-fix world with no freshness gate. The same machine
+    // unmute is then accepted as the user's and the frame opens.
+    const blind = AUDIO.split('if (!fresh) {').join('if (false) {');
+    check('mutation: the freshness gate exists to be disarmed', () => {
+      assert(blind !== AUDIO, 'the freshness gate was not found');
+    });
+    const page = makeWorld({ audioSource: blind });
+    await runPod(page, { mutedBeforeAd: true });
+    await new Promise((r) => setTimeout(r, 1600));
+    page.machineSetsNative(false, 1);
+    check('RED: without freshness the machine unmute becomes intent', () => {
+      assert(page.audio.intent('twitch').muted === false, 'the mutant refused it too: the arm measures nothing');
+    });
+  }
+
+  // ---- 2c11: a mute LABEL must name the control, not just contain "ute" ---
+  // `[aria-label*="ute"]` certified `Absolute`, `Route`, `Computer`: any fresh
+  // click on such a button could turn the player's next mute into the user's
+  // choice. Mute/unmute wording must match as a word, in any case, while
+  // Twitch's data-target button, YouTube's chrome and the ad slider stay real.
+  {
+    const page = makeWorld();
+    const absolute = {
+      tagName: 'BUTTON',
+      getAttribute: (k) => (k === 'aria-label' ? 'Absolute' : null),
+      closest: (sel) => (String(sel).includes('[aria-label*="ute"]') ? {} : null),
+    };
+    page.clickDocumentTarget(absolute);
+    page.machineMutesNative();
+    const refused = page.logsOf('audio-refused').pop();
+    check('a label like Absolute does not certify a volume control', () => {
+      assert(page.audio.intent('twitch').muted === false, 'a non-mute label certified the mute');
+      assert(!!refused && refused.d.why === 'not-volume-control', `why=${refused && refused.d.why}`);
+    });
+  }
+  for (const label of ['Mute', 'unmute', 'MUTE', 'Press m to mute']) {
+    const page = makeWorld();
+    const control = {
+      tagName: 'BUTTON',
+      getAttribute: (k) => (k === 'aria-label' ? label : null),
+      closest: () => null,
+    };
+    page.clickDocumentTarget(control);
+    page.machineMutesNative();
+    check(`aria-label "${label}" certifies a mute control`, () => {
+      assert(page.audio.intent('twitch').muted === true, `${label} was refused as not-volume-control`);
+    });
+  }
+  {
+    // RED: restore `[aria-label*="ute"]`. "Absolute" now matches the selector,
+    // so the same click certifies the machine mute and the arm above fails.
+    const blind = AUDIO
+      .split(`    '[aria-label*="olume"]',`)
+      .join(`    '[aria-label*="olume"]', '[aria-label*="ute"]',`);
+    check('mutation: the substring label selector exists to be disarmed', () => {
+      assert(blind !== AUDIO, 'the label selector was not found');
+    });
+    const page = makeWorld({ audioSource: blind });
+    const absolute = {
+      tagName: 'BUTTON',
+      getAttribute: (k) => (k === 'aria-label' ? 'Absolute' : null),
+      closest: (sel) => (String(sel).includes('[aria-label*="ute"]') ? {} : null),
+    };
+    page.clickDocumentTarget(absolute);
+    page.machineMutesNative();
+    check('RED: with the bare ute substring Absolute certifies the mute', () => {
+      assert(page.audio.intent('twitch').muted === true, 'the mutant refused it: the arm measures nothing');
+    });
+  }
 
   // ---- 2c5: a mute remembers the level it silenced ----------------------
   // Owner report 2026-11-16, verbatim: "o botao de mutar e desmutar funciona de

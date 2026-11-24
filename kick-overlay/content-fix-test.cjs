@@ -3968,6 +3968,56 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
       console.log('S3 dvr-ended: first failure re-loads the replay at the user offset (RED: pre-fix goes live) - OK');
     }
 
+    // S5: an Ended/error before ANY duration is published still carries the
+    // user's replay intent. Rescue at the target with no clamp (there is no
+    // edge to clamp against), spend the same one-shot budget, and let a second
+    // failure inside the window mint.
+    {
+      const M = mkSeek();
+      const { K, posts } = install(M, { dur: 0, pos: 1000, lat: 0, stDur: 0, onDvr: true, state: 'Ended' });
+      K.kickDvrTarget = 1234;
+      K.kickDvrLoadedAt = Date.now();
+      K.kickDvrClamped = false;
+      const net = liveFetch();
+      const r0 = swCalls.length;
+      const p0 = posts.length;
+      relay(K, { state: 'Ended', pos: 1000, lat: 0, dur: 0 });
+      const loads = sent(posts.slice(p0), 'load');
+      assert.strictEqual(loads.length, 1, `S5: an Ended with no duration re-loads the replay once (got ${JSON.stringify(posts.slice(p0))})`);
+      assert.strictEqual(loads[0].__koKick.url, K.kickDvrUrl, 'S5: the no-duration rescue stays on the replay');
+      assert.strictEqual(loads[0].__koKick.seekTo, 1234, 'S5: the target is honoured verbatim, with no clamp against an unknown edge');
+      assert.strictEqual(net.calls.length, 0, 'S5: no mint on the first failure with unknown duration');
+      const rescue = rows('dvr-ended-rescue', r0);
+      assert.strictEqual(rescue.length, 1, 'S5: exactly one rescue row for the no-duration failure');
+      assert.strictEqual(rescue[0].wentLive, false, 'S5: the row says the user stayed on the replay');
+      assert.strictEqual(rescue[0].dur, 0, 'S5: the row names the unknown duration as 0');
+      assert.strictEqual(rescue[0].target, 1234, 'S5: the row names the unclamped offset');
+      // The budget is honest: without a new load the next failure mints.
+      const p1 = posts.length;
+      relay(K, { state: 'Ended', pos: 1000, lat: 0, dur: 0 });
+      await settle(40);
+      assert.ok(net.calls.length > 0, 'S5: a second failure inside 15 s still mints');
+      assert.strictEqual(sent(posts.slice(p1), 'load').filter((m) => m.__koKick.url === 'https://ivs.example/fresh-s').length, 1, 'S5: the second failure loads the fresh live url');
+      net.restore();
+      // RED: restore the pre-fix predicate. With dur === 0 it is false, so
+      // the first failure mints instead of rescuing the replay.
+      const red = mkSeek(
+        '  const inside = unknownDur || (dur > 12 && target > 0 && target < dur);',
+        '  const inside = dur > 12 && target > 0 && target < dur; // RED: unknown duration mints',
+      );
+      const rFix = install(red, { dur: 0, pos: 1000, lat: 0, stDur: 0, onDvr: true, state: 'Ended' });
+      rFix.K.kickDvrTarget = 1234;
+      rFix.K.kickDvrLoadedAt = Date.now();
+      rFix.K.kickDvrClamped = false;
+      const redNet = liveFetch();
+      relay(rFix.K, { state: 'Ended', pos: 1000, lat: 0, dur: 0 });
+      await settle(40);
+      redNet.restore();
+      assert.ok(redNet.calls.length > 0, 'S5 RED: the pre-fix predicate mints on the first unknown-duration failure');
+      assert.strictEqual(sent(rFix.posts, 'load').filter((m) => m.__koKick.url === rFix.K.kickDvrUrl).length, 0, 'S5 RED: no replay re-load under the pre-fix predicate');
+      console.log('S5 dvr-ended-no-duration: unknown duration re-loads the replay unclamped (RED: pre-fix mints) - OK');
+    }
+
     // S4: the explicit chip still mints and names itself in the diag row.
     {
       const M = mkSeek();
@@ -4002,6 +4052,49 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     }
   }
 
+  // U2: a partial `ko.v2` write that omits `enabled` (tool / older build)
+  // must not silently disable the overlay for the rest of the page — that
+  // also makes the native-stall watchdog report idle on a frozen picture.
+  // An explicit false from the popup still applies.
+  {
+    const mkStorage = (from, to) => {
+      if (from) assert.ok(src.includes(from), `U2 RED: mutation target missing: ${from.slice(0, 70)}`);
+      const code = from ? src.replace(from, to) : src;
+      let listener = null;
+      const realAdd = chromeStub.storage.onChanged.addListener;
+      chromeStub.storage.onChanged.addListener = (l) => { listener = l; };
+      const realSetInterval = global.setInterval;
+      global.setInterval = () => 0;
+      try {
+        const M = new Function('window', 'document', 'location', 'navigator', code
+          + '\n;return {KO};')(global, mountDoc, global.location, global.navigator);
+        assert.ok(listener, 'U2: the module under test registers the storage listener');
+        return {
+          KO: M.KO,
+          fire: (newValue, oldValue) => listener({ 'ko.v2': { newValue, oldValue } }, 'local'),
+        };
+      } finally {
+        chromeStub.storage.onChanged.addListener = realAdd;
+        global.setInterval = realSetInterval;
+      }
+    };
+    const M = mkStorage();
+    M.KO.enabled = true;
+    M.fire({ player: 'kick', mappings: {} }, { enabled: true, player: 'kick', mappings: {} });
+    assert.strictEqual(M.KO.enabled, true, 'U2: a write without `enabled` keeps the overlay on');
+    M.fire({ enabled: false, player: 'kick', mappings: {} }, { enabled: true, player: 'kick', mappings: {} });
+    assert.strictEqual(M.KO.enabled, false, 'U2: an explicit false still disables the overlay');
+    // RED: restore `KO.enabled = !!s.enabled`; the same partial write flips off.
+    const red = mkStorage(
+      '  KO.enabled = s.enabled === undefined ? KO.enabled : !!s.enabled;',
+      '  KO.enabled = !!s.enabled; // RED: a partial write disables',
+    );
+    red.KO.enabled = true;
+    red.fire({ player: 'kick', mappings: {} }, { enabled: true, player: 'kick', mappings: {} });
+    assert.strictEqual(red.KO.enabled, false, 'U2 RED: restoring `!!s.enabled` disables on a partial write');
+    console.log('U2 storage partial-enable: omitted enabled keeps the current value (RED: pre-fix disables) - OK');
+  }
+
   // ANTI-VACUITY. Every arm above prints one "<label> - OK" line, and a suite
   // whose arms silently stopped running still exits 0 today (that is how a
   // regression gets a green receipt). The expected labels are listed HERE, in
@@ -4012,7 +4105,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     'U mute', 'V quality', 'X per-player', 'X2 manual sw', 'X3 stale liv', 'Z hover', 'D1', 'N1', 'N2', 'O1 owner death',
     'A3a arrow hold', 'A3b arrow burst', 'A3c arrow handoff', 'A3d arrow refusals', 'A3e arrow mirror',
     'A3f arrow coalesced report', 'A3g arrow delivery',
-    'S1 drag-deep', 'S2 drag-edge', 'S3 dvr-ended', 'S4 chip-live',
+    'S1 drag-deep', 'S2 drag-edge', 'S3 dvr-ended', 'S4 chip-live', 'S5 dvr-ended-no-duration', 'U2 storage partial-enable',
   ];
   const printed = armLog.map((l) => String(l).trim());
   const missing = ARMS.filter((a) => !printed.some((l) => l.startsWith(a)));
