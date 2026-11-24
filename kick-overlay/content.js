@@ -67,6 +67,9 @@ const KICK_STEP_ABSORB_SEC = 1.5;
 // re-asked ONCE; if the element still has not arrived, the burst is rebased
 // onto what it really holds and the loss is named in the ring.
 const KICK_STEP_SETTLE_MS = 1500;
+// Two DVR failures inside this window are ONE episode: the first re-loads the
+// replay at the user's offset, the second (and only the second) may mint live.
+const KICK_DVR_RESCUE_MS = 15000;
 
 // YouTube page hosts (inverse-mapping mode) vs Twitch (forward mapping).
 const YT_HOSTS = new Set(['www.youtube.com', 'm.youtube.com', 'youtube.com', 'youtu.be']);
@@ -988,7 +991,7 @@ const NOT_CHANNEL = new Set([
 
 // Build marker for the diag stream — lets us tell which code a tab runs
 // (content scripts of pre-reload tabs survive extension reloads).
-const KO_VER = '0.8.113';
+const KO_VER = '0.8.114';
 // How long a lost picture may last before the native player is allowed to
 // reclaim the screen (owner 2026-11-11: an ad and the player fighting).
 const OWNER_GRACE_MS = 6000;
@@ -2042,23 +2045,11 @@ window.addEventListener('message', (ev) => {
       KO.kickDvrDurAt = Date.now();
     }
     if (KO.kickOnDvr && m.st && m.st.state === 'Ended') {
-      // A replay that ends right at its published edge is not "the replay is
-      // over, go live": the broadcast is still running and the user asked for
-      // an offset inside it. Re-load the replay once at dur-6 (the playlist
-      // needs a segment ahead of the playhead), then give up honestly.
-      const dur = Number(m.st.dur) || 0;
-      const young = Date.now() - (KO.kickDvrLoadedAt || 0) < 15000;
-      const atEdge = dur > 12 && (KO.kickDvrTarget || 0) >= dur - 2;
-      if (young && atEdge && !KO.kickDvrClamped && KO.kickDvrUrl) {
-        KO.kickDvrClamped = true;
-        const at = Math.max(0, dur - 6);
-        KO.kickDvrTarget = at;
-        KO.kickDvrLoadedAt = Date.now();
-        diag('dvr_edge_clamp', { why: 'ended', dur: Math.round(dur), at: Math.round(at) });
-        kickSend({ t: 'load', url: KO.kickDvrUrl, seekTo: at });
-      } else {
-        kickBackToLive(); // kick: replay ended → go live
-      }
+      // A replay that ends at the user's offset is not a request to go live.
+      // One rescue re-loads the replay there; only a second failure inside
+      // KICK_DVR_RESCUE_MS may take the live source (owner 2026-11-24: "ta
+      // brigando comigo no controle do seek").
+      kickDvrRescue('ended', m.st.dur);
     }
     if (KO.player === 'kick') {
       updateKickBar();
@@ -2072,9 +2063,9 @@ window.addEventListener('message', (ev) => {
       console.log('[ko] kick (IVS) error', m.d || '');
       diag('ivs_error', { msg: String(m.d || '').slice(0, 140), code: m.code || 0 });
       if (!KO.enabled || KO.player !== 'kick' || !KO.activeUrl) return;
-      // DVR errors → go live once (kick-identical: replay failure returns to
-      // the edge), never a reconnect storm. Live errors → budgeted reconnect.
-      if (KO.kickOnDvr) kickBackToLive();
+      // A DVR error gets the same one-rescue budget as `Ended`; a live error
+      // keeps the bounded reconnect. Never a mint on the first DVR failure.
+      if (KO.kickOnDvr) kickDvrRescue('error', KO.kickState && KO.kickState.dur);
       else fire(reconnect);
     } else if (m.e === 'rebuffering') {
       diag('ivs_rebuffer', {});
@@ -2175,31 +2166,71 @@ async function kickFetchDvr() {
 }
 
 // ---- kick.com-identical seek UX ---------------------------------------------
-// Contract, measured live 2026-11-09 (twitch.tv/titiltei, player=kick):
-//  - a click within 2 s of the edge is the LIVE CHIP: reload the live url.
-//    With the old 30 s threshold every 10 s and 60 s back-seek was converted
-//    into "go live" (rewind-10s clicked 12450.9 and the playhead came back at
-//    47.7 -> live), which is the defect the owner reported.
-//  - every deeper click seeks INSIDE the replay url (sources.dvr). A reload of
-//    the same url re-starts its playlist at the edge and loses the offset.
+// Contract, measured live 2026-11-09 and corrected 2026-11-24:
+//  - a bar release near the edge is a SEEK in place at the edge, never a
+//    player switch. Only the explicit #ko-golive chip (or an explicit seek-to-
+//    live intent) mints the live url. With the old 30 s threshold every 10 s
+//    and 60 s back-seek was converted into "go live"; with a 2 s threshold a
+//    stale/zero duration or a sentinel latency still did it.
+//  - every deeper release seeks INSIDE the replay url (sources.dvr). A reload
+//    of the same url re-starts its playlist at the edge and loses the offset.
 //  - the replay's published edge lags the broadcast clock by ~21.7 s, so a
 //    first load past it ends the replay and used to bounce to live; the target
 //    is clamped into the published range and the `Ended` rescue re-loads at
-//    dur-6 instead of going live.
+//    the user's offset instead.
 const KICK_EDGE_GO_LIVE_SEC = 2;
 
-function kickSeekTo(target) {
-  KO.kickDvrClamped = false; // a new user seek may clamp once again
+// The inputs behind EVERY seek decision, in one shape. 1073741824 is the IVS
+// sentinel for "unknown"; reading it as latency would put the edge at 0 and
+// leave every rewind clamped onto it. `max` keeps the bar's own arithmetic.
+function kickSeekInputs(target) {
   const st = KO.kickState || {};
-  const max = Math.max(1, KO.kickDur || Math.ceil((st.pos || 0) + (st.lat || 0)));
-  const lat = isFinite(st.lat) && st.lat >= 0 ? st.lat : 0;
-  const edge = Math.max(0, max - lat); // newest frame actually available
-  // Clamp into the real DVR range. A bar click can land past the edge: the
-  // broadcast max is wall-clock and runs ahead of the published DVR duration
-  // by a few seconds, and IVS re-bases a seek past its timeline.
-  const t = Math.max(0, Math.min(target, edge));
-  if (edge - t <= KICK_EDGE_GO_LIVE_SEC) {
-    kickBackToLive();
+  const rawLat = Number(st.lat);
+  const lat = isFinite(rawLat) && rawLat >= 0 && rawLat < 1e6 ? rawLat : 0;
+  const max = Math.max(1, Number(KO.kickDur) || Math.ceil((Number(st.pos) || 0) + lat));
+  const edge = Math.max(0, max - lat);
+  const want = Number(target);
+  return {
+    target: isFinite(want) ? want : 0,
+    t: Math.max(0, Math.min(isFinite(want) ? want : 0, edge)),
+    edge, max, lat,
+    dur: Number(st.dur) || 0,
+    onDvr: !!KO.kickOnDvr,
+    win: Number(st.win) || 0,
+  };
+}
+
+// ONE row per seek entry point, carrying the inputs and the winning `why`.
+// Without them a ring row says "go-live" but not whether a stale dur, a
+// sentinel lat or a real edge press caused it. kStepNum is the same 2-decimal
+// formatter as the arrow rows (function declaration, hoisted).
+function kickSeekRow(ev, d, why, extra) {
+  const row = {
+    target: kStepNum(d.target), t: kStepNum(d.t), edge: kStepNum(d.edge),
+    max: kStepNum(d.max), lat: kStepNum(d.lat), dur: kStepNum(d.dur),
+    onDvr: !!d.onDvr, win: Math.round(Number(d.win) || 0), why: why || null,
+  };
+  if (extra) Object.assign(row, extra);
+  diag(ev, row);
+}
+
+// `intent === 'live'` is the explicit seek-to-live channel; a bar drag never
+// carries it. Every other caller seeks (or hands the seek to the replay).
+function kickSeekTo(target, intent) {
+  KO.kickDvrClamped = false; // a new user seek may clamp once again
+  const d = kickSeekInputs(target);
+  if (intent === 'live') {
+    kickSeekRow('seek-decision', d, 'explicit-live');
+    kickBackToLive('explicit-live');
+    return;
+  }
+  if (d.edge - d.t <= KICK_EDGE_GO_LIVE_SEC) {
+    // A release at the edge lands there and keeps playing. No mint, no reload:
+    // the live element can hold this position, and a source switch here is the
+    // fight the owner reported over his own seekbar.
+    kickSend({ t: 'seek', s: d.t });
+    kickSeekRow('live_seek', d, intent === 'drag' ? 'drag-edge' : 'edge');
+    updateKickBar();
     return;
   }
   // Inside the LIVE element's own rewind window the seek is done in place: no
@@ -2214,23 +2245,24 @@ function kickSeekTo(target) {
   // "seeked in place" on a live timeline that cannot hold it and the frame
   // bounced back to the edge - the owner's "volta UM segundo e a live avanca".
   // A real window is seconds-to-hours; anything past 1e6 is "unknown".
-  const win = Number(st.win) || 0;
-  const winReal = win > 4 && win < 1e6 ? win : 0;
-  if (!KO.kickOnDvr && winReal && edge - t <= winReal - 2) {
-    kickSend({ t: 'seek', s: t });
-    diag('live_seek', { target: Math.round(t), behind: Math.round(edge - t), win: Math.round(win) });
+  const winReal = d.win > 4 && d.win < 1e6 ? d.win : 0;
+  if (!d.onDvr && winReal && d.edge - d.t <= winReal - 2) {
+    kickSend({ t: 'seek', s: d.t });
+    kickSeekRow('live_seek', d, intent === 'drag' ? 'drag' : 'live-window');
     updateKickBar();
     return;
   }
-  kickStartDvr(t);
+  kickSeekRow('seek-decision', d, 'dvr');
+  kickStartDvr(d.t);
 }
 
 function kickStartDvr(target) {
+  const d = kickSeekInputs(target);
   if (!KO.kickDvrUrl) {
     // Honest no-op: without the replay source there is nothing to rewind
     // into. Never fall back to "go live" — that is the defect the owner
     // reported; the live keeps playing and the reason is logged.
-    diag('dvr_rewind', { skip: 'no dvr url', target: Math.round(target) });
+    kickSeekRow('dvr_rewind', d, 'no-dvr-url');
     return;
   }
   if (KO.kickOnDvr) {
@@ -2241,10 +2273,9 @@ function kickStartDvr(target) {
     // frame reports: dur - 6 leaves the playlist time to publish the next
     // segment instead of ending the replay.
     const dur = Number(KO.kickState && KO.kickState.dur) || 0;
-    const at = dur > 12 && target > dur - 6 ? Math.max(0, dur - 6) : target;
-    if (at !== target) diag('dvr_edge_clamp', { dur: Math.round(dur), target: Math.round(target), at: Math.round(at) });
+    const at = dur > 12 && dur < 1e6 && d.t > dur - 6 ? Math.max(0, dur - 6) : d.t;
     kickSend({ t: 'seek', s: at });
-    diag('dvr_seek', { target: Math.round(at) });
+    kickSeekRow('dvr_rewind', d, at !== d.t ? 'clamped' : 'seek', { sent: kStepNum(at), durPub: Math.round(dur) });
     updateKickBar();
     return;
   }
@@ -2255,7 +2286,8 @@ function kickStartDvr(target) {
   // rescue still covers a first-ever replay). The clamps and the send itself
   // live in kickLoadReplayAt so a press that arrives DURING this load takes the
   // same path at the deeper offset.
-  kickLoadReplayAt(target);
+  kickSeekRow('dvr_rewind', d, 'load');
+  kickLoadReplayAt(d.t);
 }
 
 // Reload the SAME replay url at a deeper offset. That is the only tool for a
@@ -2292,20 +2324,21 @@ function kickLoadReplayAt(target) {
 // kickparity runs (`go-live` -> `stall {ct:10529}` x3, `owner-regress
 // {from:10529.4, to:46.2}`), and the reconnect repaired it only because THAT
 // path mints. `kickBackToLive` now takes the same route.
-async function kickGoLive() {
+async function kickGoLive(why) {
   KO.kickDvrClamped = false;
-  diag('go-live', {
-    onDvr: !!KO.kickOnDvr,
-    from: Math.round(Number(KO.kickState && KO.kickState.pos) || 0),
-    st: (KO.kickState && KO.kickState.state) || null,
-    dur: Math.round(Number(KO.kickState && KO.kickState.dur) || 0),
-    live: !!KO.activeUrl,
-  });
+  const d = kickSeekInputs(0);
+  d.target = d.edge; // the intent is the edge, not a number from the bar
+  d.t = Number((KO.kickState || {}).pos) || 0;
+  const reason = typeof why === 'string' ? why : 'chip';
+  // Exactly ONE row per mint request. The outcome is added at the exit so the
+  // row still answers "did it mint?" after the async round trip.
+  const row = (extra) => kickSeekRow('go-live', d, reason, extra);
   if (!KO.kickOnDvr) {
     // Already on the live url: the element owns the cross, so the player's own
     // seek-to-edge is the right tool (a reload would blink for no reason).
     kickSend({ t: 'seekToLive' });
     updateKickBar();
+    row({ via: 'seekToLive' });
     return;
   }
   // Leaving the DVR: the replay's flag, position and duration all stop being
@@ -2322,22 +2355,52 @@ async function kickGoLive() {
   if (!KO.kickOnDvr && KO.enabled && KO.player === 'kick' && k && k.live && k.url) {
     KO.activeUrl = k.url;
     kickSend({ t: 'load', url: k.url });
-    diag('go-live', { minted: true, at: Math.round(Number(KO.kickState && KO.kickState.pos) || 0) });
+    row({ minted: true, via: 'mint' });
   } else if (!k || !k.live) {
     // The channel went offline while he was in the DVR: honest stop, not a
     // dead element pretending to be live.
-    diag('go-live', { err: 'offline' });
+    row({ err: 'offline', via: 'mint' });
     teardown();
     setBadge('KICK', '#6b7280');
+  } else {
+    row({ err: 'lost-ownership', via: 'mint' });
   }
   updateKickBar();
 }
 
 // One name for the intent ("be at the live edge"). `kickGoLive` owns the mint
-// and the DVR exit; `kickBackToLive` is the in-page callers' name for it, kept
-// because the recovery paths read better with it.
-function kickBackToLive() {
-  return kickGoLive();
+// and the DVR exit; `kickBackToLive` is the in-page callers' name for it. The
+// reason is mandatory so a ring row can name WHO asked for the switch.
+function kickBackToLive(why) {
+  return kickGoLive(why);
+}
+
+// A replay that ends (or fails fatally) is not a request to go live: the user
+// asked for an offset that is still inside the broadcast. Re-load the replay
+// there once, clamped to dur-6 so the playlist has a segment ahead of the
+// playhead. Only a SECOND failure inside the rescue window mints live; an old
+// load starts a fresh budget instead of punishing him for a stale stamp.
+function kickDvrRescue(why, reportedDur) {
+  const st = KO.kickState || {};
+  const rawDur = Number(reportedDur) || Number(st.dur) || Number(KO.kickDvrDur) || 0;
+  const dur = rawDur < 1e6 ? rawDur : 0; // 2^30 is IVS's "unknown", not a VOD
+  const want = Number(KO.kickDvrTarget);
+  const target = want > 0 ? want : Math.max(0, Number(st.pos) || 0);
+  const young = Date.now() - (KO.kickDvrLoadedAt || 0) < KICK_DVR_RESCUE_MS;
+  const inside = dur > 12 && target > 0 && target < dur;
+  if (KO.kickOnDvr && KO.kickDvrUrl && inside && !(KO.kickDvrClamped && young)) {
+    const at = Math.max(0, Math.min(target, dur - 6));
+    KO.kickDvrClamped = true;
+    KO.kickDvrLoadedAt = Date.now();
+    KO.kickDvrTarget = at;
+    diag('dvr-ended-rescue', { why, want: Math.round(target), target: Math.round(at), dur: Math.round(dur), wentLive: false });
+    kickSend({ t: 'load', url: KO.kickDvrUrl, seekTo: at });
+    updateKickBar();
+    return true;
+  }
+  diag('dvr-ended-rescue', { why, want: Math.round(target), target: Math.round(target), dur: Math.round(dur), wentLive: true, young, clamped: !!KO.kickDvrClamped });
+  kickBackToLive('dvr-failed');
+  return false;
 }
 
 // ---- playback ownership -----------------------------------------------------
@@ -3159,7 +3222,7 @@ function mount() {
       const winStart = edge - KO.kickDur;
       ytCmd('seek', winStart + target);
     } else {
-      kickSeekTo(target);
+      kickSeekTo(target, 'drag');
     }
   };
   sb.addEventListener('pointerup', endDrag);
@@ -3173,7 +3236,7 @@ function mount() {
   const golive = bar.querySelector('#ko-golive');
   golive.addEventListener('click', () => {
     if (KO.player === 'youtube') ytCmd('seekToLive');
-    else kickBackToLive();
+    else kickBackToLive('chip');
   });
   startRectLoop();
   setupHotBar(wrap);
@@ -3326,7 +3389,7 @@ function showKickLayer() {
   KO.wrap.classList.remove('ko-yt');
   KO.wrap.classList.add('ko-kick');
   showWrap();
-  if (KO.ytState.ready && KO.ytState.playing) ytCmd('pause');
+  if (KO.ytState && KO.ytState.ready && KO.ytState.playing) ytCmd('pause');
   if (KO.kickFrame) {
     kickSend({ t: 'play' });
     // Freshest edge ONLY when re-showing the layer after a hide — probe()
@@ -3383,7 +3446,7 @@ async function reconnect() {
     // the live case is a teardown.
     if (KO.kickOnDvr && KO.activeUrl) {
       diag('dvr_stall_go_live', { n: KO.reconnectCount });
-      kickBackToLive();
+      kickBackToLive('stall-retry');
       return;
     }
     teardown();

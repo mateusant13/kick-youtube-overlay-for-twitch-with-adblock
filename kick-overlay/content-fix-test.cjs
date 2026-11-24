@@ -228,7 +228,7 @@ global.getComputedStyle = () => ({ height: '', maxHeight: '', position: 'static'
 // failures internally, so a rejecting stub keeps the boot probe deterministic.
 global.fetch = () => Promise.reject(new Error('stub-fetch'));
 
-const src = fs.readFileSync('content.js', 'utf8');
+const src = fs.readFileSync('content.js', 'utf8').replace(/\r\n/g, '\n'); // RED mutations are LF literals
 assert.ok(
   src.includes(`const KO_VER = '${manifest.version}'`),
   `content KO_VER is aligned with the manifest version (${manifest.version}); a half-bump would drift green`,
@@ -2483,6 +2483,12 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     const run = async () => {
       const bootRows = () => swCalls.filter((m) => m && m.__koDiag && m.__koDiag.ev === 'boot-nav').map((m) => m.__koDiag.data);
       const tabRows = () => swCalls.filter((m) => m && m.__koDiag && m.__koDiag.ev === 'stale-tab').map((m) => m.__koDiag.data);
+      // A reload timer a previous arm left in flight fires 800 ms later and
+      // lands inside THIS block under a loaded gate run (measured 2026-11-24:
+      // content-fix FAIL only inside ko-verify, green alone). Drain it before
+      // the count starts so the arm measures its own decisions; a real reload
+      // under the pod is scheduled by the call below, well after this mark.
+      await new Promise((r) => setTimeout(r, 1000));
       manifestVersion = '0.9.4';
       mountDoc.hidden = true;
       sessionStore.clear();
@@ -3774,6 +3780,228 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     console.log('O1 owner death: teardown publishes the loss (RED: the attribute stays kick with no wrap) - OK');
   }
 
+  // ---- S: the seekbar obeys the user, not the live edge ---------------------
+  // Owner 2026-11-24: "voltando a live pra ver o replay ... ta brigando comigo
+  // no controle do seek". These arms drive the REAL #ko-seekbar pointerup and
+  // the REAL frame `st` listener; every changed decision gets a RED mutation
+  // restoring the pre-fix line, and the same arm must then fail.
+  {
+    const mkSeek = (from, to) => {
+      if (from) assert.ok(src.includes(from), `S RED: mutation target missing: ${from.slice(0, 70)}`);
+      const code = from ? src.replace(from, to) : src;
+      const realSetInterval = global.setInterval;
+      global.setInterval = () => 0;
+      try {
+        return new Function('window', 'document', 'location', 'navigator', code
+          + '\n;return {KO, mount, updateKickBar, kickSeekTo, kickBackToLive};')(
+          global, mountDoc, global.location, global.navigator,
+        );
+      } finally {
+        global.setInterval = realSetInterval;
+      }
+    };
+    const rows = (ev, from) => swCalls.slice(from)
+      .filter((m) => m && m.__koDiag && m.__koDiag.ev === ev)
+      .map((m) => m.__koDiag.data);
+    const install = (M, over) => {
+      const realSetInterval = global.setInterval;
+      global.setInterval = () => 0; // mount() starts the rect loop
+      try {
+        M.mount();
+      } finally {
+        global.setInterval = realSetInterval;
+      }
+      const posts = [];
+      const K = M.KO;
+      K.player = 'kick';
+      K.enabled = true;
+      K.kickSlug = 's-channel';
+      K.activeUrl = 'https://ivs.example/live-s';
+      K.kickDvrUrl = 'https://dvr.example/s';
+      K.kickDur = over.dur || 0;
+      K.kickOnDvr = !!over.onDvr;
+      K.kickState = {
+        state: over.state || 'Playing', pos: over.pos || 0, lat: over.lat || 0,
+        dur: over.stDur || 0, win: over.win || 0, ts: Date.now(),
+      };
+      K.kickFrame = { dataset: { koToken: 's' } };
+      K.kickWin = { postMessage: (m) => posts.push(m) };
+      K.wrap.style.display = 'block';
+      M.updateKickBar();
+      // updateKickBar derives KO.kickDur from st.dur; pin the intended bar
+      // duration AFTER it so a stale-duration fixture stays stale.
+      K.kickDur = over.dur || 0;
+      return { K, posts, sb: K.wrap.querySelector('#ko-seekbar'), chip: K.wrap.querySelector('#ko-golive') };
+    };
+    const drag = (sb, seconds, dur) => {
+      // mountDoc's stub rect is {left:10, width:400}; bar geometry is unchanged.
+      const x = 10 + (seconds / dur) * 400;
+      sb._ev.pointerdown({ clientX: x, buttons: 1, pointerId: 1, preventDefault() {} });
+      sb._ev.pointerup({ clientX: x, buttons: 0, pointerId: 1 });
+    };
+    const sent = (posts, t) => posts.filter((m) => m && m.__koKick && m.__koKick.t === t);
+    const liveFetch = () => {
+      const calls = [];
+      const real = global.fetch;
+      global.fetch = (url) => {
+        calls.push(url);
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ livestream: { playback_url: 'https://ivs.example/fresh-s', id: 's' } }),
+        });
+      };
+      return { calls, restore: () => { global.fetch = real; } };
+    };
+    const relay = (K, st) => msgListeners.forEach((l) => l({
+      source: K.kickFrame.contentWindow,
+      origin: new URL(chromeStub.runtime.getURL('player.html')).origin,
+      data: { __koKick: { t: 'st', st, _koToken: 's' } },
+    }));
+
+    // S1: a drag 30 s behind the edge starts the replay; no mint / seekToLive.
+    {
+      const M = mkSeek();
+      const { K, posts, sb } = install(M, { dur: 3000, pos: 2998, lat: 2, stDur: 2998 });
+      const net = liveFetch();
+      const r0 = swCalls.length;
+      drag(sb, 2968, 3000); // exactly 30 s behind edge=2998
+      net.restore();
+      const loads = sent(posts, 'load');
+      assert.strictEqual(loads.length, 1, `S1: a 30 s bar rewind loads the replay once (got ${JSON.stringify(posts)})`);
+      assert.strictEqual(loads[0].__koKick.url, K.kickDvrUrl, 'S1: the rewind targets the replay');
+      assert.strictEqual(sent(posts, 'seekToLive').length, 0, 'S1: a deep drag never goes live');
+      assert.strictEqual(net.calls.length, 0, `S1: no live mint (got ${JSON.stringify(net.calls)})`);
+      assert.strictEqual(K.activeUrl, 'https://ivs.example/live-s', 'S1: the live url is untouched');
+      const decision = rows('seek-decision', r0);
+      assert.strictEqual(decision.length, 1, 'S1: exactly one decision row from kickSeekTo');
+      const d1 = decision[0];
+      assert.ok(d1 && d1.why === 'dvr' && d1.edge === 2998 && Math.abs(d1.t - 2968) < 1
+        && d1.lat === 2 && d1.onDvr === false, `S1: row carries its inputs (got ${JSON.stringify(d1)})`);
+      // RED: restore the old 30 s go-live threshold and its kickBackToLive
+      // body. 31 covers the float rounding of the bar's 2968/3000 fraction.
+      const red = mkSeek(
+        "  if (d.edge - d.t <= KICK_EDGE_GO_LIVE_SEC) {\n    // A release at the edge lands there and keeps playing. No mint, no reload:\n    // the live element can hold this position, and a source switch here is the\n    // fight the owner reported over his own seekbar.\n    kickSend({ t: 'seek', s: d.t });\n",
+        "  if (d.edge - d.t <= 31) {\n    kickBackToLive();\n    return;\n    kickSend({ t: 'seek', s: d.t });\n",
+      );
+      const rFix = install(red, { dur: 3000, pos: 2998, lat: 2, stDur: 2998 });
+      drag(rFix.sb, 2968, 3000);
+      await settle(40);
+      assert.strictEqual(sent(rFix.posts, 'seekToLive').length, 1, 'S1 RED: the old 30 s threshold goes live instead of rewinding');
+      assert.strictEqual(sent(rFix.posts, 'load').length, 0, 'S1 RED: the replay is never loaded under the old threshold');
+      console.log('S1 drag-deep: a 30 s bar rewind loads the replay, never go-live (RED: old threshold goes live) - OK');
+    }
+
+    // S2: a drag into the last second seeks in place; no mint and no reload.
+    {
+      const M = mkSeek();
+      const { K, posts, sb } = install(M, { dur: 3000, pos: 2999, lat: 2, stDur: 2998 });
+      const net = liveFetch();
+      const r0 = swCalls.length;
+      drag(sb, 2997.5, 3000);
+      net.restore();
+      const seeks = sent(posts, 'seek');
+      assert.strictEqual(seeks.length, 1, `S2: last-second drag sends one in-place seek (got ${JSON.stringify(posts)})`);
+      assert.ok(Math.abs(seeks[0].__koKick.s - 2997.5) < 1, 'S2: the seek keeps the dragged time');
+      assert.strictEqual(sent(posts, 'load').length, 0, 'S2: no replay reload at the edge');
+      assert.strictEqual(sent(posts, 'seekToLive').length, 0, 'S2: no go-live command at the edge');
+      assert.strictEqual(net.calls.length, 0, 'S2: no mint at the edge');
+      assert.strictEqual(K.activeUrl, 'https://ivs.example/live-s', 'S2: the live url is untouched');
+      const liveRows = rows('live_seek', r0);
+      assert.strictEqual(liveRows.length, 1, 'S2: exactly one live_seek row');
+      assert.strictEqual(liveRows[0].why, 'drag-edge', `S2: the row names the drag edge (got ${JSON.stringify(liveRows[0])})`);
+      // RED: restore the pre-fix branch body (kickBackToLive at the edge).
+      const red = mkSeek(
+        "    kickSend({ t: 'seek', s: d.t });\n    kickSeekRow('live_seek', d, intent === 'drag' ? 'drag-edge' : 'edge');\n",
+        '    kickBackToLive();\n    return;\n',
+      );
+      const rFix = install(red, { dur: 3000, pos: 2999, lat: 2, stDur: 2998 });
+      drag(rFix.sb, 2997.5, 3000);
+      await settle(40);
+      assert.strictEqual(sent(rFix.posts, 'seekToLive').length, 1, 'S2 RED: the pre-fix branch goes live instead of seeking');
+      assert.strictEqual(sent(rFix.posts, 'seek').length, 0, 'S2 RED: no in-place seek under the pre-fix branch');
+      console.log('S2 drag-edge: last-second drag seeks in place with no mint (RED: pre-fix branch goes live) - OK');
+    }
+
+    // S3: the first replay Ended at the user's offset re-loads the replay;
+    // only a second failure inside 15 s may go live.
+    {
+      const M = mkSeek();
+      const { K, posts } = install(M, { dur: 4000, pos: 1000, lat: 0, stDur: 4000, onDvr: true, state: 'Ended' });
+      K.kickDvrTarget = 1000;
+      K.kickDvrLoadedAt = Date.now();
+      K.kickDvrClamped = false;
+      const net = liveFetch();
+      const r0 = swCalls.length;
+      const p0 = posts.length;
+      relay(K, { state: 'Ended', pos: 1000, lat: 0, dur: 4000 });
+      const loads = sent(posts.slice(p0), 'load');
+      assert.strictEqual(loads.length, 1, `S3: one Ended re-loads the replay once (got ${JSON.stringify(posts.slice(p0))})`);
+      assert.strictEqual(loads[0].__koKick.url, K.kickDvrUrl, 'S3: the first rescue stays on the replay');
+      assert.strictEqual(loads[0].__koKick.seekTo, 1000, 'S3: the user offset survives the rescue');
+      assert.strictEqual(net.calls.length, 0, 'S3: no mint on the first failure');
+      const rescue = rows('dvr-ended-rescue', r0);
+      assert.strictEqual(rescue.length, 1, 'S3: exactly one rescue row for the first failure');
+      assert.strictEqual(rescue[0].wentLive, false, 'S3: the row says the user stayed on the replay');
+      assert.strictEqual(rescue[0].target, 1000, 'S3: the row names the offset');
+      assert.strictEqual(rescue[0].dur, 4000, 'S3: the row names the published duration');
+      // A second failure inside the window IS allowed to mint.
+      const p1 = posts.length;
+      relay(K, { state: 'Ended', pos: 1000, lat: 0, dur: 4000 });
+      await settle(40);
+      assert.ok(net.calls.length > 0, 'S3: a second failure inside 15 s may mint');
+      assert.strictEqual(sent(posts.slice(p1), 'load').filter((m) => m.__koKick.url === 'https://ivs.example/fresh-s').length, 1, 'S3: the second failure loads the fresh live url');
+      net.restore();
+      // RED: restore the pre-fix Ended handler (every Ended -> kickBackToLive).
+      const red = mkSeek(
+        "      kickDvrRescue('ended', m.st.dur);",
+        '      kickBackToLive(); // RED: pre-fix — every Ended goes live',
+      );
+      const rFix = install(red, { dur: 4000, pos: 1000, lat: 0, stDur: 4000, onDvr: true, state: 'Ended' });
+      rFix.K.kickDvrTarget = 1000;
+      rFix.K.kickDvrLoadedAt = Date.now();
+      const redNet = liveFetch();
+      relay(rFix.K, { state: 'Ended', pos: 1000, lat: 0, dur: 4000 });
+      await settle(40);
+      redNet.restore();
+      assert.ok(redNet.calls.length > 0, 'S3 RED: the pre-fix Ended handler mints on the first failure');
+      assert.strictEqual(sent(rFix.posts, 'load').filter((m) => m.__koKick.url === rFix.K.kickDvrUrl).length, 0, 'S3 RED: no replay re-load under the pre-fix handler');
+      console.log('S3 dvr-ended: first failure re-loads the replay at the user offset (RED: pre-fix goes live) - OK');
+    }
+
+    // S4: the explicit chip still mints and names itself in the diag row.
+    {
+      const M = mkSeek();
+      const { K, posts, chip } = install(M, { dur: 4000, pos: 1000, lat: 10, stDur: 4000, onDvr: true });
+      assert.ok(chip && typeof chip._ev.click === 'function', 'S4: mount ships a clickable #ko-golive');
+      const net = liveFetch();
+      const r0 = swCalls.length;
+      chip._ev.click();
+      await settle(40);
+      net.restore();
+      const loads = sent(posts, 'load');
+      assert.strictEqual(loads.length, 1, 'S4: the chip mints exactly one live load');
+      assert.strictEqual(loads[0].__koKick.url, 'https://ivs.example/fresh-s', 'S4: the chip targets the fresh mint');
+      assert.strictEqual(K.kickOnDvr, false, 'S4: the chip leaves the replay');
+      const gl = rows('go-live', r0);
+      assert.strictEqual(gl.length, 1, 'S4: exactly one go-live row');
+      assert.strictEqual(gl[0].why, 'chip', 'S4: the row names the chip as the intent');
+      assert.ok(['target', 't', 'edge', 'max', 'lat', 'dur', 'onDvr', 'win', 'why']
+        .every((key) => Object.prototype.hasOwnProperty.call(gl[0], key)), `S4: the row carries every decision field (got ${JSON.stringify(gl[0])})`);
+      // RED: a chip that no longer calls the explicit go-live path cannot mint.
+      const red = mkSeek("    else kickBackToLive('chip');", '    else kickSeekTo(KO.kickDur);');
+      const rFix = install(red, { dur: 4000, pos: 1000, lat: 10, stDur: 4000, onDvr: true });
+      const redNet = liveFetch();
+      rFix.chip._ev.click();
+      await settle(40);
+      // Scope the RED check to THIS module's bridge posts: a late apply() from
+      // an earlier arm may still be minting on the global fetch stub.
+      assert.strictEqual(sent(rFix.posts, 'load').filter((m) => m.__koKick.url === 'https://ivs.example/fresh-s').length, 0, 'S4 RED: without the explicit call the chip cannot mint');
+      assert.strictEqual(sent(rFix.posts, 'seekToLive').length, 0, 'S4 RED: no live command without the explicit call');
+      assert.strictEqual(sent(rFix.posts, 'load').length, 0, 'S4 RED: no live load without the explicit call');
+      console.log('S4 chip-live: the explicit chip mints and names itself (RED: no explicit call, no mint) - OK');
+    }
+  }
+
   // ANTI-VACUITY. Every arm above prints one "<label> - OK" line, and a suite
   // whose arms silently stopped running still exits 0 today (that is how a
   // regression gets a green receipt). The expected labels are listed HERE, in
@@ -3784,6 +4012,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     'U mute', 'V quality', 'X per-player', 'X2 manual sw', 'X3 stale liv', 'Z hover', 'D1', 'N1', 'N2', 'O1 owner death',
     'A3a arrow hold', 'A3b arrow burst', 'A3c arrow handoff', 'A3d arrow refusals', 'A3e arrow mirror',
     'A3f arrow coalesced report', 'A3g arrow delivery',
+    'S1 drag-deep', 'S2 drag-edge', 'S3 dvr-ended', 'S4 chip-live',
   ];
   const printed = armLog.map((l) => String(l).trim());
   const missing = ARMS.filter((a) => !printed.some((l) => l.startsWith(a)));

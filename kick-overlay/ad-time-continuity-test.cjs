@@ -59,6 +59,9 @@ const PRE_FIX_HANDOFF = [[
 const PRE_FIX_SENTINEL = [[
   'if (!(isFinite(e) && e > 0 && e < EDGE_MAX_SEC)) return 0;',
   '',
+], [
+  '        overlay.userDvr = overlay.holdBehind > POD_RECOVER_MIN && overlay.holdCt > POD_RECOVER_MIN;',
+  '        overlay.userDvr = false;',
 ]];
 // 3. no continuous intent tracking: the frame is told a frozen "muted" instead
 //    of the authority's state, so an unmute never reaches the clean player.
@@ -1196,54 +1199,148 @@ async function main() {
       assert(l[0].d.act === 'paused', `act=${JSON.stringify(l[0].d.act)}`);
       assert(api.adUiHeldAt() > 0, 'the hold did not record when it started');
     });
-    // 2. the page calls play() again: one pause is not enough
+    // 2. THE MACHINE play: Twitch's ad renderer calls play() with no gesture.
+    // Clear the input clock so this arm cannot inherit a pointerdown from
+    // setup and accidentally measure the USER path.
+    api.adTestClock({ clearInput: true });
     page.video.play();
+    page.document.fire({ type: 'play', target: page.video });
     api.adUiHoldTick();
     await settle(5);
-    check('the page taking the pause back is re-asserted, not accepted', () => {
+    check('a machine play (no gesture) is re-asserted, not accepted', () => {
       assert(page.video.paused === true, 'Twitch resumed the ad and the hold gave up');
+      assert(api.userPlayAt() === 0, `a gestureless play was stamped as a user play (${api.userPlayAt()})`);
     });
-    // 3. the ad ends with no pod ever starting: the player comes back by itself
+    // 2b. THE GESTURE-BEARING COMPANION. Same play event, but a real input
+    // first: the hold releases once and the 500 ms tick never takes it back.
+    page.document.fire({ type: 'pointerdown' });
+    page.video.play();
+    page.document.fire({ type: 'play', target: page.video });
+    api.adUiHoldTick();
+    await settle(5);
+    check('a fresh user play releases the hold and is not re-paused', () => {
+      assert(api.userPlayAt() > 0, 'the user play was not stamped');
+      assert(page.video.paused === false, 'the tick undid the user unpause');
+      assert(api.adUiHeldAt() === 0, 'the hold stamp survived the user play');
+      assert(page.logsOf('ad-ui-hold').filter((l) => l.d.act === 'user-resume').length === 1,
+        'the user resume was not logged exactly once');
+    });
+    api.adUiHold({ kind: 'wrapper', w: 1280, h: 720 });
+    await settle(5);
+    check('the episode failed by the user is not re-held', () => {
+      assert(page.video.paused === false, 'the same episode took the picture back');
+    });
+    // 3. the ad ends after the user took back: nothing is left frozen.
     api.adUiRelease();
     await settle(30);
-    check('an ad with no clean source hands the player back on its own', () => {
-      assert(page.video.paused === false, 'the hold left the player frozen after the ad');
+    check('an ad the user took back stays his after it ends', () => {
+      assert(page.video.paused === false, 'the ad-end path re-paused the user picture');
       const r = page.logsOf('ad-ui-release').pop();
       assert(!!r, 'the release wrote no line');
-      assert(r.d.act === 'resume', `act=${JSON.stringify(r.d.act)}`);
-      assert(r.d.reasserts >= 1, `reasserts=${JSON.stringify(r.d.reasserts)} does not count the take-back`);
+      assert(r.d.act === 'playing', `act=${JSON.stringify(r.d.act)}`);
     });
   }
-  // A banner or a squeezeback is not a playing ad: the hold must not cost the
-  // user his picture there.
+  // RED: the pre-fix play listener had no input clock, so a gesture did not
+  // release the hold and the very next tick re-paused the user's unpause.
+  {
+    const blind = mutate([[
+      '      if (!adUiHeldAt || userResumedHeld()) return;',
+      '      return;',
+    ]]);
+    const page = makeWorld({ adSource: blind });
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    const api = page.stats();
+    api.adUiHold({ kind: 'wrapper', w: 1280, h: 720 });
+    await settle(5);
+    page.document.fire({ type: 'pointerdown' });
+    page.video.play();
+    page.document.fire({ type: 'play', target: page.video });
+    api.adUiHoldTick();
+    await settle(5);
+    check('RED: without the input clock the user unpause is undone by the tick', () => {
+      assert(page.video.paused === true, 'the mutant honoured the gesture: this arm measures nothing');
+      assert(page.logsOf('ad-ui-hold').filter((l) => l.d.act === 'user-resume').length === 0,
+        'the mutant logged a user resume');
+    });
+  }
+  // A BARE banner on an unshrunk player is the control: an ad surface, but
+  // the full-size picture must never be paused over it.
   {
     const page = makeWorld();
     setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
     const api = page.stats();
-    check('a small squeezeback does not pause the stream', () => {
-      assert(api.adHoldWorthy({ kind: 'wrapper', w: 240, h: 135 }, page.video) === false,
-        'a 240x135 squeezeback was judged a playing ad');
+    check('a bare banner on an unshrunk player does not pause the stream', () => {
+      assert(api.adHoldWorthy({ kind: 'wrapper', w: 160, h: 90 }, page.video) === false,
+        'a 160x90 bare banner was judged a playing ad');
       assert(api.adHoldWorthy({ kind: 'wrapper', w: 1280, h: 720 }, page.video) === true,
         'a full-size wrapper was not judged a playing ad');
       assert(api.adHoldWorthy({ kind: 'aria', label: 'Anúncio (0:12)' }, page.video) === true,
         'the countdown label was not judged a playing ad');
     });
-    api.adUiHold({ kind: 'wrapper', w: 240, h: 135 });
+    api.adUiHold({ kind: 'wrapper', w: 160, h: 90 });
     await settle(5);
-    check('the squeezeback hold is a no-op in effect', () => {
-      assert(page.video.paused === false, 'the squeezeback paused the picture');
+    check('the bare-banner hold is a no-op in effect', () => {
+      assert(page.video.paused === false, 'the bare banner paused the picture');
     });
   }
-  // 4. RED: without the area/label gate every wrapper is an ad.
+  // 4. RED: without the width gate any wrapper is an ad.
   {
-    const blind = mutate([["      return detail.w * detail.h >= 0.5 * r.width * r.height;", "      return true;"]]);
+    const blind = mutate([["      return detail.w >= 0.5 * r.width; // a wide lower third is a played ad", "      return true;"]]);
     const page = makeWorld({ adSource: blind });
     setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
-    page.stats().adUiHold({ kind: 'wrapper', w: 240, h: 135 });
+    page.stats().adUiHold({ kind: 'wrapper', w: 160, h: 90 });
     await settle(5);
-    check('RED: a wrapper-only gate pauses the stream on a squeezeback', () => {
+    check('RED: a wrapper-only gate pauses the stream on a bare banner', () => {
       assert(page.video.paused === true,
-        'the mutant refused the squeezeback too: this arm is not measuring the gate');
+        'the mutant refused the bare banner too: this arm is not measuring the gate');
+    });
+  }
+  // ---- 10e. A NEW AD AFTER REVEAL IS NOT A HAND-BACK --------------------
+  // The clean frame revealed; Twitch starts another pod before ad-end. The
+  // old `adActive || revealed` gate skipped it, and hand-back resumed the
+  // native straight onto the live ad.
+  {
+    const page = makeWorld();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    await pod(page);
+    await settle(40);
+    check('precondition: the pod revealed and froze the native', () => {
+      assert(page.logsOf('overlay-reveal').length === 1, 'no clean picture revealed');
+      assert(page.video.paused === true, 'the native was not frozen for the hand-back');
+    });
+    const api = page.stats();
+    api.setAdUiDetailForTest(() => ({ kind: 'wrapper', w: 1280, h: 720 }));
+    page.bypass({ type: 'ad-end' });
+    await settle(80);
+    check('a new ad after reveal is held, never resumed onto', () => {
+      const named = page.logsOf('ad-ui-hold').filter((l) => l.d.act === 'ad-after-reveal');
+      assert(named.length === 1, `the new ad was not named exactly once: ${JSON.stringify(page.logsOf('ad-ui-hold'))}`);
+      assert(page.logsOf('native-resume').filter((l) => l.d.tag === 'ad-end').length === 0,
+        'the hand-back resumed the native onto the new ad');
+      assert(page.video.paused === true, 'the new ad kept playing');
+    });
+  }
+  {
+    const blind = mutate([
+      ['    if (revealedAd) holdAfterReveal(revealedAd);', '    if (false) holdAfterReveal(revealedAd);'],
+      ['    const target = adUiHoldTarget();\n    if (target) {', '    const target = null;\n    if (target) {'],
+      ['      if (v && !revealedAd) {', '      if (v) {'],
+      ['    if (overlay.adEndTries < 3 && adUiPresent()) {', '    if (false) {'],
+    ]);
+    const page = makeWorld({ adSource: blind });
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    await pod(page);
+    await settle(40);
+    check('RED precondition: the mutant revealed the clean picture too', () => {
+      assert(page.logsOf('overlay-reveal').length === 1, 'the mutant never revealed');
+    });
+    page.stats().setAdUiDetailForTest(() => ({ kind: 'wrapper', w: 1280, h: 720 }));
+    page.bypass({ type: 'ad-end' });
+    await settle(80);
+    check('RED: the pre-fix hand-back resumes the native onto the live ad', () => {
+      assert(page.logsOf('native-resume').filter((l) => l.d.tag === 'ad-end').length >= 1,
+        'the mutant never resumed: this arm measures nothing');
+      assert(page.video.paused === false, 'the mutant kept the native parked');
     });
   }
   // 5. THE FREEZE: our own pause must not be read as the user parking the player.
@@ -1456,7 +1553,7 @@ async function main() {
   // RED: the pre-fix frame-less exit leaves the element paused.
   {
     const blind = mutate([
-      ["      try {\n        const nv = mainVideo();\n        if (nv && nv.isConnected && nv.paused && !resumeRefusedByUser(nv)) {\n          resumeNative(nv, 'no-frame-exit');\n          armNativeRecovery(nv, 'no-frame-exit');\n        }\n      } catch { /* ignore */ }",
+      ["      try {\n        const nv = mainVideo();\n        if (!revealedAd && nv && nv.isConnected && nv.paused && !resumeRefusedByUser(nv)) {\n          resumeNative(nv, 'no-frame-exit');\n          armNativeRecovery(nv, 'no-frame-exit');\n        }\n      } catch { /* ignore */ }",
        "      try { const nv = mainVideo(); void nv; } catch { /* ignore */ }"],
     ]);
     const page = makeWorld({ adSource: blind });
@@ -1846,8 +1943,8 @@ async function main() {
     // RED: the pre-fix arithmetic, which reads the reset as a pod-sized deficit.
     const page = makeWorld({
       adSource: mutate([[
-        '          if (advanced < -RESUME_GAP_SEC) {',
-        '          if (false) {',
+        '          } else if (advanced < -RESUME_GAP_SEC) {',
+        '          } else if (false) {',
       ]]),
     });
     setNative(page, { ct: 211.8, edge: 1073741824, bufferedEnd: 212.9 });
@@ -1868,6 +1965,115 @@ async function main() {
       assert(rec.length === 1, `the mutant did not seek (${rec.length} rows), so the arm above measures nothing`);
       assert(rec[0].d.behind > 200,
         `the mutant's deficit ${rec[0].d.behind} does not describe the reload-plus-pod the defect reports`);
+    });
+  }
+
+  // ---- 11b-2. HIDDEN TAB + DVR OFFSET: never snap to the live edge --------
+  // Owner ring ms 723133: `native-resume-visible {ct:314.3, tag:"ad-end"}` ->
+  // `native-edge-unusable {from:314.3, rs:2}` ->
+  // `native-edge-recover {behind:611.7, from:314.3, to:922.9}` -> the native
+  // landed at the live edge instead of his DVR position. The hidden-tab gap
+  // was counted as element freeze, and the take-over was behind the edge.
+  function trackSeeks(page) {
+    const writes = [];
+    let ct = page.video.currentTime;
+    Object.defineProperty(page.video, 'currentTime', {
+      configurable: true,
+      get: () => ct,
+      set: (x) => { writes.push(+Number(x).toFixed(1)); ct = x; },
+    });
+    return writes;
+  }
+  {
+    const page = makeWorld();
+    setNative(page, { ct: 314.3, edge: 922.9, bufferedEnd: 922.9 });
+    await pod(page, { pos: 100, lat: 3 });
+    await settle(30);
+    const api = page.stats();
+    const clock = api.adTestClock();
+    assert(clock.userDvr === true, `the take-over offset was not classified as DVR: ${JSON.stringify(clock)}`);
+    page.document.visibilityState = 'hidden';
+    page.document.hidden = true;
+    page.document.fire({ type: 'visibilitychange' });
+    await settle(10);
+    assert(api.adTestClock().hiddenAt > 0, 'hiddenAt was not stamped on the hidden tab');
+    page.showTab();
+    await settle(5);
+    assert(api.adTestClock().hiddenGapMs > 0 && api.adTestClock().hiddenAt === 0,
+      `the hidden gap was not accounted for: ${JSON.stringify(api.adTestClock())}`);
+    // The measured 12 s gap, injected so the arm is exact and fast.
+    api.adTestClock({ hiddenGapMs: 12000 });
+    const writes = trackSeeks(page);
+    page.bypass({ type: 'ad-end' });
+    await settle(80);
+    check('a hidden-tab gap never becomes a recovery seek to the live edge', () => {
+      assert(page.logsOf('native-edge-recover').length === 0,
+        `recovery fired on a hidden-tab gap: ${JSON.stringify(page.logsOf('native-edge-recover')[0] && page.logsOf('native-edge-recover')[0].d)}`);
+      assert(writes.every((w) => w < 500), `the native was snapped to live: ${JSON.stringify(writes)}`);
+      assert(page.logsOf('native-seek-declined').some((l) => l.d.why === 'hidden-tab'),
+        'the declined seek was not named in the ring');
+    });
+  }
+  {
+    const blind = mutate([
+      ['        const elapsed = overlay.holdAt\n          ? Math.max(0, (Date.now() - overlay.holdAt - hiddenMs) / 1000)\n          : 0;',
+        '        const elapsed = overlay.holdAt\n          ? Math.max(0, (Date.now() - overlay.holdAt) / 1000)\n          : 0;'],
+      ['        if (hiddenMs > 1000) {', '        if (false) {'],
+      ['        overlay.userDvr = overlay.holdBehind > POD_RECOVER_MIN && overlay.holdCt > POD_RECOVER_MIN;', '        overlay.userDvr = false;'],
+      ['        if (target > want && hiddenMs <= 1000 && !overlay.userDvr) {', '        if (target > want) {'],
+      ["          why = why ? 'edge-recover+catchup' : 'catchup';", "          why = 'edge-recover';"],
+    ]);
+    const page = makeWorld({ adSource: blind });
+    setNative(page, { ct: 314.3, edge: 922.9, bufferedEnd: 922.9 });
+    await pod(page, { pos: 100, lat: 3 });
+    await settle(30);
+    page.stats().adTestClock({ hiddenGapMs: 12000 });
+    const writes = trackSeeks(page);
+    page.bypass({ type: 'ad-end' });
+    await settle(80);
+    check('RED: the pre-fix recovery snaps the DVR player to the live edge', () => {
+      const rec = page.logsOf('native-edge-recover');
+      assert(rec.length === 1, `the mutant did not recover (${rec.length} rows): this arm measures nothing`);
+      assert(rec[0].d.to > 900, `target ${rec[0].d.to} is not the live edge (922.9)`);
+      assert(writes.some((w) => w > 900), `the native did not move to the edge: ${JSON.stringify(writes)}`);
+    });
+  }
+  {
+    const page = makeWorld();
+    setNative(page, { ct: 314.3, edge: 922.9, bufferedEnd: 922.9 });
+    await pod(page, { pos: 100, lat: 3 });
+    await settle(30);
+    page.stats().adTestClock({ holdAgeMs: 12000 }); // visible pod, no hidden gap
+    const writes = trackSeeks(page);
+    page.bypass({ type: 'ad-end' });
+    await settle(80);
+    check('a DVR offset is preserved as holdCt + elapsed, not the live edge', () => {
+      const rec = page.logsOf('native-edge-recover');
+      assert(rec.length === 1, `no recovery row: ${JSON.stringify(page.logsOf('native-catchup'))}`);
+      assert(rec[0].d.why === 'user-dvr', `why=${JSON.stringify(rec[0].d.why)}`);
+      assert(Math.abs(rec[0].d.to - 326.3) < 2, `to ${rec[0].d.to} is not holdCt(314.3) + elapsed(12)`);
+      assert(writes.every((w) => w < 500), `the hand-back sought to live: ${JSON.stringify(writes)}`);
+    });
+  }
+  {
+    const blind = mutate([
+      ['        overlay.userDvr = overlay.holdBehind > POD_RECOVER_MIN && overlay.holdCt > POD_RECOVER_MIN;', '        overlay.userDvr = false;'],
+      ['        if (target > want && hiddenMs <= 1000 && !overlay.userDvr) {', '        if (target > want) {'],
+      ["          why = why ? 'edge-recover+catchup' : 'catchup';", "          why = 'edge-recover';"],
+      ['        if (overlay.userDvr && hiddenMs <= 1000 && elapsed > RESUME_GAP_SEC) {', '        if (false) {'],
+    ]);
+    const page = makeWorld({ adSource: blind });
+    setNative(page, { ct: 314.3, edge: 922.9, bufferedEnd: 922.9 });
+    await pod(page, { pos: 100, lat: 3 });
+    await settle(30);
+    page.stats().adTestClock({ holdAgeMs: 12000 });
+    trackSeeks(page);
+    page.bypass({ type: 'ad-end' });
+    await settle(80);
+    check('RED: without the DVR guard the hand-back seeks to the live edge', () => {
+      const rec = page.logsOf('native-edge-recover');
+      assert(rec.length === 1, `the mutant did not recover (${rec.length} rows): this arm measures nothing`);
+      assert(rec[0].d.to > 900, `target ${rec[0].d.to} is not the live edge (922.9)`);
     });
   }
 

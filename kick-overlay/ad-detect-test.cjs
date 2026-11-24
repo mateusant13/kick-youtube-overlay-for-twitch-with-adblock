@@ -23,7 +23,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const SRC = fs.readFileSync(path.join(__dirname, 'twitch-adblock.js'), 'utf8');
+const SRC = fs.readFileSync(path.join(__dirname, 'twitch-adblock.js'), 'utf8').replace(/\r\n/g, '\n');
 let failures = 0;
 const arms = [];
 function check(label, ok, detail) {
@@ -52,7 +52,14 @@ function grab(name, src = SRC) {
   }
   return src.slice(start, i + 1);
 }
-const core = () => [grab('adSurfaceRect'), grab('adUiDetail'), grab('adHoldWorthy')].join('\n');
+const core = (src = SRC) => [
+  'let adUiDetailOverride = null;',
+  'const mainVideo = () => null;',
+  'const adLog = () => {}, overlay = { layoutSaved: null };',
+  grab('adSurfaceRect', src), grab('isOurOwnVideo', src), grab('adWrapperPaint', src),
+  grab('adLayoutNodes', src), grab('adLayoutRelease', src), grab('adLayoutRestore', src), grab('adLayoutWrite', src),
+  grab('adUiDetail', src), grab('adHoldWorthy', src),
+].join('\n');
 
 // ---- DOM stubs ------------------------------------------------------------
 // `paint` is what getComputedStyle answers: a node that paints has
@@ -90,7 +97,7 @@ function runner({ wrappers = [], texts = [], player = true } = {}) {
   const playerEl = node({ cls: 'video-player', rect: [1236, 695] });
   const doc = {
     querySelectorAll(sel) {
-      if (sel.includes('sda-wrapper')) return wrappers;
+      if (sel.includes('sda-wrapper') || sel.includes('stream-display-ad')) return wrappers;
       if (sel.includes('aria-label')) {
         const out = [];
         const walk = (n) => {
@@ -158,8 +165,8 @@ check(
 // ---- 2. the pre-fix class-token branch is the mutation ------------------
 // Restore `!/hidden/i.test(className)` and require the arm above to go RED.
 const mutated = SRC.replace(
-  'const r = adSurfaceRect(sda);\n        if (r.width > 20 && r.height > 20) {',
-  "const r = sda.getBoundingClientRect();\n        if (!/hidden/i.test(String(sda.className || '')) && r.width > 20 && r.height > 20) {",
+  '        const r = adWrapperPaint(sda);\n        if (!r || !widthBase || r.width < 0.5 * widthBase) continue;',
+  "        const r = sda.getBoundingClientRect();\n        if (!/hidden/i.test(String(sda.className || '')) && r.width > 20 && r.height > 20) {} else continue;",
 );
 check('the class-token mutation applied to the shipped file', mutated !== SRC);
 if (mutated !== SRC) {
@@ -167,11 +174,11 @@ if (mutated !== SRC) {
     'document',
     'NodeFilter',
     'getComputedStyle',
-    `${[grab('adSurfaceRect', mutated), grab('adUiDetail', mutated), grab('adHoldWorthy', mutated)].join('\n')}
+    `${core(mutated)}
      return adUiDetail();`,
   );
   const doc = {
-    querySelectorAll: (sel) => (sel.includes('sda-wrapper') ? [realWrapper] : []),
+    querySelectorAll: (sel) => ((sel.includes('stream-display-ad') || sel.includes('sda-wrapper')) ? [realWrapper] : []),
     querySelector: () => null,
     createTreeWalker: () => ({ nextNode: () => null }),
   };
@@ -205,11 +212,171 @@ check('the slate/countdown kinds are hold-worthy (no size to measure)', holdWort
 // defect that already cost one wave.
 const banner = node({ rect: [160, 90] });
 const seenBanner = runner({ wrappers: [banner] })();
-check('a 160x90 banner is detected as an ad surface', !!seenBanner && seenBanner.w === 160, JSON.stringify(seenBanner));
+check('a bare 160x90 banner is not painted wide enough to squeeze', seenBanner === null, JSON.stringify(seenBanner));
+// A BARE 160x90 banner on an unshrunk 1236x695 player is the control: too
+// narrow to be the squeeze, and never worth costing the user his stream.
 check(
-  'a 160x90 banner is NOT worth pausing a 1236x695 player for',
-  holdWorthy(seenBanner, node({ rect: [1236, 695] })) === false,
+  'a bare banner on an unshrunk player is NOT worth pausing for',
+  holdWorthy({ kind: 'wrapper', w: 160, h: 90 }, node({ rect: [1236, 695] })) === false,
 );
+
+// ---- 4b. the BANNER SQUEEZE paints a WIDE ad over the shrunk picture ----
+// Measured in the isolated guest on 2026-11-24: a HEALTHY player has the video
+// at 714x325 inside a 714x402 player box (the viewport cap), so a video-vs-
+// player ratio gate fires on a healthy player and is not an ad signal. The
+// signal is a PAINTED wrapper whose biggest painted surface spans at least
+// half the player's WIDTH. The permanent hidden shell is not an ad.
+function squeezeNode({ rect, style: s = {}, cls = '', attrs = {} } = {}) {
+  return {
+    tagName: 'DIV', className: cls, style: s, children: [], parentElement: null,
+    isConnected: true, closest: () => null,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: rect[0], height: rect[1] }),
+    getAttribute: (k) => attrs[k] ?? null,
+    querySelectorAll: () => [],
+  };
+}
+function squeezeRun(src, o = {}) {
+  const {
+    cw = 1340, ch = 751, vw = 1340, vh = 605,
+    bw = 1340, bh = 90,
+    fullscreen = false, ownFrame = false, shellHidden = false,
+    noWrapper = false, noNodes = false, persistentH = 751, wrapperW = cw,
+  } = o;
+  const logs = [];
+  const box = { display: 'block', visibility: 'visible', opacity: '1', position: 'relative' };
+  const container = squeezeNode({ rect: [cw, ch], style: { ...box, height: '' } });
+  const videoRef = squeezeNode({ rect: [cw, ch], style: { height: '' } });
+  const persistent = squeezeNode({ rect: [cw, persistentH] });
+  const wrapper = squeezeNode({
+    rect: [wrapperW, bh], cls: 'stream-display-ad__wrapper',
+    style: shellHidden ? { visibility: 'hidden', opacity: '0' } : { visibility: '' },
+  });
+  const painted = squeezeNode({ rect: [bw, bh] });
+  wrapper.querySelectorAll = () => [painted];
+  const video = squeezeNode({ rect: [vw, vh], style: { width: '960px', height: '540px' } });
+  video.tagName = 'VIDEO';
+  if (ownFrame) video.closest = () => ({});
+  const playerEl = squeezeNode({ rect: [cw, ch] });
+  const doc = {
+    fullscreenElement: fullscreen ? {} : null,
+    querySelector: (sel) => {
+      if (sel.includes('video-player__container')) return noNodes ? null : container;
+      if (sel.includes('video-ref')) return noNodes ? null : videoRef;
+      if (sel.includes('persistent-player')) return noNodes ? null : persistent;
+      if (sel.includes('video-player')) return playerEl;
+      return null;
+    },
+    querySelectorAll: (sel) => {
+      if (sel.includes('stream-display-ad')) return noWrapper ? [] : [wrapper];
+      if (sel === 'video') return [video];
+      return [];
+    },
+    createTreeWalker: () => ({ nextNode: () => null }),
+  };
+  const names = [
+    'adSurfaceRect', 'adUiDetail', 'adHoldWorthy',
+    'isOurOwnVideo', 'adWrapperPaint', 'adLayoutNodes', 'adLayoutRelease', 'adLayoutRestore', 'adLayoutWrite',
+  ];
+  const fn = new Function(
+    'document', 'NodeFilter', 'getComputedStyle', 'overlay', 'adLog', 'mainVideo', 'video', 'wrapper', 'container', 'videoRef', 'logs',
+    `let adUiDetailOverride = null;\n${names.map((n) => grab(n, src)).join('\n')}
+     return { detail: adUiDetail(), release: adLayoutRelease, holdWorthy: adHoldWorthy, video, wrapper, container, videoRef, logs };`,
+  );
+  return fn(
+    doc, { SHOW_TEXT: 4 }, (el) => (el === wrapper && shellHidden
+      ? { ...box, visibility: 'hidden', opacity: '0' } : box),
+    { layoutSaved: null }, (ev, d) => logs.push({ ev, d }), () => video, video, wrapper, container, videoRef, logs,
+  );
+}
+check(
+  'a healthy 714x325 video in a 714x402 player is NOT a squeeze',
+  squeezeRun(SRC, { cw: 714, ch: 325, vw: 714, vh: 325, noWrapper: true }).detail === null,
+);
+const sq = squeezeRun(SRC);
+check(
+  'a painted wide banner is a banner squeeze with both box pairs',
+  !!sq.detail && sq.detail.kind === 'banner-squeeze' && sq.detail.cw === 1340 && sq.detail.vh === 605
+    && sq.detail.dw === 1340 && sq.detail.dh === 90 && !!sq.detail.wrapper,
+  JSON.stringify(sq.detail),
+);
+check(
+  'a wide lower third at 12% of the area is worth holding',
+  sq.holdWorthy(sq.detail, sq.video) === true,
+  `area ratio ${(1340 * 90 / (1340 * 751)).toFixed(3)}`,
+);
+check(
+  'the picture is kept full-size and the ad wrapper is hidden',
+  sq.container.style.height === `${751 + 90}px` && sq.videoRef.style.height === `${751 + 90}px`
+    && sq.video.style.height === '100%' && sq.wrapper.style.visibility === 'hidden',
+  JSON.stringify({ c: sq.container.style, r: sq.videoRef.style, v: sq.video.style, w: sq.wrapper.style }),
+);
+check(
+  'ad-layout restore logs before, after and the banner',
+  sq.logs.some((l) => l.ev === 'ad-layout' && l.d.act === 'restore' && l.d.before && l.d.after
+    && l.d.banner.w === 1340 && l.d.banner.h === 90),
+  JSON.stringify(sq.logs),
+);
+sq.release();
+check(
+  'ad-layout release restores the EXACT original inline styles',
+  sq.container.style.height === '' && sq.videoRef.style.height === '' && sq.video.style.height === '540px'
+    && sq.wrapper.style.visibility === '',
+  JSON.stringify({ c: sq.container.style, r: sq.videoRef.style, v: sq.video.style, w: sq.wrapper.style }),
+);
+check(
+  'ad-layout release is logged once',
+  sq.logs.filter((l) => l.ev === 'ad-layout' && l.d.act === 'release').length === 1,
+  JSON.stringify(sq.logs),
+);
+for (const [label, opts] of [
+  ['the permanent hidden shell is NOT an ad', { shellHidden: true }],
+  ['a wrapper below half the player width is NOT a squeeze', { bw: 600, wrapperW: 600 }],
+  ['a fullscreen player is never squeezed', { fullscreen: true }],
+  ['our own clean frame is never squeezed', { ownFrame: true }],
+]) {
+  const r = squeezeRun(SRC, opts);
+  check(label, r.detail === null, JSON.stringify(r.detail));
+}
+const fullAd = squeezeRun(SRC, { bh: 500 });
+check(
+  'a full-height painted ad is a wrapper, never a layout change',
+  !!fullAd.detail && fullAd.detail.kind === 'wrapper' && fullAd.container.style.height === '',
+  JSON.stringify(fullAd.detail),
+);
+const missingNodeRun = squeezeRun(SRC, { noNodes: true });
+check(
+  'a missing layout node is reported, not guessed',
+  missingNodeRun.logs.some((l) => l.ev === 'ad-layout' && l.d.act === 'restore' && l.d.skipped === 'missing-node'
+    && Array.isArray(l.d.missing) && l.d.missing.length > 0),
+  JSON.stringify(missingNodeRun.logs),
+);
+const squeezeBlind = SRC.replace(
+  '        if (!r || !widthBase || r.width < 0.5 * widthBase) continue;',
+  '        if (true) continue;',
+);
+check('the painted-wrapper mutation applied to the shipped file', squeezeBlind !== SRC);
+if (squeezeBlind !== SRC) {
+  const blind = squeezeRun(squeezeBlind);
+  check('RED: without the painted wrapper the banner squeeze is invisible', blind.detail === null, JSON.stringify(blind.detail));
+}
+const restoreBlind = SRC.replace("    nodes.video.style.height = '100%';", '    void 0;');
+check('the layout-restore mutation applied to the shipped file', restoreBlind !== SRC);
+if (restoreBlind !== SRC) {
+  const blind = squeezeRun(restoreBlind);
+  check('RED: without the layout restore the picture stays shrunk', blind.video.style.height !== '100%', blind.video.style.height);
+}
+const areaBlind = SRC.replace(
+  '      return detail.w >= 0.5 * r.width; // a wide lower third is a played ad',
+  '      return detail.w * detail.h >= 0.5 * r.width * r.height;',
+);
+check('the width-gate mutation applied to the shipped file', areaBlind !== SRC);
+if (areaBlind !== SRC) {
+  const blind = squeezeRun(areaBlind);
+  check(
+    'RED: the old area gate refuses the wide lower third',
+    blind.holdWorthy({ kind: 'wrapper', w: 1340, h: 90 }, blind.video) === false,
+  );
+}
 
 // ---- 5. the worker hooks -------------------------------------------------
 // `SharedWorker` is what Twitch's current player uses: wrapping only
@@ -383,6 +550,7 @@ check(
      let adUiReasserts = 0;
      let adUiFailedAt = 0;
      let adUiFailedLogged = false;
+     const userResumedHeld = () => false;
      const AD_OVERLAY_ENABLED = true;
      const AD_UI_HOLD_MAX_MS = 12000;
      const overlay = { adActive: false, standby: false, frame: null, selfPausedAt: 0 };
@@ -416,6 +584,7 @@ check(
        let adUiReasserts = 0;
        let adUiFailedAt = 0;
        let adUiFailedLogged = false;
+       const userResumedHeld = () => false;
        const AD_OVERLAY_ENABLED = true;
        const AD_UI_HOLD_MAX_MS = 12000;
        const overlay = { adActive: false, standby: false, frame: null, selfPausedAt: 0 };
@@ -499,6 +668,8 @@ check(
      const state = ctx.state || (ctx.state = { heldAt: 0, reasserts: 0, hiddenLogged: false, ownerLogged: false, failedAt: 0, failedLogged: false });
      const AD_OVERLAY_ENABLED = true;
      const AD_UI_HOLD_MAX_MS = 12000;
+     const userResumedHeld = () => false;
+     const adLayoutRelease = () => {};
      const overlay = ctx.overlay || (ctx.overlay = { adActive: false, standby: false, frame: null, selfPausedAt: 0, revealed: false });
      const ownerAttr = () => page.owner || '';
      const overlayOwnsPlayback = () => !!page.owns;
@@ -686,6 +857,8 @@ check(
      const S = ctx.state || (ctx.state = { heldAt: 0, reasserts: 0, hiddenLogged: false, ownerLogged: false, why: '', failedAt: 0, failedLogged: false });
      const AD_OVERLAY_ENABLED = true;
      const AD_UI_HOLD_MAX_MS = 12000;
+     const userResumedHeld = () => false;
+     const adLayoutRelease = () => {};
      const ownerAttr = () => '';
      const overlayOwnsPlayback = () => false;
      const standbyStale = () => false;
@@ -1109,6 +1282,8 @@ check(
         'const document = { visibilityState: "visible" };',
         'const mainVideo = () => null;',
         'const resumeNative = () => {};',
+        'const adLayoutRelease = () => {};',
+        'const adUiHoldTarget = () => null;',
         FINISH,
         RELEASE,
         'return { adUiRelease, finishAdOverlay };',
@@ -1148,6 +1323,8 @@ check(
         'const document = { visibilityState: "visible" };',
         'const mainVideo = () => null;',
         'const resumeNative = () => {};',
+        'const adLayoutRelease = () => {};',
+        'const adUiHoldTarget = () => null;',
         FINISH,
         RELEASE,
         'return { adUiRelease, finishAdOverlay };',
@@ -1220,6 +1397,7 @@ check(
           'const document = { visibilityState: "visible" };',
           'const mainVideo = () => null;',
           'const resumeNative = () => {};',
+          'const adUiHoldTarget = () => null;',
           FINISH_REAL,
           RELEASE_OLD,
           'return { adUiRelease };',
@@ -1248,8 +1426,8 @@ const expected = [
   'chat text mentioning anúncio is NOT an ad',
   'a bare countdown with no ad word is NOT an ad',
   'the slate/countdown kinds are hold-worthy (no size to measure)',
-  'a 160x90 banner is detected as an ad surface',
-  'a 160x90 banner is NOT worth pausing a 1236x695 player for',
+  'a bare 160x90 banner is not painted wide enough to squeeze',
+  'a bare banner on an unshrunk player is NOT worth pausing for',
   'the shipped file patches window.Worker',
   'the shipped file patches window.SharedWorker (the media fetcher)',
   'the hook logs itself, so "no worker-playlist rows" is never ambiguous',
@@ -1302,6 +1480,25 @@ const expected = [
   'B: ad-ui-on flap inside linger cancels finish and pod survives',
   'B: the pod-end mutation applied to the shipped file',
   'B RED: pre-fix ad-ui-off leaves playlist pod owned (no pod-end, no stopAdOverlay)',
+  'a healthy 714x325 video in a 714x402 player is NOT a squeeze',
+  'a painted wide banner is a banner squeeze with both box pairs',
+  'a wide lower third at 12% of the area is worth holding',
+  'the picture is kept full-size and the ad wrapper is hidden',
+  'ad-layout restore logs before, after and the banner',
+  'ad-layout release restores the EXACT original inline styles',
+  'ad-layout release is logged once',
+  'the permanent hidden shell is NOT an ad',
+  'a wrapper below half the player width is NOT a squeeze',
+  'a fullscreen player is never squeezed',
+  'our own clean frame is never squeezed',
+  'a full-height painted ad is a wrapper, never a layout change',
+  'a missing layout node is reported, not guessed',
+  'the painted-wrapper mutation applied to the shipped file',
+  'RED: without the painted wrapper the banner squeeze is invisible',
+  'the layout-restore mutation applied to the shipped file',
+  'RED: without the layout restore the picture stays shrunk',
+  'the width-gate mutation applied to the shipped file',
+  'RED: the old area gate refuses the wide lower third',
 ];
 const missing = expected.filter((l) => !arms.includes(l));
 if (missing.length) {
@@ -1314,4 +1511,4 @@ if (failures) {
   console.log(`\nRESULT FAIL ad-detect: ${failures} arm(s) failed`);
   process.exit(1);
 }
-console.log('RESULT PASS ad-detect: the DOM detector sees the ad Twitch paints, and the media worker is hooked');
+console.log(`RESULT PASS ad-detect: the DOM detector sees the ad Twitch paints, and the media worker is hooked (failed=${failures})`);

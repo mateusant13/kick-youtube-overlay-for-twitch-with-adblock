@@ -268,6 +268,11 @@
     nativeLat: 0, // native latency (edge - currentTime) captured at take-over
     holdAt: 0, // wall clock at take-over: the timeline the live edge advanced on
     holdCt: 0, // native currentTime at take-over
+    holdBehind: 0, // native distance behind the live edge at take-over (DVR offset)
+    userDvr: false, // a take-over behind the edge by a pod-sized margin: keep the offset
+    hiddenAt: 0, // wall clock when the tab went hidden
+    hiddenGapMs: 0, // gap consumed by the next hand-back, never counted as freeze
+    layoutSaved: null, // reversible full-size layout for a banner squeeze
     playlistPodAt: 0, // wall clock when the playlist hook opened this pod
     // The native RESTARTED its timeline during the pod. Measured in the guest
     // Chrome 2026-11-15 on a live element (twitch.tv/rodil, player=twitch): a
@@ -397,7 +402,15 @@
   }
 
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') requestStandby(0, false, 'visible');
+    if (document.visibilityState === 'visible') {
+      if (overlay.hiddenAt) {
+        overlay.hiddenGapMs = Date.now() - overlay.hiddenAt;
+        overlay.hiddenAt = 0;
+      }
+      requestStandby(0, false, 'visible');
+    } else {
+      overlay.hiddenAt = Date.now();
+    }
   });
 
   // ---- THE LOG CARRIES THE ANSWER, NOT A HINT ----------------------------
@@ -698,6 +711,7 @@
   function pauseNativeForHold(v) {
     try {
       if (!v || v.paused) return false;
+      if (userResumedHeld()) return false; // the user unpaused during a DOM hold
       if (resumeRefusedByUser(v)) return false; // a user-parked player stays parked
       v.pause();
       overlay.selfPausedAt = Date.now();
@@ -743,6 +757,7 @@
   function freezeNativeForPod() {
     const v = mainVideo();
     if (!v || !v.isConnected) return null;
+    if (userResumedHeld()) return null; // the user unpaused during a DOM hold
     if (v.paused) return null;
     if (resumeRefusedByUser(v)) return null; // a user-parked player stays parked
     markAdPark(true);
@@ -1232,23 +1247,135 @@
     }
     return best;
   }
+  // TEST SEAM: the harness has no Twitch DOM, so it injects the detail the
+  // detector would have returned. Production always takes the DOM walk below.
+  let adUiDetailOverride = null;
+  // Measured 2026-11-24 in the isolated guest: a HEALTHY player has the video
+  // at 714x325 inside a 714x402 player box — the difference is the viewport
+  // cap, not an ad. The honest banner signal is a PAINTED wrapper: the
+  // permanent shell is visibility:hidden / opacity:0 and is never an ad.
+  function isOurOwnVideo(v) {
+    try {
+      return !!(v && v.closest && v.closest('#ko-wrap, iframe, [data-ko-frame]'));
+    } catch {
+      return false;
+    }
+  }
+  function adWrapperPaint(el) {
+    try {
+      if (typeof getComputedStyle !== 'function') return null;
+      const cs = getComputedStyle(el);
+      if (!cs || cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) <= 0.05) return null;
+      const r = adSurfaceRect(el);
+      if (!(r.width > 20 && r.height > 20)) return null;
+      return r;
+    } catch {
+      return null;
+    }
+  }
+  function adLayoutNodes() {
+    const q = (sel) => { try { return document.querySelector(sel); } catch { return null; } };
+    return {
+      container: q('.video-player__container'),
+      videoRef: q('.video-ref'),
+      persistent: q('.persistent-player'),
+      video: mainVideo(),
+    };
+  }
+  function adLayoutRelease() {
+    const saved = overlay.layoutSaved;
+    if (saved) {
+      overlay.layoutSaved = null;
+      for (const s of saved.saved) {
+        for (const key of s.keys) {
+          try {
+            if (s.values[key] === undefined) delete s.el.style[key];
+            else s.el.style[key] = s.values[key];
+          } catch { /* ignore */ }
+        }
+      }
+      adLog('ad-layout', {
+        act: 'release', before: saved.after, after: saved.before, banner: saved.banner,
+      });
+    }
+  }
+  function adLayoutRestore(detail, wrapper) {
+    if (!overlay.layoutSaved) adLayoutWrite(detail, wrapper);
+  }
+  function adLayoutWrite(detail, wrapper) {
+    const nodes = adLayoutNodes();
+    const targets = [
+      { name: 'container', el: nodes.container, key: 'height' },
+      { name: 'videoRef', el: nodes.videoRef, key: 'height' },
+      { name: 'video', el: nodes.video, key: 'height' },
+      { name: 'wrapper', el: wrapper, key: 'visibility' },
+    ];
+    const missing = targets.filter((t) => !t.el || !t.el.style).map((t) => t.name);
+    const before = {
+      containerH: nodes.container && nodes.container.style ? nodes.container.style.height : null,
+      videoRefH: nodes.videoRef && nodes.videoRef.style ? nodes.videoRef.style.height : null,
+      videoH: nodes.video && nodes.video.style ? nodes.video.style.height : null,
+      wrapperVis: wrapper && wrapper.style ? wrapper.style.visibility : null,
+    };
+    if (missing.length) {
+      adLog('ad-layout', {
+        act: 'restore', skipped: 'missing-node', missing, before, after: null,
+        banner: { w: detail.dw, h: detail.dh },
+      });
+    } else {
+      const cr = nodes.container.getBoundingClientRect();
+      const pr = nodes.persistent.getBoundingClientRect();
+      const height = Math.round(Math.max(cr.height + detail.dh, pr.height));
+      const saved = targets.map((t) => ({ el: t.el, keys: [t.key], values: { [t.key]: t.el.style[t.key] } }));
+      nodes.container.style.height = `${height}px`;
+      nodes.videoRef.style.height = `${height}px`;
+      nodes.video.style.height = '100%';
+      wrapper.style.visibility = 'hidden';
+      const after = {
+        containerH: nodes.container.style.height,
+        videoRefH: nodes.videoRef.style.height,
+        videoH: nodes.video.style.height,
+        wrapperVis: wrapper.style.visibility,
+      };
+      overlay.layoutSaved = { saved, before, after, banner: { w: detail.dw, h: detail.dh } };
+      adLog('ad-layout', { act: 'restore', before, after, banner: { w: detail.dw, h: detail.dh }, height });
+    }
+  }
   function adUiDetail() {
     try {
-      // `__wrapper-hidden` is a PERMANENT class on Twitch's squeezeback node,
-      // not a visibility flag: the same node carries `__wrapper_squeezeback`
-      // and `__wrapper-hidden` at once and is revealed by resizing its
-      // container. Testing the class token therefore refused every real ad
-      // this page ever showed (measured 2026-11-15: zero `ad-ui-on` rows in a
-      // 1200-entry ring while a whole 15 s pod played). Size decides, not the
-      // class name; whether an ad surface is big enough to be worth pausing
-      // for is adHoldWorthy()'s question, not this one's.
-      for (const sda of document.querySelectorAll(
-        '[class*="stream-display-ad__wrapper"], [data-test-selector="sda-wrapper"]',
-      )) {
-        const r = adSurfaceRect(sda);
-        if (r.width > 20 && r.height > 20) {
+      if (adUiDetailOverride) {
+        const injected = adUiDetailOverride();
+        if (injected) return injected;
+      }
+      // A PAINTED wrapper is the signal. The permanent shell is hidden and
+      // opacity:0, so it never matches. A wide lower third (>50% of the
+      // player's WIDTH) is a banner squeeze even at 12% of the area: the old
+      // area gate is why the owner's banner was refused.
+      const playerEl = document.querySelector('[data-a-target="video-player"]') || document.querySelector('.video-player');
+      const pRect = playerEl && playerEl.getBoundingClientRect ? playerEl.getBoundingClientRect() : null;
+      const widthBase = pRect && pRect.width > 0 ? pRect.width : 0;
+      for (const sda of document.querySelectorAll('[class*="stream-display-ad"], [data-test-selector="sda-wrapper"]')) {
+        const r = adWrapperPaint(sda);
+        if (!r || !widthBase || r.width < 0.5 * widthBase) continue;
+        const v = mainVideo();
+        // A surface covering the HEIGHT too is a full ad, not a squeeze:
+        // hold/freeze it behind the clean picture, never change its layout.
+        if (pRect && r.height >= 0.5 * pRect.height) {
           return { kind: 'wrapper', w: Math.round(r.width), h: Math.round(r.height) };
         }
+        if (document.fullscreenElement || isOurOwnVideo(v)) return null;
+        const vr = v ? v.getBoundingClientRect() : { width: 0, height: 0 };
+        const nodes = adLayoutNodes();
+        const cr = nodes.container ? nodes.container.getBoundingClientRect() : vr;
+        const detail = {
+          kind: 'banner-squeeze',
+          vw: Math.round(vr.width), vh: Math.round(vr.height),
+          cw: Math.round(cr.width), ch: Math.round(cr.height),
+          dw: Math.round(r.width), dh: Math.round(r.height),
+          wrapper: String((sda.className && String(sda.className)) || sda.getAttribute('data-test-selector') || 'stream-display-ad').slice(0, 120),
+        };
+        adLayoutRestore(detail, sda);
+        return detail;
       }
       // Twitch's real countdown is like "Anúncio (0:12)" /
       // "Advertisement (0:15)". Require the numeric part so plain labels and
@@ -1314,6 +1441,16 @@
   // is up. A frozen frame is what a hold is (measured 2026-11-08: hiding the
   // native is the black screen he photographed), and resuming is the release.
   let adUiHeldAt = 0;
+  // A fresh USER play ends the hold. The 500 ms tick must not undo it: that
+  // was "ficou pausando o anuncio toda hora que eu tentava despausar".
+  let adUiUserResumeAt = 0;
+  let adUserResumeLogged = false;
+  let lastUserInputAt = 0;
+  let userPlayAt = 0;
+  let ownPlayAt = 0;
+  function userResumedHeld() {
+    return !!adUiUserResumeAt && Date.now() - adUiUserResumeAt < AD_UI_HOLD_MAX_MS;
+  }
   let adUiReasserts = 0;
   // A hold that OUTLIVED its budget without a clean picture hands the page back
   // and must not re-take the SAME episode (see the tick's `hold-expired`
@@ -1340,10 +1477,11 @@
     // text) is the ad talking, not a background element: it has no size to
     // measure, and requiring one is how the detector lost a whole pod.
     if (detail.kind === 'aria' || detail.kind === 'countdown' || detail.kind === 'slate') return true;
+    if (detail.kind === 'banner-squeeze') return true;
     try {
       const r = v && v.getBoundingClientRect ? v.getBoundingClientRect() : null;
       if (!r || !r.width || !r.height) return true; // geometry unknown: trust the wrapper
-      return detail.w * detail.h >= 0.5 * r.width * r.height;
+      return detail.w >= 0.5 * r.width; // a wide lower third is a played ad
     } catch {
       return true;
     }
@@ -1398,6 +1536,8 @@
   // pause is undone in milliseconds. Re-asserting is not a fight with the page:
   // it is the only way a pause survives the ad it is meant to stop.
   function adUiHoldTick() {
+    // Once he has taken the picture back, no later tick may re-pause it.
+    if (userResumedHeld()) return;
     // THE STALE STANDBY IS TORN DOWN BEFORE ANY OTHER QUESTION IS ASKED. It is
     // the flag every later branch reads as "the pod owns it now", so leaving it
     // set is how a previous pod's paused source refuses a whole new pod (the
@@ -1494,6 +1634,7 @@
   }
   function adUiHold(detail) {
     if (adUiHeldAt) return; // already held by this signal
+    if (userResumedHeld()) return adUiTickSkip('user-resume');
     if (!AD_OVERLAY_ENABLED) return adUiTickSkip('overlay-disabled');
     // NAMED, ONCE PER EPISODE, AND ONLY FOR A POD THAT OWNS THE PICTURE. This
     // return wrote NOTHING, and the comment above `adUiOwnerLogged` claiming
@@ -1578,11 +1719,33 @@
   }
   // Any play the extension did not issue means the user took the player back:
   // the stamp that explains a pause must not outlive his own resume.
+  // INPUT CLOCK. Only a play inside a fresh gesture is HIS; Twitch's own ad
+  // renderer calls play() too, and that machine play is still ours to freeze.
+  const markUserInput = () => { lastUserInputAt = Date.now(); };
+  try {
+    for (const type of ['pointerdown', 'mousedown', 'keydown', 'touchstart', 'click']) {
+      for (const target of [window, document]) target.addEventListener(type, markUserInput, true);
+    }
+  } catch { /* ignore */ }
   try {
     document.addEventListener('play', (e) => {
       const t = e && e.target;
       if (!t || t.tagName !== 'VIDEO') return;
       if (overlay.selfPausedAt && Date.now() - overlay.selfPausedAt > 250) overlay.selfPausedAt = 0;
+      if (!lastUserInputAt || Date.now() - lastUserInputAt > 1500) return; // machine play
+      // Our own resume is not a user takeover, but a gesture AFTER it is.
+      if (ownPlayAt && Date.now() - ownPlayAt <= 500 && lastUserInputAt <= ownPlayAt) return;
+      userPlayAt = Date.now();
+      if (!adUiHeldAt || userResumedHeld()) return;
+      adUiRelease();
+      adUiFailedAt = Date.now();
+      adUiFailedLogged = true;
+      adUiUserResumeAt = Date.now();
+      markAdPark(false);
+      if (!adUserResumeLogged) {
+        adUserResumeLogged = true;
+        adLog('ad-ui-hold', { act: 'user-resume', ct: +Number(t.currentTime || 0).toFixed(1) });
+      }
     }, true);
   } catch { /* ignore */ }
 
@@ -1596,6 +1759,12 @@
     // for the same reason the reason-dedupe is (the 2026-11-20 wave): a refusal
     // that outlives its pod makes every later pod silent or, here, unheld.
     adUiFailedAt = 0;
+    adLayoutRelease();
+    if (fromUiOff) {
+      adUiUserResumeAt = 0;
+      adUserResumeLogged = false;
+      adAfterRevealLogged = false;
+    }
     adUiFailedLogged = false;
     const wasHeld = !!adUiHeldAt;
     const heldMs = wasHeld ? Date.now() - adUiHeldAt : 0;
@@ -1649,8 +1818,36 @@
   // paused. The stale-standby decision reads it, and an arm that could not read
   // it would have to re-count reports beside the product and pass either way.
   stats.standbyPausedReports = () => overlay.standbyPausedReports;
+  stats.userPlayAt = () => userPlayAt;
+  stats.adTestClock = ({ hiddenGapMs, holdAgeMs, clearInput } = {}) => {
+    if (Number.isFinite(hiddenGapMs)) overlay.hiddenGapMs = Math.max(0, hiddenGapMs);
+    if (Number.isFinite(holdAgeMs)) overlay.holdAt = Date.now() - holdAgeMs;
+    if (clearInput) lastUserInputAt = 0;
+    return { hiddenAt: overlay.hiddenAt, hiddenGapMs: overlay.hiddenGapMs, holdCt: overlay.holdCt, userDvr: overlay.userDvr };
+  };
+  stats.setAdUiDetailForTest = (fn) => { adUiDetailOverride = typeof fn === 'function' ? fn : null; };
+  function adUiHoldTarget() {
+    const d = adUiDetail();
+    if (!d) return null;
+    try { return adHoldWorthy(d, mainVideo()) ? d : null; } catch { return null; }
+  }
+  let adAfterRevealLogged = false;
+  function holdAfterReveal(d) {
+    if (!adAfterRevealLogged) {
+      adAfterRevealLogged = true;
+      adLog('ad-ui-hold', { act: 'ad-after-reveal', kind: d && d.kind });
+    }
+    adUiHold(d);
+  }
 
   function finishAdOverlay() {
+    // A NEW AD AFTER THE CLEAN FRAME REVEALED IS NOT A HAND-BACK. Holding it
+    // keeps the cover up instead of resuming the native onto the live ad.
+    const target = adUiHoldTarget();
+    if (target) {
+      holdAfterReveal(target);
+      return;
+    }
     if (!overlay.frame) {
       stopAdOverlay('ad-end');
       requestStandby(1200, false, 'ad-end');
@@ -1894,6 +2091,20 @@
       if (seek) {
         let want = from;
         let why = null;
+        const hiddenMs = Math.max(0, Number(overlay.hiddenGapMs || 0));
+        overlay.hiddenGapMs = 0; // consumed once by this hand-back
+        // THESE INPUTS BELONG TO THE HAND-BACK, not to the sentinel branch
+        // below: a REAL live edge exposes exactly the owner's snap-back shape.
+        const ct0 = overlay.holdAt ? Number(overlay.holdCt || 0) : 0;
+        const elapsed = overlay.holdAt
+          ? Math.max(0, (Date.now() - overlay.holdAt - hiddenMs) / 1000)
+          : 0;
+        if (hiddenMs > 1000) {
+          adLog('native-seek-declined', {
+            why: 'hidden-tab', hiddenMs: Math.round(hiddenMs),
+            from: +from.toFixed(1), ct0: +ct0.toFixed(1),
+          });
+        }
         // `cleanPos` CANNOT BE THE TARGET, and this is measured rather than a
         // matter of taste: the clean frame's `pos` is ITS OWN media element's
         // clock (0 when the frame mounts), while the native's `currentTime` is
@@ -1907,9 +2118,6 @@
         // recovery (`native-handoff`), instead of inventing a seek between
         // incomparable timelines.
         if (se <= 0 && overlay.holdAt) {
-          const at = overlay.holdAt;
-          const ct0 = Number(overlay.holdCt || 0);
-          const elapsed = (Date.now() - at) / 1000;
           const advanced = from - ct0;
           const behind = elapsed - advanced;
           // A NATIVE THAT WENT BACKWARDS RELOADED, and a reload lands AT THE
@@ -1925,7 +2133,9 @@
           // delay ainda") was never removed. A reset timeline needs NO seek:
           // the element is already where the live edge is, and nudging it is
           // what hurts.
-          if (advanced < -RESUME_GAP_SEC) {
+          if (hiddenMs > 1000) {
+            // declined above: a gap is not a freeze, on either edge source
+          } else if (advanced < -RESUME_GAP_SEC) {
             overlay.timelineReset = true;
             adLogState('native-timeline-reset', {
               from: +from.toFixed(1),
@@ -1950,7 +2160,21 @@
             overlay.recoverLat = +cleanLat.toFixed(1);
           }
         }
-        if (target > want) {
+        // A DVR POSITION IS THE USER'S. With a sentinel edge the deficit maths
+        // would seek to live; with a real edge the `target` below would.
+        if (overlay.userDvr && hiddenMs <= 1000 && elapsed > RESUME_GAP_SEC) {
+          const offsetWant = Math.max(0, ct0 + elapsed);
+          if (offsetWant > from + RESUME_GAP_SEC) {
+            want = offsetWant;
+            why = 'user-dvr';
+          } else {
+            adLog('native-seek-declined', {
+              why: 'user-dvr', from: +from.toFixed(1), to: +offsetWant.toFixed(1),
+              ct0: +ct0.toFixed(1), elapsed: +elapsed.toFixed(1),
+            });
+          }
+        }
+        if (target > want && hiddenMs <= 1000 && !overlay.userDvr) {
           want = target;
           why = why ? 'edge-recover+catchup' : 'catchup';
         }
@@ -2015,6 +2239,12 @@
           else covered = false; // nothing landable ahead: doing nothing IS the recovery
         }
         if (!covered) {
+          if (why === 'user-dvr') {
+            adLog('native-seek-declined', {
+              why: 'user-dvr', from: +from.toFixed(1), to: +want.toFixed(1),
+              hiddenMs: Math.round(hiddenMs),
+            });
+          }
           adLogState('native-seek-skipped', {
             why: 'no-data',
             from: +from.toFixed(1),
@@ -2042,7 +2272,7 @@
             payload.runway = +(runwayEnd - want).toFixed(1);
           }
           overlay.recoverBehind = 0;
-          adLogState(why.startsWith('edge-recover') ? 'native-edge-recover' : 'native-catchup', payload);
+          adLogState(why === 'user-dvr' || why.startsWith('edge-recover') ? 'native-edge-recover' : 'native-catchup', payload);
         }
         overlay.holdAt = 0;
       }
@@ -2063,6 +2293,7 @@
       // element came back in, which is what this repairs.
       if (!seekedNow && (v.readyState < 3 || (isLiveElement(v) && forwardRunway(v) < HEALTH_BUFFER_SEC))) nudgeNativeToBuffer(v);
       if (v.paused || v.readyState < 3) {
+        ownPlayAt = Date.now(); // our play() is not a user takeover
         const p = v.play();
         if (p && p.catch) p.catch(() => {});
       }
@@ -2208,6 +2439,9 @@
   }
 
   function stopAdOverlay(reason) {
+    const revealedAd = adUiHoldTarget();
+    if (revealedAd) holdAfterReveal(revealedAd);
+    adLayoutRelease();
     // A standby that was never adopted is invisible content behind the native
     // player. Stopping it must not post overlay-stop (that clears the worker's
     // ad state without an ad) and must not resume/seek the native player.
@@ -2278,7 +2512,7 @@
       // never left, so the only work is to start it again.
       try {
         const nv = mainVideo();
-        if (nv && nv.isConnected && nv.paused && !resumeRefusedByUser(nv)) {
+        if (!revealedAd && nv && nv.isConnected && nv.paused && !resumeRefusedByUser(nv)) {
           resumeNative(nv, 'no-frame-exit');
           armNativeRecovery(nv, 'no-frame-exit');
         }
@@ -2341,7 +2575,7 @@
       // CURRENT intent — including an unmute made during the pod.
       restoreNativeVideos();
       const v = overlay.video && overlay.video.isConnected ? overlay.video : mainVideo();
-      if (v) {
+      if (v && !revealedAd) {
         // Hand back NOW, not at the 300ms retry: the frame is still mounted and
         // adActive is still set at this point, so the lifecycle gate would
         // refuse this call and leave a frozen native for another 300ms (the
@@ -3580,6 +3814,10 @@
         // position at take-over and the wall clock that owns the edge.
         overlay.holdAt = Date.now();
         overlay.holdCt = Number(v.currentTime || 0);
+        const edgeAt = nativeEdge(v);
+        overlay.holdBehind = edgeAt > 0 ? Math.max(0, edgeAt - overlay.holdCt) : 0;
+        overlay.userDvr = overlay.holdBehind > POD_RECOVER_MIN && overlay.holdCt > POD_RECOVER_MIN;
+        overlay.hiddenGapMs = 0; // a gap BEFORE the pod is not a freeze
         overlay.timelineReset = false;
         overlay.playlistPodAt = overlay.playlistPodAt || overlay.holdAt;
         // A cold preroll is the ONLY case where a paused native is ours to
@@ -3948,6 +4186,9 @@
         // every tick for a tab that IS visible; the same tick now gets the
         // chance to take it the moment the tab comes back inside the episode.
         adUiHiddenLogged = false;
+        adUiUserResumeAt = 0;
+        adUserResumeLogged = false;
+        if (!overlay.revealed) adAfterRevealLogged = false;
         adUiOwnerLogged = false;
         if (ad) {
           // A flap inside the ad-ui-off linger must keep the pod alive.

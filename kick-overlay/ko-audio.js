@@ -567,6 +567,16 @@
   // next reader does not have to guess (owner order 2026-11-16: "TUDO ISSO
   // deveria estar nos logs").
   let lastInputTarget = null;
+  // A pointerdown ON A VOLUME CONTROL opens a drag window. `pointermove` is not
+  // in INPUT_EVENTS, so a slider drag's volumechange is older than
+  // INPUT_FRESH_MS and would be refused as the machine's. The window keeps it
+  // fresh and volume-capable until pointerup/pointercancel closes it.
+  let volumeDrag = 0;
+  // Positive evidence for the machine-window exception. `volumeCapableTarget`
+  // below is deliberately permissive (no target is not a refutation); an
+  // exception to the claim guard needs the opposite: a named control or a real
+  // volume key, never a target-less click standing in for one.
+  let lastInputCertified = false;
   function describeTarget(t) {
     try {
       if (!t || typeof t !== 'object') return null;
@@ -600,6 +610,24 @@
     '[data-a-target*="volume"]',
     '[data-a-target*="mute"]',
     '[aria-label*="olume"]', '[aria-label*="ute"]',
+    // YOUTUBE'S OWN PLAYER CHROME CARRIES NEITHER. Measured 2026-11-24 on the
+    // owner's tab (`youtube.com/watch?v=BuC4wthYlLU`): `.ytp-mute-button` is a
+    // 40x40 visible button with `aria-label:null` and no `data-a-target`, so
+    // every click on it fell through this selector and was refused as
+    // `audio-refused {why:"not-volume-control"}`. The refusal calls `apply()`,
+    // which re-asserts the unmuted intent — the owner's "o meu youtube ta com
+    // problema pra mutar e desmutar ... ele nao muta". The button is the user's
+    // control no matter how Twitch-shaped our selector was; match the player
+    // chrome itself, and `closest()` covers the icon inside it.
+    '.ytp-mute-button', '.ytp-volume-button', '.ytp-volume-area',
+    '.ytp-volume-panel', '.ytp-volume-slider', '.ytp-volume-slider-handle',
+    // TWITCH'S AD-UI VOLUME CONTROLS. His 0.8.113 ring refused the ad slider as
+    // `not-volume-control`: that chrome carries none of the data-a-target or
+    // aria-label shapes above. Name the CONTROL, never the whole player — a
+    // whole-player selector would make a click on the picture volume-capable
+    // (the measured 2026-11-15 defect).
+    '[role="slider"]', '[class*="volume-slider"]', '[class*="ad-volume"]',
+    '[data-purpose="volume-control"]',
   ].join(',');
   function volumeCapableTarget(ev) {
     try {
@@ -608,7 +636,24 @@
       // synthesised event, an engine that omits it). Only a KNOWN target that
       // cannot change a volume refutes the mute; unknown is not a refutation.
       if (!t) return true;
-      if (t.closest && t.closest(VOLUME_CONTROL_SEL)) return true;
+      // A GENERIC SLIDER IS NOT A VOLUME CONTROL. YouTube's progress bar and
+      // every seek bar are `role="slider"` too (the owner's YouTube progress bar
+      // carries aria-label "Seek slider"), and certifying a seek click would let
+      // the mute the player writes next be recorded as his - the 2026-11-15
+      // picture-click defect in a new shape. A bare slider counts only when its
+      // own name/class, or an ancestor's, says volume.
+      const hit = t.closest && t.closest(VOLUME_CONTROL_SEL);
+      if (hit) {
+        let named = null;
+        let generic = false;
+        try {
+          named = hit.closest && hit.closest('[class*="volume"],[aria-label*="olume"],[aria-label*="ute"],[data-a-target*="volume"],[data-a-target*="mute"]');
+        } catch { named = null; }
+        try {
+          generic = typeof hit.matches === 'function' && hit.matches('[role="slider"]');
+        } catch { generic = false; }
+        return !generic || !!named;
+      }
       // A keyboard shortcut can change a volume, but ONLY the keys that do:
       // Twitch's player binds `m` to mute and ArrowUp/ArrowDown to volume.
       // Accepting ANY keydown made every other key the owner presses — space to
@@ -636,6 +681,14 @@
     lastInputKind = String((ev && ev.type) || '');
     lastInputVolumeCapable = volumeCapableTarget(ev);
     lastInputTarget = describeTarget(ev && ev.target);
+    // A target-less event is not positive evidence of a control, even though
+    // `volumeCapableTarget` cannot refute it. Only a named control or a real
+    // volume key may open the claim exception or a drag window.
+    lastInputCertified = !!lastInputVolumeCapable && !!(ev && ev.target);
+    if (lastInputKind === 'pointerdown' && lastInputCertified) volumeDrag = Date.now();
+  }
+  function closeDrag() {
+    volumeDrag = 0;
   }
   function installInputClock() {
     const targets = [];
@@ -645,6 +698,17 @@
       for (const type of INPUT_EVENTS) {
         try {
           target.addEventListener(type, markInput, { capture: true, passive: true });
+        } catch {
+          /* an engine without capture must not break the arbiter */
+        }
+      }
+    }
+    // A released (or cancelled) pointer ends the drag; afterwards a
+    // volumechange is the machine's again, not the user's.
+    for (const target of targets) {
+      for (const type of ['pointerup', 'pointercancel']) {
+        try {
+          target.addEventListener(type, closeDrag, { capture: true, passive: true });
         } catch {
           /* an engine without capture must not break the arbiter */
         }
@@ -724,7 +788,13 @@
       // claim silencing the page, or the player restarting. Recording it as
       // intent persisted the mute per tab and the next player inherited it —
       // the owner's "it muted by itself".
-      const fresh = Date.now() - lastInputAt <= INPUT_FRESH_MS;
+      // A drag opened by a pointerdown on a volume control keeps its events
+      // fresh and volume-capable: `pointermove` is not an INPUT_EVENT, so the
+      // moves of a slider drag never refresh `lastInputAt` and every change
+      // after INPUT_FRESH_MS was refused as `stale-input`.
+      const dragging = !!volumeDrag;
+      const fresh = dragging || Date.now() - lastInputAt <= INPUT_FRESH_MS;
+      const volumeCapable = dragging || lastInputVolumeCapable;
       if (!fresh) {
         report('audio-refused', {
           why: 'stale-input',
@@ -769,21 +839,25 @@
       // ends, Twitch re-mutes its own element, the click made the event FRESH,
       // and the mute became his intent for the rest of the session. An UNMUTE
       // is still his, so only the silencing direction is refused here.
-      // WHILE A CLAIM IS UP, EVERY MUTE IS THE MACHINE'S. The old test compared
-      // `surfaceOf(owner) !== surfaceOf(claimed)`, and the ad surface SHARES the
-      // `twitch` intent by design - so `surfaceOf('twitch') === surfaceOf('ad')`
-      // and the guard was blind for the one claim that always covers the page.
-      // Measured in the owner's own ko.adlog 2026-11-12 390919, mid-pod:
+      // WHILE A CLAIM IS UP, A MUTE IS THE MACHINE'S UNLESS A CERTIFIED GESTURE
+      // SAY OTHERWISE. The old test compared `surfaceOf(owner) !==
+      // surfaceOf(claimed)`, and the ad surface SHARES the `twitch` intent by
+      // design - so `surfaceOf('twitch') === surfaceOf('ad')` and the guard was
+      // blind for the one claim that always covers the page. Measured in the
+      // owner's own ko.adlog 2026-11-12 390919, mid-pod:
       //   audio-intent {surface:"twitch", before:{muted:false,volume:0.88},
       //                 after:{muted:true,volume:0}, silent:true}
       //   ... 38 s later: audio-claim {from:"ad", to:null} -> page comes back
       //                   muted, volume 0 ("voltou MUTADO sendo que antes eu
       //                   estava com a live DESMUTADA").
-      // The claimed surface is what silences the page's element: the user cannot
-      // even see that player while the layer covers it, so a mute there is never
-      // his. An UNMUTE is still his (0.8.54 carries it to the new surface).
+      // The claimed surface silences the page's element, so a mute with NO
+      // certified gesture is the machine's. A fresh pointerdown on a volume
+      // control (or a volume key) is the one exception: owner 2026-11-24
+      // (0.8.113) saw his own click on Twitch's mute button refused as
+      // `covered`. An UNMUTE was and remains his in both cases.
       const machineWindow = !!claimed || (releasedAt > 0 && Date.now() - releasedAt <= CLAIM_RELEASE_MS);
-      if (machineWindow && !!el.muted) {
+      const certified = fresh && (dragging || lastInputCertified);
+      if (machineWindow && !!el.muted && !certified) {
         // Say it out loud: an ACCEPTED intent beside an unlogged refusal is
         // what made the owner's own adlog look like the extension muting him
         // for no reason. This line names the claim, the surface it covers and
@@ -817,7 +891,7 @@
       // asked, and refusing that would trap a quiet tab.
       const prevVolume = +Number(intentOf(owner).volume || 0);
       const lowering = !!el.muted || +Number(el.volume || 0) < prevVolume - 0.01;
-      if (lowering && !lastInputVolumeCapable) {
+      if (lowering && !volumeCapable) {
         report('audio-refused', {
           why: 'not-volume-control',
           dir: el.muted ? 'mute' : 'drop',
@@ -858,7 +932,7 @@
         input: lastInputKind || null,
         inputAgeMs: lastInputAt ? Date.now() - lastInputAt : null,
         inputTarget: lastInputTarget || null,
-        volumeCapable: lastInputVolumeCapable,
+        volumeCapable,
         userActive: userActive(),
         ownWrite: false,
       };

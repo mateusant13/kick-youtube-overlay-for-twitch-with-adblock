@@ -412,6 +412,11 @@ function makeWorld(opts, extra) {
     clickDocumentTarget(target) {
       for (const f of (document.listeners.pointerdown || []).slice()) f({ type: 'pointerdown', target });
     },
+    // The end of a slider drag. `window.listeners` is the same registry as
+    // `document.listeners`, so this reaches the arbiter's window listener too.
+    releasePointer(type) {
+      for (const f of (document.listeners[type || 'pointerup'] || []).slice()) f({ type: type || 'pointerup' });
+    },
     // A KEYSTROKE with no volume control behind it. Twitch's player writes its
     // own volume during an ad; the arbiter has to tell a real volume key from a
     // space bar typed while the ad rolls (owner report 2026-11-16).
@@ -759,6 +764,238 @@ async function main() {
     });
   }
 
+  // ---- 2c6: YOUTUBE'S OWN MUTE BUTTON IS A VOLUME CONTROL ----------------
+  // Measured on the owner's YouTube tab 2026-11-24: `.ytp-mute-button` is a
+  // visible 40x40 button with NO aria-label and NO data-a-target, so every
+  // click on it fell through VOLUME_CONTROL_SEL, was refused as
+  // `not-volume-control`, and `apply()` re-asserted the unmuted intent — his
+  // "o meu youtube ta com problema pra mutar e desmutar ... ele nao muta".
+  // The control belongs to the user whichever player draws it.
+  {
+    const page = makeWorld({});
+    await runPod(page, { mutedBeforeAd: false });
+    page.bypass({ type: 'ad-end' });
+    await new Promise((r) => setTimeout(r, 2800));
+    const ytMute = { tagName: 'BUTTON', closest: (sel) => (String(sel).includes('.ytp-mute-button') ? {} : null) };
+    page.clickDocumentTarget(ytMute);
+    page.machineMutesNative();
+    check("a mute on YouTube's own mute button IS the user choice", () => {
+      assert(page.audio.intent('twitch').muted === true,
+        'the YouTube mute button was refused: the click did not mute');
+    });
+  }
+  {
+    const blind = AUDIO.split(".ytp-mute-button'").join(".ytp-nomatch'");
+    if (blind === AUDIO) throw new Error('the YouTube-control mutation did not apply');
+    const page = makeWorld({ audioSource: blind });
+    await runPod(page, { mutedBeforeAd: false });
+    page.bypass({ type: 'ad-end' });
+    await new Promise((r) => setTimeout(r, 2800));
+    const ytMute = { tagName: 'BUTTON', closest: (sel) => (String(sel).includes('.ytp-mute-button') ? {} : null) };
+    page.clickDocumentTarget(ytMute);
+    page.machineMutesNative();
+    check('RED: without the YouTube control the click cannot mute', () => {
+      assert(page.audio.intent('twitch').muted === false,
+        'the mutant accepted the YouTube mute: the arm measures nothing');
+    });
+  }
+
+  // ---- 2c7: a CERTIFIED gesture wins inside the machine window ----------
+  // Owner 2026-11-24 (0.8.113): `audio-refused {why:"covered"}` landed on his
+  // OWN click of Twitch's mute button while the ad claim was up. The claim
+  // protects the page from the machine, not from a fresh volume-capable
+  // gesture. Both directions must go through; an uncertified mute must not.
+  {
+    const page = makeWorld();
+    await runPod(page, { mutedBeforeAd: false });
+    assert(page.audio.visible() === 'ad', 'precondition: the ad claim covers the page');
+    assert(page.attrMuted() === '0', 'precondition: the heard surface is audible');
+    await new Promise((r) => setTimeout(r, 900)); // past the claim's own-write TTL
+    const muteBtn = {
+      tagName: 'BUTTON',
+      closest: (sel) => (String(sel).includes('[data-a-target="player-mute-unmute-button"]') ? {} : null),
+    };
+    page.clickDocumentTarget(muteBtn);
+    page.machineMutesNative();
+    check('a certified mute during a claim flips intent and the heard surface', () => {
+      assert(page.audio.intent('twitch').muted === true, 'a certified mute was refused as covered');
+      assert(page.audio.intent('ad').muted === true, 'the heard surface did not inherit the mute');
+      assert(page.attrMuted() === '1', `the clean player still publishes muted=${page.attrMuted()}`);
+    });
+    page.clickDocumentTarget(muteBtn);
+    page.machineSetsNative(false, 1);
+    check('the certified unmute during the same claim is accepted too', () => {
+      assert(page.audio.intent('twitch').muted === false, 'the unmute direction was refused inside the claim');
+      assert(page.attrMuted() === '0', `the clean player stayed muted=${page.attrMuted()}`);
+    });
+  }
+  {
+    // RED: restore the pre-fix guard, which refuses EVERY mute in the window.
+    const blind = AUDIO
+      .split(`if (machineWindow && !!el.muted && !certified) {`)
+      .join(`if (machineWindow && !!el.muted) {`);
+    check('mutation: the certified-gesture exception exists to be disarmed', () => {
+      assert(blind !== AUDIO, 'the machine-window guard was not found');
+    });
+    const page = makeWorld({ audioSource: blind });
+    await runPod(page, { mutedBeforeAd: false });
+    await new Promise((r) => setTimeout(r, 900));
+    const muteBtn = {
+      tagName: 'BUTTON',
+      closest: (sel) => (String(sel).includes('[data-a-target="player-mute-unmute-button"]') ? {} : null),
+    };
+    page.clickDocumentTarget(muteBtn);
+    page.machineMutesNative();
+    check('RED: without the exception the certified mute stays refused', () => {
+      assert(page.audio.intent('twitch').muted === false,
+        'the mutant accepted it: this arm is not measuring the exception');
+      assert(page.attrMuted() === '0', `the mutant published muted=${page.attrMuted()}`);
+    });
+  }
+  {
+    // The control: no certified gesture (a picture click) while claimed stays
+    // refused, exactly as in the measured 2026-11-11 defect.
+    const page = makeWorld();
+    await runPod(page, { mutedBeforeAd: false });
+    await new Promise((r) => setTimeout(r, 900));
+    page.clickDocumentTarget({ tagName: 'VIDEO' }); // fresh, but not a volume control
+    page.machineMutesNative();
+    const refused = page.logs().filter((l) => l.ev === 'audio-refused').pop();
+    check('a mute with no certified gesture stays refused inside the claim', () => {
+      assert(page.audio.intent('twitch').muted === false, 'an uncertified picture click flipped intent');
+      assert(!!refused && refused.d.why === 'covered', `why=${refused && refused.d.why}`);
+    });
+  }
+  {
+    // RED for the control: take BOTH no-gesture guards out; the same picture
+    // click then mutes the tab, proving the arm measures them.
+    const blind = AUDIO
+      .split(`if (machineWindow && !!el.muted && !certified) {`)
+      .join(`if (false && machineWindow && !!el.muted && !certified) {`)
+      .split(`if (lowering && !volumeCapable) {`)
+      .join(`if (false && lowering && !volumeCapable) {`);
+    check('mutation: both no-gesture guards exist to be disarmed', () => {
+      assert(blind !== AUDIO, 'a no-gesture guard was not found');
+    });
+    const page = makeWorld({ audioSource: blind });
+    await runPod(page, { mutedBeforeAd: false });
+    await new Promise((r) => setTimeout(r, 900));
+    page.clickDocumentTarget({ tagName: 'VIDEO' });
+    page.machineMutesNative();
+    check('RED: without both guards the picture click mutes the tab', () => {
+      assert(page.audio.intent('twitch').muted === true,
+        'the mutant refused it too: the arm is not measuring the guards');
+    });
+  }
+
+  // ---- 2c8: Twitch's AD-UI volume controls are volume-capable ------------
+  // The only controls added here; a whole-player selector is deliberately
+  // absent, so a click on the picture stays non-volume-capable (arm 2c2).
+  for (const sel of ['[class*="volume-slider"]', '[class*="ad-volume"]']) {
+    const page = makeWorld();
+    await runPod(page, { mutedBeforeAd: false });
+    page.bypass({ type: 'ad-end' });
+    await new Promise((r) => setTimeout(r, 2800));
+    const ctl = { tagName: 'DIV', closest: (s) => (String(s).includes(sel) ? {} : null) };
+    page.clickDocumentTarget(ctl);
+    page.machineMutesNative();
+    check(`${sel} IS a volume control`, () => {
+      assert(page.audio.intent('twitch').muted === true, `${sel} was refused as not-volume-control`);
+    });
+  }
+  {
+    // PRODUCTION SHAPE: a bare `role="slider"` with no volume name is a seek bar
+    // (YouTube's progress bar is exactly this). `matches` exists on real nodes;
+    // the other stubs omit it, so this arm is the one that exercises the
+    // tightening rather than the permissive no-`matches` fallback.
+    const page = makeWorld();
+    await runPod(page, { mutedBeforeAd: false });
+    page.bypass({ type: 'ad-end' });
+    await new Promise((r) => setTimeout(r, 2800));
+    const seekBar = {
+      tagName: 'DIV',
+      matches: (s) => String(s).includes('[role="slider"]'),
+      closest: (s) => (String(s).includes('[role="slider"]')
+        ? { matches: (x) => String(x).includes('[role="slider"]'), closest: () => null }
+        : null),
+    };
+    page.clickDocumentTarget(seekBar);
+    page.machineMutesNative();
+    check('a bare role="slider" (a seek bar) does not authorize a mute', () => {
+      assert(page.audio.intent('twitch').muted === false,
+        'a seek-bar click certified the machine mute (the 2026-11-15 defect in a new shape)');
+    });
+  }
+  {
+    const blind = AUDIO
+      .split(`    '[role="slider"]', '[class*="volume-slider"]', '[class*="ad-volume"]',`)
+      .join('');
+    check('mutation: the ad-UI selectors exist to be disarmed', () => {
+      assert(blind !== AUDIO, 'the ad-UI selector line was not found');
+    });
+    const page = makeWorld({ audioSource: blind });
+    await runPod(page, { mutedBeforeAd: false });
+    page.bypass({ type: 'ad-end' });
+    await new Promise((r) => setTimeout(r, 2800));
+    const ctl = { tagName: 'DIV', closest: (s) => (String(s).includes('[class*="ad-volume"]') ? {} : null) };
+    page.clickDocumentTarget(ctl);
+    page.machineMutesNative();
+    check('RED: without the ad-UI selectors the ad click cannot mute', () => {
+      assert(page.audio.intent('twitch').muted === false,
+        'the mutant accepted the ad slider: the arm measures nothing');
+    });
+  }
+
+  // ---- 2c9: a slider drag keeps its volumechange fresh -------------------
+  // `pointermove` is not in INPUT_EVENTS, so every move after INPUT_FRESH_MS
+  // was refused as `stale-input`. The pointerdown on the slider opens the
+  // drag window; pointerup/pointercancel closes it.
+  {
+    const page = makeWorld();
+    await runPod(page, { mutedBeforeAd: false });
+    page.bypass({ type: 'ad-end' });
+    await new Promise((r) => setTimeout(r, 2800));
+    const slider = { tagName: 'DIV', closest: (sel) => (String(sel).includes('[role="slider"]') ? {} : null) };
+    page.clickDocumentTarget(slider);
+    await new Promise((r) => setTimeout(r, 1400)); // past INPUT_FRESH_MS
+    page.machineMutesNative();
+    check('a slider drag keeps its volumechange fresh and volume-capable', () => {
+      assert(page.audio.intent('twitch').muted === true,
+        'the drag mute went stale and was refused (the measured defect)');
+    });
+    page.releasePointer(); // pointerup closes the window
+    page.machineSetsNative(false, 1);
+    check('after pointerup the same volumechange is stale again', () => {
+      assert(page.audio.intent('twitch').muted === true, 'the drag window stayed open after pointerup');
+    });
+    page.clickDocumentTarget(slider);
+    page.releasePointer('pointercancel');
+    await new Promise((r) => setTimeout(r, 1400));
+    page.machineSetsNative(false, 1);
+    check('after pointercancel the drag window is closed too', () => {
+      assert(page.audio.intent('twitch').muted === true, 'the drag window stayed open after pointercancel');
+    });
+  }
+  {
+    const blind = AUDIO
+      .split(`if (lastInputKind === 'pointerdown' && lastInputCertified) volumeDrag = Date.now();`)
+      .join(`/* mutant: no drag window */;`);
+    check('mutation: the drag window exists to be disarmed', () => {
+      assert(blind !== AUDIO, 'the drag-window opener was not found');
+    });
+    const page = makeWorld({ audioSource: blind });
+    await runPod(page, { mutedBeforeAd: false });
+    page.bypass({ type: 'ad-end' });
+    await new Promise((r) => setTimeout(r, 2800));
+    const slider = { tagName: 'DIV', closest: (sel) => (String(sel).includes('[role="slider"]') ? {} : null) };
+    page.clickDocumentTarget(slider);
+    await new Promise((r) => setTimeout(r, 1400));
+    page.machineMutesNative();
+    check('RED: without the drag window the drag mute is stale', () => {
+      assert(page.audio.intent('twitch').muted === false, 'the mutant accepted it: the arm measures nothing');
+    });
+  }
+
   // ---- 2c5: a mute remembers the level it silenced ----------------------
   // Owner report 2026-11-16, verbatim: "o botao de mutar e desmutar funciona de
   // forma inconsistente ... normalmente vendo live mesmo". His ring (0.8.95)
@@ -844,7 +1081,7 @@ async function main() {
   {
     // RED: the same mutation the 2c3 control uses, measured on the drop. If this
     // passes, the arm above is not measuring the guard.
-    const blind = AUDIO.split('if (lowering && !lastInputVolumeCapable) {').join('if (false && lowering && !lastInputVolumeCapable) {');
+    const blind = AUDIO.split('if (lowering && !volumeCapable) {').join('if (false && lowering && !volumeCapable) {');
     if (blind === AUDIO) throw new Error('the volume-drop mutation did not apply');
     const page = makeWorld({ audioSource: blind });
     await runPod(page, { mutedBeforeAd: false });
@@ -860,7 +1097,7 @@ async function main() {
 
   // ---- 2c3: RED control — without the control test the click muting returns.
   {
-    const blind = AUDIO.split('if (lowering && !lastInputVolumeCapable) {').join('if (false && lowering && !lastInputVolumeCapable) {');
+    const blind = AUDIO.split('if (lowering && !volumeCapable) {').join('if (false && lowering && !volumeCapable) {');
     if (blind === AUDIO) throw new Error('the control-test mutation did not apply');
     const page = makeWorld({ audioSource: blind });
     await runPod(page, { mutedBeforeAd: false });
@@ -1040,7 +1277,9 @@ async function main() {
       assert(fixed.nativeMuted === false, `native stayed muted=${fixed.nativeMuted} after teardown`);
       assert(fixed.intent === false, 'the machine teardown wrote intent');
     });
-    const mutated = AD.replace('    audioClaim(false);\n    if (!overlay.frame) {', '    if (!overlay.frame) {');
+    // \r?\n: this checkout is CRLF; a literal '\n' between the two lines never
+    // matched and the RED arm silently measured the unmutated ad path.
+    const mutated = AD.replace(/^([ \t]*)audioClaim\(false\);\r?\n\1(if \(!overlay\.frame\) \{)/m, '$1$2');
     check('mutation: dropping the claim release on the frame-less exit is caught', () => {
       assert(mutated !== AD, 'the release site was not found');
     });
