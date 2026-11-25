@@ -920,6 +920,9 @@ check(
      const mainVideo = () => video;
      const sampleVideo = () => video;
      const resumeRefusedByUser = () => !!page.parked;
+     // This world has no mounted clean frame; the shipped predicate's answer is
+     // false, so a failed hold hands the native back instead of revealing one.
+     const cleanFrameCanCover = () => false;
      // markAdPark writes one attribute on the page the ad path owns; here the
      // fact lands on page.park so an arm can read it. publishAdPark is the
      // derived clear, and it is the real pair that ships (proved by its own arm).

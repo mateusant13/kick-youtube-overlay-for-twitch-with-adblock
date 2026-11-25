@@ -49,6 +49,7 @@ function makeWorld(opts, extra) {
   const adLogs = [];
   const observers = [];
   const bcInstances = [];
+  const bcSent = [];
 
   // --- event target ---------------------------------------------------------
   const makeTarget = (extra) => {
@@ -280,8 +281,20 @@ function makeWorld(opts, extra) {
       this.onmessage = null;
       bcInstances.push(this);
     }
-    postMessage() {}
+    // Real semantics: deliver to OTHER handles on the same name, never back to
+    // the sender. The ad path's debug listener and bypass listener are reached
+    // exactly as they are in the browser - by a post on another handle.
+    postMessage(data) {
+      bcSent.push({ name: this.name, data });
+      for (const other of bcInstances) {
+        if (other !== this && other.name === this.name && other.onmessage) {
+          try { other.onmessage({ data }); } catch { /* a handler must not break the run */ }
+        }
+      }
+    }
   }
+  // The worker's own handle: the suite posts an ad-bearing playlist on it.
+  const workerDebugChannel = new BroadcastChannel('ko-adblock-debug');
   class XMLHttpRequest {
     open() {}
     send() {}
@@ -385,11 +398,22 @@ function makeWorld(opts, extra) {
       });
     },
     bypass(msg) {
-      const ch = bcInstances.find((c) => c.name === 'ko-adblock-bypass');
+      // The ad path now has TWO handles on this name (one listener, one
+      // poster); only the handle with a listener is the page's ad path.
+      const ch = bcInstances.filter((c) => c.name === 'ko-adblock-bypass')
+        .reverse().find((c) => typeof c.onmessage === 'function');
       // The real handler refuses a message that is not addressed to this page.
       const pageId = (window.__koTwitchAdblockStats && window.__koTwitchAdblockStats.pageId) || '';
       if (ch && ch.onmessage) ch.onmessage({ data: { page: pageId, ...msg } });
     },
+    // The worker's playlist digest, posted on the real debug channel. The
+    // page's listener is reached by BroadcastChannel delivery, not by calling
+    // its handler: this is the route the extension has to prove.
+    debug(msg) {
+      const pageId = (window.__koTwitchAdblockStats && window.__koTwitchAdblockStats.pageId) || '';
+      workerDebugChannel.postMessage({ page: pageId, ...msg });
+    },
+    bypassPosts: () => bcSent.filter((s) => s.name === 'ko-adblock-bypass').map((s) => s.data),
     stats: () => window.__koTwitchAdblockStats,
     // A USER gesture on the page's own volume control: the click (the input
     // event the arbiter times) comes first, then the element changes and the

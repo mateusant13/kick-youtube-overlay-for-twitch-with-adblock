@@ -61,7 +61,7 @@
       "maxMs": 12000
     },
     {
-      "type": "pixelDark",
+      "type": "pixelNotBlue",
       "at": 4000
     },
     {
@@ -97,5 +97,5 @@
       "value": false
     }
   ],
-  "note": "A preroll must be the FIRST program the player fetches: with `at:300` the page's first playlist was content, the ad block was stitched AFTER it, and the ad then played at media time 6-36s instead of 0-14s (measured 2026-11-25, no-extension control: black at 4/9/13s, ad-blue at 20s). The deterministic alternative is an ad-bearing playlist from the very first GET."
+  "note": "The 4 s expectation is `not the ad`, not `a dark cover`: after the worker-playlist route (2026-11-25) the clean picture is revealed at 830 ms, so the ad has no pixel on screen at 4/9/13/20 s while the native sits paused behind it (measured `blue=0.119`, `dark=0.402`). A full-screen black cover is not a goal here: the owner forbids black screens, and a cover would be a regression, not a pass. A preroll must be the FIRST program the player fetches: with `at:300` the page's first playlist was content, the ad block was stitched AFTER it, and the ad then played at media time 6-36s instead of 0-14s (measured 2026-11-25, no-extension control: black at 4/9/13s, ad-blue at 20s). The deterministic alternative is an ad-bearing playlist from the very first GET."
 }

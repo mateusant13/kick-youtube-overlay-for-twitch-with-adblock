@@ -51,6 +51,76 @@
   const pageId = Math.random().toString(36).slice(2, 10);
   stats.pageId = pageId;
   let bypassChannel = null;
+  // A second handle on the SAME channel: BroadcastChannel never delivers a
+  // post back to the object that sent it, so the ad path needs a separate
+  // poster to reach its own bypass listener (a real second handle, not a shim).
+  let playlistBypassChannel = null;
+  try { playlistBypassChannel = new BroadcastChannel('ko-adblock-bypass'); } catch { /* optional */ }
+  // The early, honest ad signal on Twitch's current player. Playlists are
+  // fetched INSIDE the player worker, so no page fetch hook sees them: the
+  // replica's preroll had 14 ad-bearing `worker-playlist` rows and ZERO
+  // playlist-derived `ad-hold` rows, and the ad played end to end. Carry the
+  // evidence onto the page's own bypass channel, where the cooldown/ownership
+  // guards already live. One pod per episode; two clean playlists close it —
+  // the same streak the worker uses in its own (unreachable here) path.
+  let workerRoutePodAt = 0;
+  let workerRouteClean = 0;
+  const WORKER_ROUTE_CLEAN_END = 2;
+  const WORKER_LIVE_MEDIA = /\/v1\/playlist\/|\.playlist\.live-video\.net\//;
+  function workerAdSeconds(msg) {
+    const samples = Array.isArray(msg && msg.adExtinfSamples) ? msg.adExtinfSamples : [];
+    let total = 0;
+    for (const line of samples) {
+      const m = /^#EXTINF:([0-9.]+)/.exec(String(line).replace(/\r/g, ''));
+      if (m && isFinite(Number(m[1]))) total += Number(m[1]);
+    }
+    return total > 0 ? +total.toFixed(1) : null;
+  }
+  function routeWorkerPlaylist(msg) {
+    // VOD segments have no ",live" and look like ads to playlistInfo(); only a
+    // live media playlist can open a bypass pod.
+    if (!WORKER_LIVE_MEDIA.test(String(msg.url || ''))) return;
+    if (Number(msg.adExtinf) > 0 || !!msg.adOnly) {
+      workerRouteClean = 0;
+      if (workerRoutePodAt) return; // one pod per episode, not one per segment refresh
+      workerRoutePodAt = Date.now();
+      // The route can fire BEFORE the page's cold-start standby request lands,
+      // and `adActive` would then suppress every later request: measured in the
+      // first fixed replica run, ad-hold at 284 ms with no frame, and the first
+      // standby URL only at 5163 ms. Ask for the source this pod will cover.
+      if (!overlay.frame) requestStandby(0, true, 'worker-playlist');
+      try {
+        if (playlistBypassChannel) playlistBypassChannel.postMessage({
+          type: 'ad-hold',
+          page: pageId,
+          from: 'worker-playlist',
+          channel: pageChannel(),
+          extinf: msg.extinf,
+          adExtinf: msg.adExtinf,
+          adOnly: !!msg.adOnly,
+          hasStitched: !!msg.hasStitched,
+          adSec: workerAdSeconds(msg),
+          at: Date.now(),
+        });
+      } catch {
+        /* diagnostics only */
+      }
+      return;
+    }
+    if (Number(msg.extinf) > 0 && Number(msg.adExtinf) === 0 && workerRoutePodAt) {
+      if (++workerRouteClean < WORKER_ROUTE_CLEAN_END) return;
+      workerRoutePodAt = 0;
+      workerRouteClean = 0;
+      try {
+        if (playlistBypassChannel) playlistBypassChannel.postMessage({
+          type: 'ad-end', page: pageId, from: 'worker-playlist', channel: pageChannel(),
+          reason: 'clean-playlists', at: Date.now(),
+        });
+      } catch {
+        /* diagnostics only */
+      }
+    }
+  }
 
   // Persistent event log. The ISOLATED bridge (adblock-bridge.js) listens for
   // this DOM event and appends to chrome.storage.local['ko.adlog'] (ring
@@ -92,10 +162,12 @@
             adExtinf: msg.adExtinf,
             adOnly: !!msg.adOnly,
             hasStitched: !!msg.hasStitched,
+            adSec: workerAdSeconds(msg),
             changed: msg.changed || null,
             url: String(msg.url || '').slice(0, 180),
           });
         }
+        routeWorkerPlaylist(msg);
         return;
       }
       if (msg.type === 'debug') {
@@ -702,6 +774,27 @@
     return cleanLatTarget();
   }
   stats.cleanHandoffLat = cleanHandoffLat;
+
+  // A hold that ran out of time still has to leave the user on the picture
+  // that was meant to be on screen. A mounted clean frame that is decoding is
+  // that picture; NO gate is loosened here to get it (same rs/lat/buffer/fresh
+  // position requirements as the heartbeat, which also must have marked it
+  // playing). Replica 2026-11-25: a hold released at ct 0.4 with a healthy
+  // clean frame at pos 22.8, and the native resumed at the parked ad position.
+  function cleanFrameCanCover() {
+    if (!overlay.frame || !overlay.playing || !overlay.lastSt) return false;
+    const st = overlay.lastSt;
+    if (st.paused || (st.state && st.state !== 'Playing')) return false;
+    const lat = Number(st.lat);
+    const rs = Number(st.rs);
+    const buf = Number(st.buffered);
+    if (!(lat >= 0) || lat > CLEAN_LAT_REVEAL_MAX) return false;
+    if (!(rs >= 3) || !(buf >= HEALTH_BUFFER_SEC)) return false;
+    if (overlay.prevSt && overlay.prevStAt && Date.now() - overlay.prevStAt > 2000
+      && Number(st.pos) > 0 && typeof overlay.prevSt.pos === 'number'
+      && Math.abs(Number(st.pos) - Number(overlay.prevSt.pos)) < 0.05) return false;
+    return true;
+  }
   // Freeze what is on screen without erasing it. A paused <video> keeps its
   // last decoded frame, which is why this exists: the alternative (hide the
   // video and paint a panel) is the black screen the owner reported.
@@ -712,6 +805,13 @@
   function selfPausedRecently() {
     return !!overlay.selfPausedAt && Date.now() - overlay.selfPausedAt < SELF_PAUSE_TRUST_MS;
   }
+
+  // The DOM tick calls adUiHold() and adUiHoldTick() back to back. The pause
+  // between them is OURS, so the second half of that same tick must not name it
+  // a native pause: the replica wrote `act:'paused'` and `act:'skip',
+  // why:'native-paused'` in the same millisecond. Matches the 250 ms `ours`
+  // window used by the pause listener, but it is its own decision.
+  const AD_UI_OWN_PAUSE_MS = 250;
   function pauseNativeForHold(v) {
     try {
       if (!v || v.paused) return false;
@@ -1704,12 +1804,34 @@
       // Keep a source warming so the REST of this break can still be covered if
       // one becomes ready; the episode itself stays failed (see `adUiHold`).
       requestStandby(1200, false, 'hold-expired');
-      if (v0 && v0.isConnected && v0.paused) resumeNative(v0, 'hold-expired', { seek: false });
+      // LAND ON THE PICTURE, NOT ON THE PARKED AD FRAME. The native was paused
+      // at ct 0.4 while the clean frame sat healthy at pos 22.8; `seek:false`
+      // resumed exactly that ad frame and `behind:15.6` was computed but never
+      // used (replica 2026-11-25). A mounted, healthy clean picture wins;
+      // otherwise fail open with a real hand-back that consumes `behind`.
+      // A player the USER parked still stays parked.
+      if (v0 && v0.isConnected && !resumeRefusedByUser(v0)) {
+        if (cleanFrameCanCover()) {
+          revealOverlay('hold-expired');
+          adLog('ad-ui-hold', { act: 'handed-to-clean', ct: ct0 });
+        } else {
+          resumeNative(v0, 'hold-expired');
+        }
+      }
       return;
     }
     const v = mainVideo();
     if (!v || !v.isConnected) return adUiTickSkip('no-video');
-    if (v.paused) return adUiTickSkip('native-paused');
+    if (v.paused) {
+      // `adUiHold()` in this very tick issued that pause and stamped it. A
+      // "native-paused" skip here is the replica's same-millisecond
+      // contradiction: the hold had just taken the element.
+      if (overlay.selfPausedAt && Date.now() - overlay.selfPausedAt <= AD_UI_OWN_PAUSE_MS) {
+        adLog('ad-ui-hold', { act: 'reassert', own: 'hold', ct: +Number(v.currentTime || 0).toFixed(1) });
+        return;
+      }
+      return adUiTickSkip('native-paused');
+    }
     try { v.pause(); } catch { /* ignore */ }
     overlay.selfPausedAt = Date.now();
     adUiReasserts++;
@@ -1786,6 +1908,9 @@
     adUiReasserts = 0;
     if (v.paused) {
       adUiHeldAt = Date.now();
+      // A cold cover (or the tick's previous re-assert) paused this element;
+      // the following half must not re-label that pause as the native's.
+      if (selfPausedRecently()) overlay.selfPausedAt = adUiHeldAt;
       adLog('ad-ui-hold', { act: 'already-paused', ct: +Number(v.currentTime || 0).toFixed(1) });
       return;
     }
@@ -1925,14 +2050,22 @@
   stats.adUiHoldTick = adUiHoldTick;
   stats.adHoldWorthy = adHoldWorthy;
   stats.adUiHeldAt = () => adUiHeldAt;
+  // The host of the pod claim is the thing the worker→page route is supposed
+  // to set; an arm that could not read it would have to infer adActive from a
+  // log row written by a different branch.
+  stats.adActive = () => !!overlay.adActive;
+  stats.revealed = () => !!overlay.revealed;
   // Diagnostic seam: how many consecutive reports said the clean frame is
   // paused. The stale-standby decision reads it, and an arm that could not read
   // it would have to re-count reports beside the product and pass either way.
   stats.standbyPausedReports = () => overlay.standbyPausedReports;
   stats.userPlayAt = () => userPlayAt;
-  stats.adTestClock = ({ hiddenGapMs, holdAgeMs, clearInput } = {}) => {
+  stats.adTestClock = ({ hiddenGapMs, holdAgeMs, holdUiAgeMs, selfPauseAgeMs, clearHold, clearInput } = {}) => {
     if (Number.isFinite(hiddenGapMs)) overlay.hiddenGapMs = Math.max(0, hiddenGapMs);
     if (Number.isFinite(holdAgeMs)) overlay.holdAt = Date.now() - holdAgeMs;
+    if (Number.isFinite(holdUiAgeMs)) adUiHeldAt = Date.now() - holdUiAgeMs;
+    if (Number.isFinite(selfPauseAgeMs)) overlay.selfPausedAt = Date.now() - selfPauseAgeMs;
+    if (clearHold) adUiHeldAt = 0;
     if (clearInput) lastUserInputAt = 0;
     return { hiddenAt: overlay.hiddenAt, hiddenGapMs: overlay.hiddenGapMs, holdCt: overlay.holdCt, userDvr: overlay.userDvr };
   };
@@ -3294,7 +3427,9 @@
     // A standby is a clean player that is already running behind the native
     // surface; it becomes an ad only when ad-hold/ad-start sets adActive.
     overlay.standby = !!standby;
-    overlay.adActive = !standby;
+    // A hidden source mounted by a cold-cover pod must not clear that pod's
+    // claim: the health gate reveals it as soon as it is actually playing.
+    overlay.adActive = standby ? overlay.adActive : true;
     if (!standby) overlay.playlistPodAt = overlay.playlistPodAt || Date.now();
     if (!switchSource) overlay.switchTries = 0;
     if (overlay.hideTimer) {
@@ -3853,6 +3988,7 @@
         extinf: msg.extinf === undefined ? null : msg.extinf,
         adOnly: msg.adOnly === undefined ? null : msg.adOnly,
         hasStitched: msg.hasStitched === undefined ? null : msg.hasStitched,
+        adSec: msg.adSec === undefined ? null : msg.adSec,
         adChanged: msg.adChanged === undefined ? null : msg.adChanged,
         podAgeMs: msg.podAgeMs === undefined ? null : msg.podAgeMs,
         markerAgeMs: msg.markerAgeMs === undefined ? null : msg.markerAgeMs,
@@ -4107,7 +4243,10 @@
           if (String(overlay.channel || '').toLowerCase() === mc) return;
           stopAdOverlay('standby-channel-change');
         }
-        if (overlay.held || overlay.adActive) return;
+        // A cold-cover pod has NO frame: its clean source is what ends the
+        // cover, so a standby minted after ad-hold must mount while it is held.
+        // A pod with a frame still refuses a second overlay.
+        if ((overlay.held || overlay.adActive) && overlay.frame) return;
         if (document.visibilityState !== 'visible') return;
         if (!standbyLife.urlAt) {
           standbyLife.urlAt = Date.now();

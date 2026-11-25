@@ -2438,8 +2438,154 @@ async function main() {
     assert(page.logsOf('native-handoff').length === 1,
       `stale take-over stamp logged ${page.logsOf('native-handoff').length} hand-backs`);
   }
-  await redArm('stale teardowns print native-handoff rows without a pod', handoffRed, handoffArm);
-  await greenArm('three podless teardowns log nothing; one real pod end logs exactly one hand-back', () => handoffArm(SOURCE));
+
+  // ---- 11. THE WORKER'S PLAYLIST IS THE PAGE'S AD PATH ------------------
+  // The replica's patched worker saw 14 ad-bearing playlists and the ring had
+  // ZERO playlist-derived ad-hold rows: playlists are fetched inside the
+  // player worker, so the page fetch hook never saw one. Drive the real
+  // BroadcastChannel message and measure the pod it must open.
+  const WORKER_AD = {
+    type: 'playlist',
+    url: 'https://video-edge-a.playlist.ttvnw.net/v1/playlist/live.m3u8?pt=popout',
+    extinf: 7, adExtinf: 3, adOnly: false, hasStitched: true,
+    adExtinfSamples: ['#EXTINF:2.000,', '#EXTINF:2.000,', '#EXTINF:4.000,'],
+    changed: false,
+  };
+  const WORKER_CLEAN = { ...WORKER_AD, adExtinf: 0, adOnly: false, hasStitched: false, adExtinfSamples: [] };
+  async function workerRouteArm(src) {
+    const page = makeWorld({ adSource: src });
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    await warmStandby(page, { pos: 100, lat: 3, buffered: 8 });
+    page.debug(WORKER_AD);
+    await settle(20);
+    assert(page.stats().adActive() === true, `the ad playlist did not open a pod: ${JSON.stringify(page.bypassPosts())}`);
+    const posts = page.bypassPosts().filter((p) => p.type === 'ad-hold');
+    assert(posts.length === 1, `expected one ad-hold post, got ${posts.length}`);
+    const p = posts[0];
+    assert(p.from === 'worker-playlist' && p.extinf === 7 && p.adExtinf === 3 && p.adOnly === false &&
+      p.hasStitched === true && p.adSec === 8,
+      `the playlist evidence did not ride the post: ${JSON.stringify(p)}`);
+    const row = page.logsOf('bypass-msg').find((l) => l.d.type === 'ad-hold' && l.d.from === 'worker-playlist');
+    assert(row && row.d.adSec === 8, `the ring row does not name the trigger: ${JSON.stringify(row && row.d)}`);
+    const wr = page.logsOf('worker-playlist').pop();
+    assert(wr && wr.d.adSec === 8, `worker-playlist row has no adSec: ${JSON.stringify(wr && wr.d)}`);
+    page.debug(WORKER_CLEAN);
+    page.debug(WORKER_CLEAN);
+    await settle(60);
+    assert(page.stats().adActive() === false, 'two clean playlists did not close the pod');
+    assert(page.logsOf('native-handoff').length === 1,
+      `the pod end wrote ${page.logsOf('native-handoff').length} hand-backs`);
+  }
+  const redWorkerRoute = mutate([[
+    "        if (playlistBypassChannel) playlistBypassChannel.postMessage({\n          type: 'ad-hold',",
+    "        if (false && playlistBypassChannel) playlistBypassChannel.postMessage({\n          type: 'ad-hold',",
+  ]]);
+  await redArm('RED: without the worker ad-hold post the ad playlist never opens a pod', redWorkerRoute, workerRouteArm);
+  await greenArm('a real worker ad playlist posts ad-hold with evidence and a clean streak hands back', () => workerRouteArm(SOURCE));
+
+  // ---- 11b. A COLD-COVER POD MUST ACCEPT ITS OWN CLEAN SOURCE -----------
+  // Replica: the worker playlist arrived BEFORE the standby URL, and the
+  // standby-start was refused by the pod it was meant to end (no frame, yet
+  // `held`), so the ad played to the end under a cover that never painted.
+  async function coldCoverStandbyArm(src) {
+    const page = makeWorld({ adSource: src });
+    setNative(page, { ct: 0.4, edge: 16, bufferedEnd: 16 });
+    page.debug(WORKER_AD); // no standby exists yet
+    await settle(10);
+    assert(page.stats().adActive() === true, 'the worker playlist did not open a pod');
+    assert(page.logsOf('cold-cover').length === 1, 'no cold cover was taken');
+    page.bypass({ type: 'standby-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+    await settle(20);
+    assert(!!page.frame, 'the active pod refused the clean source it needs to end');
+    assert(page.stats().adActive() === true, 'mounting the standby cleared the pod claim');
+    page.frameMsg({ t: 'ready' });
+    for (let i = 0; i < 3; i++) page.frameMsg(healthySt({ pos: 30, lat: 3, buffered: 8 }));
+    await settle(20);
+    assert(page.logsOf('overlay-reveal').length === 1,
+      `the pod never showed its clean picture: ${JSON.stringify(page.logsOf('overlay-reveal'))}`);
+  }
+  const redColdStandby = mutate([[
+    '        if ((overlay.held || overlay.adActive) && overlay.frame) return;',
+    '        if (overlay.held || overlay.adActive) return;',
+  ]]);
+  await redArm('RED: a held cold pod refuses the standby that would cover it', redColdStandby, coldCoverStandbyArm);
+  const redStandbyClaim = mutate([[
+    '    overlay.adActive = standby ? overlay.adActive : true;',
+    '    overlay.adActive = !standby;',
+  ]]);
+  await redArm('RED: mounting a standby clears the cold pod claim', redStandbyClaim, coldCoverStandbyArm);
+  await greenArm('a cold-cover pod mounts its clean source and reveals it', () => coldCoverStandbyArm(SOURCE));
+
+  // ---- 12. THE TICK MUST NOT CALL ITS OWN PAUSE A NATIVE PAUSE -----------
+  // Replica ring, same millisecond: `ad-ui-hold {act:"paused"}` then
+  // `{act:"skip", why:"native-paused"}`. The DOM tick runs adUiHold() then
+  // adUiHoldTick(); the pause between them is ours.
+  async function sameTickArm(src) {
+    const page = makeWorld({ adSource: src });
+    setNative(page, { ct: 0.4, edge: 16, bufferedEnd: 16 });
+    const api = page.stats();
+    api.adUiHold({ kind: 'wrapper', w: 1280, h: 720 });
+    await settle(5);
+    api.adUiHoldTick();
+    const rows = page.logsOf('ad-ui-hold');
+    assert(rows.some((l) => l.d.act === 'paused'), 'the hold never wrote its pause');
+    assert(!rows.some((l) => l.d.act === 'skip' && l.d.why === 'native-paused'),
+      `the tick refused the pause it had just issued: ${JSON.stringify(rows.map((l) => l.d))}`);
+    assert(page.video.paused === true, 'the hold did not keep the native frozen');
+    // The same pause is still ours a second later (a cold cover at 285 ms was
+    // re-detected at 3650 ms in the fixed replica run). Re-taking the hold must
+    // refresh the attribution, not call the frozen native a refusal.
+    api.adTestClock({ selfPauseAgeMs: 1000, clearHold: true });
+    api.adUiHold({ kind: 'wrapper', w: 1280, h: 720 });
+    api.adUiHoldTick();
+    assert(page.logsOf('ad-ui-hold').some((l) => l.d.act === 'already-paused'),
+      'the second hold did not see the paused element');
+    assert(!page.logsOf('ad-ui-hold').some((l) => l.d.act === 'skip' && l.d.why === 'native-paused'),
+      `an old pause of ours was called a native pause: ${JSON.stringify(page.logsOf('ad-ui-hold').map((l) => l.d))}`);
+  }
+  const redSameTick = mutate([[
+    "      if (overlay.selfPausedAt && Date.now() - overlay.selfPausedAt <= AD_UI_OWN_PAUSE_MS) {\n        adLog('ad-ui-hold', { act: 'reassert', own: 'hold', ct: +Number(v.currentTime || 0).toFixed(1) });\n        return;\n      }\n      return adUiTickSkip('native-paused');",
+    "      return adUiTickSkip('native-paused');",
+  ]]);
+  await redArm('RED: without the own-pause guard the same tick writes skip native-paused', redSameTick, sameTickArm);
+  const redColdAttribution = mutate([[
+    '      if (selfPausedRecently()) overlay.selfPausedAt = adUiHeldAt;\n',
+    '',
+  ]]);
+  await redArm('RED: an old pause of ours is re-labelled native-paused on re-take', redColdAttribution, sameTickArm);
+  await greenArm('a hold never reports its own pause as a native pause, even after a cold cover', () => sameTickArm(SOURCE));
+
+  // ---- 13. A HOLD THAT EXPIRES HANDS BACK THE PICTURE -------------------
+  // Replica: `native-resume {behind:15.6, ct:0.4}` while the mounted clean
+  // frame was healthy at pos 22.8. `behind` was computed and never used.
+  async function holdExpiryArm(src) {
+    const page = makeWorld({ adSource: src });
+    setNative(page, { ct: 0.4, edge: 16, bufferedEnd: 16 });
+    await warmStandby(page, { pos: 22.8, lat: 3.1, buffered: 8 });
+    const api = page.stats();
+    api.adUiHold({ kind: 'wrapper', w: 1280, h: 720 });
+    api.adTestClock({ holdUiAgeMs: 12500 });
+    api.adUiHoldTick();
+    await settle(20);
+    assert(page.logsOf('ad-ui-hold').some((l) => l.d.act === 'handed-to-clean'),
+      `the expired hold did not hand back the clean picture: ${JSON.stringify(page.logsOf('ad-ui-hold').map((l) => l.d))}`);
+    assert(api.adActive() === true && api.revealed() === true, 'the clean frame was not raised');
+    assert(page.video.paused === true, 'the native was resumed onto the parked ad frame');
+  }
+  const redHoldExpiry = mutate([[
+    `      if (v0 && v0.isConnected && !resumeRefusedByUser(v0)) {
+        if (cleanFrameCanCover()) {
+          revealOverlay('hold-expired');
+          adLog('ad-ui-hold', { act: 'handed-to-clean', ct: ct0 });
+        } else {
+          resumeNative(v0, 'hold-expired');
+        }
+      }`,
+    "      if (v0 && v0.isConnected && v0.paused) resumeNative(v0, 'hold-expired', { seek: false });",
+  ]]);
+  await redArm('RED: the pre-fix hold expiry resumes the parked ad frame', redHoldExpiry, holdExpiryArm);
+  await greenArm('an expired hold reveals the healthy mounted clean player', () => holdExpiryArm(SOURCE));
+
   const failed = checks.filter((c) => c.status === 'FAIL');
   console.log('');
   console.log(`RESULT ${failed.length ? 'FAIL' : 'PASS'} ad-time-continuity checks=${checks.length} failed=${failed.length}`);
