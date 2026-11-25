@@ -144,7 +144,29 @@ function nextUdd() {
 // still held by Chrome is named and kept, never wildcard-deleted. This runs
 // before nextUdd(), so nothing here can belong to this run.
 const PROFILE_ROOT = 'G:/Temp/ko-replica/profiles';
-const OLD_PROFILE_MS = 2 * 60 * 60 * 1000;
+// 2026-11-25 measured: `stopAll()` deleted its own profile while Chrome still
+// held a file inside it, caught the refusal, and left 117 MiB of dead profiles
+// behind (the census went from 0.33 to 0.44 GiB against a 0.40 ceiling). A
+// Chrome that has just exited releases its handles within about a second, so
+// one bounded second attempt is the whole fix; the sweep threshold drops from
+// 2 h to a minute because a profile older than that belongs to a run that is
+// over (two runs never share the guest port, and `uddDirs` guards this one).
+const OLD_PROFILE_MS = 60 * 1000;
+const PROFILE_RETRY_MS = 1500;
+function reapProfile(dir) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+      return true;
+    } catch {
+      if (attempt === 0) {
+        const wait = Date.now() + PROFILE_RETRY_MS;
+        while (Date.now() < wait) { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100); } catch { /* no SharedArrayBuffer: busy wait */ } }
+      }
+    }
+  }
+  return false;
+}
 function dirBytes(dir) {
   let bytes = 0;
   const stack = [dir];
@@ -173,11 +195,10 @@ for (const e of profileEntries) {
   try { old = Date.now() - statSync(p).mtimeMs > OLD_PROFILE_MS; } catch { /* vanished */ }
   if (!old) { kept++; continue; }
   const bytes = dirBytes(p);
-  try {
-    rmSync(p, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+  if (reapProfile(p)) {
     reaped++;
     freedBytes += bytes;
-  } catch {
+  } else {
     console.log(`leftover profile in use: ${p}`);
     kept++;
   }
@@ -224,7 +245,7 @@ function stopAll() {
     try {
       for (const dir of uddDirs) {
         if (!String(dir).startsWith(UDD_ROOT)) continue;
-        try { rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }); } catch { /* chrome still holds a file */ }
+        if (!reapProfile(dir)) console.log(`leftover profile in use: ${dir}`);
       }
     } catch { /* early exit: no profiles to reap */ }
   }

@@ -106,7 +106,7 @@ Everything lives under `G:/Temp/ko-replica` (never on `I:`, which is the SMR spi
 |---|---|---|
 | `certs/` | self-signed cert + key, 3 KB | kept |
 | `media/`, `media6/` | generated content + ad segments, ~29 MB each | kept, regenerated only when the ffmpeg signature changes |
-| `profiles/run-<ts>/` | one Chrome profile per run | deleted by exact path at exit |
+| `profiles/run-<ts>/` | one Chrome profile per run, ~7 MB | the exiting run deletes its own exact path; whatever Chrome still holds is reaped by the next run's sweep (any `run-*` older than 60 s, one path at a time, refusals named). Measured 2026-11-25: a 2 h threshold left 117 MB of dead profiles behind and the census went 0.33 -> 0.44 GiB against a 0.40 ceiling, so the threshold is a minute and the sweep is the durable mechanism, not the exit hook. |
 | `runs/` | one report per run | kept |
 
 Census (the repo's own instrument, which is the only admissible measurement here):

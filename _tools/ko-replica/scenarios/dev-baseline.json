@@ -1,1 +1,58 @@
-{"name": "dev-baseline", "split": "dev", "channel": "replicach", "durationMs": 30000, "events": []}
+{
+ "name": "dev-baseline",
+ "split": "dev",
+ "channel": "replicach",
+ "durationMs": 30000,
+ "note": "A clean live with no pod: the extension must not hold, cover, reveal or reload anything. Until 2026-11-25 this file had no samples and no expectations, so it reported CANNOT-MEASURE page-loaded on every run and proved nothing; the samples and the absence checks are what make it a baseline.",
+ "events": [],
+ "samples": [
+  {
+   "at": 2000,
+   "pixel": true
+  },
+  {
+   "at": 12000,
+   "pixel": true
+  },
+  {
+   "at": 24000,
+   "pixel": true
+  }
+ ],
+ "expect": [
+  {
+   "type": "absent",
+   "ev": "ad-ui-hold"
+  },
+  {
+   "type": "absent",
+   "ev": "ad-ui-on"
+  },
+  {
+   "type": "absent",
+   "ev": "overlay-reveal"
+  },
+  {
+   "type": "noReload"
+  },
+  {
+   "type": "pixelNotBlue",
+   "at": 2000
+  },
+  {
+   "type": "pixelNotBlue",
+   "at": 12000
+  },
+  {
+   "type": "pixelNotBlue",
+   "at": 24000
+  },
+  {
+   "type": "probe",
+   "at": 24000,
+   "path": "video.paused",
+   "op": "eq",
+   "value": false
+  }
+ ]
+}
