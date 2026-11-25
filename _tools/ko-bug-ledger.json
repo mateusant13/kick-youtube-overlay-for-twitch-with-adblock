@@ -1225,6 +1225,48 @@
       "Live half OWED: a pod on 0.8.113 whose hold expires must show ad-ui-hold {act:\"release\"} inside the 500 ms tick and either a resumed element or a native-stall {why:\"ad-park-expired\"} recovery, with no page reload afterwards."
     ],
     "owner_validation": "pending"
+  },
+  {
+   "id": "KO-20261125-01",
+   "state": "fixed",
+   "author": "lane",
+   "reported": "2026-11-25",
+   "fixed_in": "unreleased",
+   "commit": "30b48ac648be18045560c91d5d0ed6fd2283a7c0",
+   "verified": false,
+   "title": "Twitch fetches media playlists inside the player worker, so no page-level hook saw an ad: the pod never started and the ad played end to end",
+   "hypothesis": "An ad-bearing media playlist was only ever visible inside the patched Worker, which posts worker-playlist {adOnly, adExtinf} on BroadcastChannel('ko-adblock-debug'); twitch-adblock.js logged those rows and posted nothing, while the page-level window.fetch hook never sees a media playlist and maybeStartBypass() returns early on !lastChannel. Measured in the offline replica (build 0.8.115, 14 s preroll, real extension): worker-playlist {n:14}, zero playlist-derived ad-hold, overlay-reveal=0, native-handoff=0, and the ad program on screen at 20 s (blue 0.564 while content reads 0.12).",
+   "falsifier": "Drive the real BroadcastChannel message in ad-time-continuity: an ad-bearing live media playlist must post ad-hold with its evidence and set the pod claim, and two clean playlists must end it. The RED removes the post and requires that the same playlist never opens a pod. The replica preroll must then show overlay-reveal >= 1 while the ad program is on the wire and no ad pixel at 4/9/13/20 s.",
+   "evidence": ["node ad-time-continuity-test.cjs -> PASS \"a real worker ad playlist posts ad-hold with evidence and a clean streak hands back\"; its RED (post removed) -> \"the ad playlist did not open a pod: []\"; RESULT PASS ad-time-continuity checks=120 failed=0.", "node _tools/ko-verify.mjs -> RESULT PASS checks=25 failed=0.", "Replica known-answer run: KO_REPLICA_SEG=2 KO_REPLICA_MEDIA=G:/Temp/ko-replica/media node _tools/ko-replica/run.mjs --scenario _tools/ko-replica/scenarios/dev-preroll-hold.json --replica-port 8443 -> RESULT PASS scenario=dev-preroll-hold checks=12 failed=0 rows=127 (SAMPLE 4000ms blue=0.121, 9000ms 0.122, 13000ms 0.119, 20000ms 0.121); dev-midroll-hold -> RESULT PASS checks=11 failed=0.", "Live half OWED: a real Twitch preroll on the next build must show bypass-msg {from:'worker-playlist'} and overlay-reveal within 3 s of ad-ui-hold, with no ad pixel after the reveal."],
+   "owner_validation": "pending"
+  },
+  {
+   "id": "KO-20261125-02",
+   "state": "fixed",
+   "author": "lane",
+   "reported": "2026-11-25",
+   "fixed_in": "unreleased",
+   "commit": "30b48ac648be18045560c91d5d0ed6fd2283a7c0",
+   "verified": false,
+   "title": "A hold logged its own pause as a native pause in the same millisecond, so the pod held nothing for 12.5 s and expired",
+   "hypothesis": "adUiHold() pauses the element and stamps overlay.selfPausedAt, then adUiHoldTick() in the same 500 ms tick reads v.paused and returns adUiTickSkip('native-paused'), which the episode reads as a user-parked player. Replica ring (0.8.115): ad-ui-hold {act:'paused', ct:0.4, rs:4} and ad-ui-hold {act:'skip', why:'native-paused'} at the same ms, then {act:'skip', heldMs:12499, why:'hold-failed'} and {act:'release', why:'hold-expired'} at 13.1 s while a healthy clean frame sat at lat 3, rs 4.",
+   "falsifier": "ad-time-continuity drives the real adUiHold + adUiHoldTick pair: the second half of a tick that just took the pause must write act:'reassert' own:'hold', never skip native-paused, and a re-take of an old self pause must not be re-labelled either. The REDs restore the pre-fix skip and must reproduce the same-millisecond contradiction.",
+   "evidence": ["node ad-time-continuity-test.cjs -> PASS \"a hold never reports its own pause as a native pause, even after a cold cover\"; RED (guard removed) reproduced [{\"act\":\"paused\"...},{\"act\":\"skip\",\"why\":\"native-paused\"}]; second RED -> \"an old pause of ours is re-labelled native-paused on re-take\"; checks=120 failed=0.", "node _tools/ko-verify.mjs -> RESULT PASS checks=25 failed=0.", "Replica preroll after the fix: ad-ui-hold {n:1}, no skip native-paused row, overlay-reveal {n:1} 2.59 s after the hold, ad-ui-release {n:1} and native-handoff {n:1} at the pod end; RESULT PASS checks=12 failed=0.", "Live half OWED: a real pod must show one ad-ui-hold act:'paused' and no act:'skip' why:'native-paused' within 250 ms of it."],
+   "owner_validation": "pending"
+  },
+  {
+   "id": "KO-20261125-03",
+   "state": "fixed",
+   "author": "lane",
+   "reported": "2026-11-25",
+   "fixed_in": "unreleased",
+   "commit": "30b48ac648be18045560c91d5d0ed6fd2283a7c0",
+   "verified": false,
+   "title": "An expired hold resumed the element on the parked ad frame instead of the picture, so the hand-back played the rest of the ad",
+   "hypothesis": "The hold-expired branch called resumeNative(v0, 'hold-expired', { seek: false }): seek:false resumed exactly the position the pod had parked (ct 0.4) although the row already carried behind:15.6, and it never considered a mounted, healthy clean frame. Replica ring (0.8.115): native-resume {behind:15.6, ct:0.4, selfPaused:12.5, tag:'hold-expired', userParked:false} beside clean {lat:3, rs:4, paused:false, pos:22.7}, and the native then played the ad program (SAMPLE 20000ms ct=7.25 blue=0.564).",
+   "falsifier": "ad-time-continuity runs the real expiry with a mounted healthy clean frame and requires it to be revealed (one act:'handed-to-clean' row); with no healthy frame it must resume with a real hand-back that consumes behind. The RED restores the pre-fix resume and requires the parked ad frame to come back. A user-parked or hidden player stays parked in both limbs and the health gate is not widened.",
+   "evidence": ["node ad-time-continuity-test.cjs -> PASS \"an expired hold reveals the healthy mounted clean player\"; RED -> \"the pre-fix hold expiry resumes the parked ad frame\"; checks=120 failed=0.", "node _tools/ko-verify.mjs -> RESULT PASS checks=25 failed=0.", "Replica preroll after the fix: native-handoff at the pod end, native-resume {behind:3.5, ct:38.5, tag:'ad-end'}, display-clock verdict LIVE, SAMPLE 20000ms blue=0.121; dev-midroll-hold RESULT PASS checks=11 failed=0.", "Live half OWED: a real pod whose hold expires must end on the clean picture or on a live-offset hand-back, never on the parked position."],
+   "owner_validation": "pending"
   }
  ]
 }
