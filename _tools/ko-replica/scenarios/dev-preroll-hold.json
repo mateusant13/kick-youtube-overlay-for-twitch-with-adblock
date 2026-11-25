@@ -1,0 +1,101 @@
+{
+  "name": "dev-preroll-hold",
+  "split": "dev",
+  "channel": "replicach",
+  "durationMs": 40000,
+  "tailMs": 12000,
+  "events": [
+    {
+      "at": 0,
+      "kind": "preroll",
+      "ms": 14000,
+      "ui": "wrapper"
+    }
+  ],
+  "samples": [
+    {
+      "at": 2000,
+      "pixel": true
+    },
+    {
+      "at": 4000,
+      "pixel": true
+    },
+    {
+      "at": 9000,
+      "pixel": true
+    },
+    {
+      "at": 13000,
+      "pixel": true
+    },
+    {
+      "at": 20000,
+      "pixel": true
+    },
+    {
+      "at": 26000,
+      "pixel": false
+    }
+  ],
+  "expect": [
+    {
+      "type": "row",
+      "ev": "worker-playlist",
+      "min": 1
+    },
+    {
+      "type": "row",
+      "ev": "ad-ui-hold",
+      "min": 1
+    },
+    {
+      "type": "row",
+      "ev": "overlay-reveal",
+      "min": 1
+    },
+    {
+      "type": "within",
+      "from": "ad-ui-hold",
+      "to": "overlay-reveal",
+      "maxMs": 12000
+    },
+    {
+      "type": "pixelDark",
+      "at": 4000
+    },
+    {
+      "type": "pixelNotBlue",
+      "at": 9000
+    },
+    {
+      "type": "pixelNotBlue",
+      "at": 13000
+    },
+    {
+      "type": "row",
+      "ev": "ad-ui-release",
+      "min": 1
+    },
+    {
+      "type": "row",
+      "ev": "native-handoff",
+      "min": 1
+    },
+    {
+      "type": "noReload"
+    },
+    {
+      "type": "pixelNotBlue",
+      "at": 20000
+    },
+    {
+      "type": "probe",
+      "at": 26000,
+      "path": "video.paused",
+      "op": "eq",
+      "value": false
+    }
+  ],
+  "note": "A preroll must be the FIRST program the player fetches: with `at:300` the page's first playlist was content, the ad block was stitched AFTER it, and the ad then played at media time 6-36s instead of 0-14s (measured 2026-11-25, no-extension control: black at 4/9/13s, ad-blue at 20s). The deterministic alternative is an ad-bearing playlist from the very first GET."
+}

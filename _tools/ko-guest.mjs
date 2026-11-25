@@ -120,6 +120,9 @@ const args = [
   // every unmute and reports it as `unmute-blocked` (measured 2026-11-08):
   // audio arms cannot be measured without this flag.
   '--autoplay-policy=no-user-gesture-required',
+  // Replica harness (ko-replica): host-resolver mapping + a self-signed cert
+  // need extra flags the live path must not carry. JSON array, additive only.
+  ...(process.env.KO_GUEST_EXTRA_ARGS ? JSON.parse(process.env.KO_GUEST_EXTRA_ARGS) : []),
   // The destination is navigated to ONCE, after the extension is loaded
   // (2026-11-24). Launching Chrome on the URL and then navigating it again
   // loaded the page twice: the first load ran without the extension, was
@@ -174,10 +177,20 @@ for (let i = 0; i < 40; i++) {
   if ((t.result?.targetInfos || []).some((x) => x.type === 'page')) break;
   await sleep(200);
 }
-const lu = await send('Extensions.loadUnpacked', { path: EXT.replaceAll('/', '\\') });
-log('loadUnpacked', JSON.stringify(lu).slice(0, 300));
-const extId = lu.result?.id || null;
-if (!extId) { log('FATAL: extension did not load'); process.exit(2); }
+// The known-bad arm for the offline replica: no content scripts, no hooks, so a
+// defending result there would be a harness that cannot fail. It skips the
+// EXTENSION only — parking here instead of navigating left the guest on
+// `about:blank` (measured 2026-11-25: `targets at refusal: page:about:blank`),
+// which read as "the replica page never loaded".
+let extId = null;
+if (process.env.KO_NO_EXT === '1') {
+  log('NO_EXT: extension not loaded on purpose');
+} else {
+  const lu = await send('Extensions.loadUnpacked', { path: EXT.replaceAll('/', '\\') });
+  log('loadUnpacked', JSON.stringify(lu).slice(0, 300));
+  extId = lu.result?.id || null;
+  if (!extId) { log('FATAL: extension did not load'); process.exit(2); }
+}
 
 const tg = await send('Target.getTargets', {});
 const pages = (tg.result?.targetInfos || []).filter((t) => t.type === 'page');
@@ -197,8 +210,14 @@ if (pages.length) {
       // when the content script runs, and that is the only fact this step needs.
       const t0 = Date.now();
       let injected = false;
+      // Without the extension there is no extension world to wait for: poll the
+      // document instead, so the arm measures a loaded page and not a timeout.
       for (let i = 0; i < 120; i++) {
-        if ([...ctxSink].some((o) => o.startsWith('chrome-extension://'))) { injected = true; break; }
+        if (process.env.KO_NO_EXT === '1') {
+          const tl = await send('Target.getTargets', {});
+          const pg = (tl.result?.targetInfos || []).find((x) => x.type === 'page' && String(x.url).startsWith('http'));
+          if (pg) { injected = false; break; }
+        } else if ([...ctxSink].some((o) => o.startsWith('chrome-extension://'))) { injected = true; break; }
         await sleep(250);
       }
       log('worlds', JSON.stringify([...ctxSink]));
@@ -208,5 +227,5 @@ if (pages.length) {
     }
   }
 }
-log('READY extId=' + extId + ' port=' + PORT);
+log('READY extId=' + (extId || 'none') + ' port=' + PORT);
 await new Promise(() => {});

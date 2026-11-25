@@ -1,0 +1,95 @@
+{
+  "name": "dev-midroll-hold",
+  "split": "dev",
+  "channel": "replicach",
+  "durationMs": 50000,
+  "tailMs": 10000,
+  "events": [
+    {
+      "at": 10000,
+      "kind": "midroll",
+      "ms": 14000,
+      "ui": "wrapper"
+    }
+  ],
+  "samples": [
+    {
+      "at": 6000,
+      "pixel": true
+    },
+    {
+      "at": 16000,
+      "pixel": true
+    },
+    {
+      "at": 24000,
+      "pixel": true
+    },
+    {
+      "at": 32000,
+      "pixel": true
+    },
+    {
+      "at": 40000,
+      "pixel": true
+    },
+    {
+      "at": 46000,
+      "pixel": false
+    }
+  ],
+  "expect": [
+    {
+      "type": "row",
+      "ev": "worker-playlist",
+      "min": 1
+    },
+    {
+      "type": "row",
+      "ev": "ad-ui-on",
+      "min": 1
+    },
+    {
+      "type": "row",
+      "ev": "ad-ui-hold",
+      "min": 1
+    },
+    {
+      "type": "row",
+      "ev": "overlay-reveal",
+      "min": 1
+    },
+    {
+      "type": "pixelNotBlue",
+      "at": 16000
+    },
+    {
+      "type": "pixelNotBlue",
+      "at": 24000
+    },
+    {
+      "type": "row",
+      "ev": "ad-ui-release",
+      "min": 1
+    },
+    {
+      "type": "row",
+      "ev": "native-handoff",
+      "min": 1
+    },
+    {
+      "type": "noReload"
+    },
+    {
+      "type": "pixelNotBlue",
+      "at": 40000
+    },
+    {
+      "type": "probe",
+      "at": 46000,
+      "path": "video.paused",
+      "op": "eq",
+      "value": false
+    }
+  ]
+}

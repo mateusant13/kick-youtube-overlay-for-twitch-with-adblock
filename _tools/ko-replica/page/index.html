@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>replicach - Twitch</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #0e0e10; color: #efeff1; font: 14px/1.4 sans-serif; }
+  #root { display: flex; gap: 12px; padding: 12px; }
+  .persistent-player { width: 960px; background: #000; }
+  .video-player { position: relative; width: 960px; height: 540px; background: #000; overflow: hidden; }
+  .video-player__container { position: relative; width: 100%; height: 100%; }
+  .video-ref { position: relative; width: 100%; height: 100%; }
+  #ko-replica-video { position: absolute; inset: 0; width: 100%; height: 100%; display: block; background: #000; }
+  .stream-display-ad__wrapper {
+    position: absolute; left: 0; bottom: 0; z-index: 20; overflow: hidden;
+    background: rgba(0, 0, 0, 0.001);
+  }
+  /* The wrapper is a LAYOUT node, not a picture: Twitch paints the ad inside it
+     with its own surface. An opaque fill here covered the ad program our own
+     <video> was decoding (measured 2026-11-25: 380 decoded frames, 30 fps, and
+     a page-background dark screen for the whole pod). */
+  .stream-display-ad__inner { display: block; background: transparent; }
+  .stream-display-ad__wrapper-hidden { visibility: hidden; opacity: 0; }
+  .ko-replica-adtext {
+    position: absolute; left: 50%; top: 12px; transform: translateX(-50%); z-index: 30;
+    background: rgba(0,0,0,0.72); color: #fff; padding: 6px 12px; border-radius: 4px;
+    font: 600 15px/1.2 sans-serif; white-space: nowrap;
+  }
+  .player-controls { position: absolute; left: 0; right: 0; bottom: 0; height: 40px; z-index: 40; }
+  .side { width: 320px; }
+  .chat-line { padding: 4px 0; border-bottom: 1px solid #26262c; }
+  .promo { color: #adadb8; }
+</style>
+</head>
+<body>
+<div id="root">
+  <div class="persistent-player">
+    <div class="video-player" data-a-target="video-player">
+      <div class="video-player__container">
+        <div class="video-ref">
+          <video id="ko-replica-video" autoplay playsinline></video>
+        </div>
+        <!-- The permanent shell Twitch always ships: hidden until a real ad. -->
+        <div class="stream-display-ad__wrapper stream-display-ad__wrapper_squeezeback stream-display-ad__wrapper-hidden"
+             data-test-selector="sda-wrapper">
+          <div class="stream-display-ad__inner"></div>
+        </div>
+      </div>
+      <div class="player-controls">
+        <button data-a-target="player-mute-unmute-button" aria-label="Mute (m)">Mute</button>
+        <button class="promo" aria-label="Teste 1 mês sem anúncios">Teste 1 mês sem anúncios</button>
+      </div>
+    </div>
+  </div>
+  <div class="side">
+    <div class="chat-line">chat: <b>replica</b> hello</div>
+    <div class="chat-line">chat: <b>viewer</b> this page is offline</div>
+  </div>
+</div>
+<script src="/__ko/page.js"></script>
+</body>
+</html>
