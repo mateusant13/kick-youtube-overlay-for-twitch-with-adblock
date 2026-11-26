@@ -1,41 +1,85 @@
 {
-  "schema": "revival.goal/v1",
-  "created_at": "2026-11-26T19:52:45Z",
-  "updated_at": "2026-11-26T19:52:45Z",
-  "status": "active",
-  "horizon": "multi-day",
-  "statement": "advertisements seem not to exist: the Twitch ad path must never let the owner watch a pod, the kick/YouTube overlay must keep one continuous live timeline with sound, and nothing is done until a real live Twitch stream proved it",
-  "charter": "MULTI-DAY EXECUTION CHARTER: Never doubt yourself or declare the mission impossible. It is ALWAYS possible to achieve this goal \u2014 when blocked, shift angles, invent a tool or offline twin, decompose into smaller verifiable slices, snapshot with git, and keep advancing continuously across sessions until 100% of acceptance criteria carry real receipts.",
-  "model_policy": {
-    "audits_and_scouts": "cheapest capable model (prefer DeepSeek)",
-    "implementations_and_orchestration": "DeepSeek or higher (prefer DeepSeek)"
+ "schema": "revival.goal/v1",
+ "created_at": "2026-11-26T19:52:45Z",
+ "updated_at": "2026-11-26T23:59:00Z",
+ "status": "acceptance-recorded",
+ "horizon": "multi-day",
+ "statement": "advertisements seem not to exist: the Twitch ad path must never let the owner watch a pod, the kick/YouTube overlay must keep one continuous live timeline with sound, and nothing is done until a real live Twitch stream proved it",
+ "charter": "MULTI-DAY EXECUTION CHARTER: Never doubt yourself or declare the mission impossible. It is ALWAYS possible to achieve this goal — when blocked, shift angles, invent a tool or offline twin, decompose into smaller verifiable slices, snapshot with git, and keep advancing continuously across sessions until 100% of acceptance criteria carry real receipts.",
+ "model_policy": {
+  "audits_and_scouts": "cheapest capable model (prefer DeepSeek)",
+  "implementations_and_orchestration": "DeepSeek or higher (prefer DeepSeek)"
+ },
+ "max_subagents": 40,
+ "acceptance": [
+  {
+   "id": "ACC-01",
+   "text": "Observability, baseline benchmark, and 0-100 paired sliders recorded BEFORE drastic refactors",
+   "receipt": {
+    "status": "DONE-WITH-DEVIATION",
+    "evidence": [
+     "benchmarks/budgets.json: 7 metrics, each with ceiling + red_arm_cmd + owner_paths/blast_radius_callers (tier=basic: syntax, census, import-or-boot; tier=subsystem: bridge, mute, ad-time; tier=e2e: gate wall)",
+     "benchmarks/history.jsonl baseline 2026-11-26T23:40Z head 9fe2352, --samples 3 --gate --blast-radius: 7/7 PASS (syntax 124.43, census 172.70, bridge 104.29, mute 617.52, ad_time 5963.49, gate_wall 49893.78, import_or_boot 94.45 ms)",
+     "benchmarks/sliders.json: 8 sliders, each with baseline, target, current and the measured evidence string",
+     "revival/AUDIT-2026-11-26.md: 10 read-only scouts = the pre-change inventory (inputs, outputs, interlinks, dead paths)"
+    ],
+    "deviation": "The first baseline attempt (19:57:54Z, 35c8d8f) aborted on `basic.import_or_boot_ms: UNMEASURED (empty command)` and recorded ONE metric, so the machine baseline in history landed on the landing tree rather than before the refactors. The BEFORE numbers for the two suite walls live in the audit (70 724 ms mute-decision, 269 807 ms ad-time-continuity) and are not comparable ids to the history rows, which is why `compare` reports them as no-delta instead of inventing one.",
+    "check": "python C:/Users/Administrador/.agents/skills/project-revival/scripts/benchmark_history.py compare --repo . --from-label baseline --to-label after"
+   }
   },
-  "max_subagents": 40,
-  "acceptance": [
-    {
-      "id": "ACC-01",
-      "text": "Observability, baseline benchmark, and 0-100 paired sliders recorded BEFORE drastic refactors",
-      "receipt": null
-    },
-    {
-      "id": "ACC-02",
-      "text": "All agentic-era inner-loop frictions named and mitigated (<15s loop + offline twins in harness/twins/)",
-      "receipt": null
-    },
-    {
-      "id": "ACC-03",
-      "text": "Macro feature map synced in features/INDEX.md + AGENTS.md Universal Workflow, linked into project gate",
-      "receipt": null
-    },
-    {
-      "id": "ACC-04",
-      "text": "Per-I/O metric budgets (basic -> E2E) + blast-radius check enforced in project gate with zero regressions",
-      "receipt": null
-    },
-    {
-      "id": "ACC-05",
-      "text": "Before-vs-after benchmark diff & slider scorecard show verified improvement across all core user journeys",
-      "receipt": null
-    }
-  ]
+  {
+   "id": "ACC-02",
+   "text": "All agentic-era inner-loop frictions named and mitigated (<15s loop + offline twins in harness/twins/)",
+   "receipt": {
+    "status": "DONE",
+    "evidence": [
+     "loop_friction_audit.py measure --repo . --gate -> verdict PASS, failures [], rc 0, 33.7 s: youtube_live_dep 0.783 s, browser_live_wait 0.479 s, twitch_live_dep 0.427 s, inner_test_loop 6.143 s (samples=4) against a 15 s target",
+     "harness/twins/: replay.mjs (offline replay of the recorded page), slider_probe.mjs (8 sliders from live measurements), and _tools/test-clock.cjs (virtual clock: the same two suites 70 724 ms -> 887 ms and 269 807 ms -> 4 724 ms)",
+     "revival/FRICTION.json: every row carries a verify_cmd that the gate re-runs with the tree restored byte-for-byte; loop_friction_audit --selftest proves both the freshness and the restore directions"
+    ],
+    "check": "node _tools/ko-verify.mjs  ->  PASS revival-friction"
+   }
+  },
+  {
+   "id": "ACC-03",
+   "text": "Macro feature map synced in features/INDEX.md + AGENTS.md Universal Workflow, linked into project gate",
+   "receipt": {
+    "status": "DONE",
+    "evidence": [
+     "features/INDEX.md + features/features.json (137 tracked files)",
+     "AGENTS.md carries the REVIVAL:WORKFLOW decision tree and the REVIVAL:FEATURES table generated from features.json",
+     "feature_map_sync.py --gate -> {\"verdict\": \"PASS\", \"problems\": []}, wired as gate check `revival-features`; it proved itself by catching its own drift ({\"problems\": [\"new macro feature 'tools' not in features/features.json\"]}) when codeintel wrote an unwired tools/smoke_paired.py, and passed again after that file was dropped in e63c3f99"
+    ],
+    "check": "python C:/Users/Administrador/.agents/skills/project-revival/scripts/feature_map_sync.py --repo . --gate"
+   }
+  },
+  {
+   "id": "ACC-04",
+   "text": "Per-I/O metric budgets (basic -> E2E) + blast-radius check enforced in project gate with zero regressions",
+   "receipt": {
+    "status": "DONE",
+    "evidence": [
+     "benchmarks/budgets.json: basic, subsystem and e2e tiers, each ceiling 4-10x above the measured value",
+     "benchmark_history.py run --repo . --label after --samples 3 --gate --blast-radius -> 7/7 PASS, every row blast_radius_touched=false",
+     "ko-verify: PASS revival-budgets (3 basic metrics inside budget) and PASS revival-friction (tree byte-identical after the measurement), inside a 31-check gate",
+     "zero regressions on the product wave that shipped mid-revival: 0.8.129 (POD_END_REASONS at both wait sites) kept ad-time-continuity checks=194 failed=0 and content-fix ARMS 52/52"
+    ],
+    "named_not_smoothed": "basic.syntax_check_ms 124.43 -> 140.28 ms (+12.74 %) and gate wall 49 893.78 -> 48 162.24 ms (-3.47 %): the syntax delta is inside the 25 % wall tolerance and is printed rather than rounded away.",
+    "check": "python C:/Users/Administrador/.agents/skills/project-revival/scripts/benchmark_history.py run --repo . --label after --samples 3 --gate --blast-radius"
+   }
+  },
+  {
+   "id": "ACC-05",
+   "text": "Before-vs-after benchmark diff & slider scorecard show verified improvement across all core user journeys",
+   "receipt": {
+    "status": "DONE-WITH-NAMED-REGRESSION",
+    "evidence": [
+     "benchmark_history compare baseline->after: census -20.05 %, import/boot -23.13 %, ad_time -15.56 %, mute -24.36 %, bridge -2.27 %, gate wall -3.47 %, syntax +12.74 %",
+     "slider_scorecard report --min-overall 70 -> overall 76.6: metric_gate_coverage 71 -> 100, architecture_coherence 99 -> 100, inner_loop_speed 45 -> 48, observability 10 -> 11, harness_falsifiers 96 -> 96, reversibility_safety 100 -> 100, autonomy_end_to_end 100 -> 100",
+     "the one regression is named, not reset: delivery_balance 92 -> 58, because the newest 12 commits ARE the revival's own tooling (7 product, 5 meta). codeintel hygiene over 40 commits reports product_ratio_pct 42.5, the same fact at a wider window."
+    ],
+    "check": "python C:/Users/Administrador/.agents/skills/project-revival/scripts/slider_scorecard.py report --repo . --min-overall 70  (exit 1 while delivery_balance sits below its baseline -- reported, not re-baselined)"
+   }
+  }
+ ]
 }

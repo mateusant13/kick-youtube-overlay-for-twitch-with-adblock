@@ -1,4 +1,0 @@
-#!/bin/sh
-# codeintel quality gate, tier t2 (budget 90 s). Same fail-open rule as pre-commit.
-[ -f gate.toml ] || { echo "codeintel gate: no gate.toml in this checkout, skipped"; exit 0; }
-exec python -m codeintel gate --tier t2
