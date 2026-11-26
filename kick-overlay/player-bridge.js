@@ -985,16 +985,17 @@ post({ t: 'ready' });
 // single `ptr`: its bar could only be re-armed by the page's own rectangle
 // hit-test, and the frame swallows exactly those events (owner 2026-11-16:
 // "hover nao mostrava o player"). Installed once, for whichever engine loaded,
-// and it says which engine it is under so the row is not a guess.
+// with the engine/arm taken from the branch that actually ran: player.html
+// loads ivs/index.js unconditionally, so the IVS global exists in HLS mode too
+// and cannot identify the engine.
 try {
   let ptrAt = 0;
-  let engine = 'hls';
-  try { engine = window.IVSPlayerModule ? 'ivs' : 'hls'; } catch { /* unknown */ }
+  const engine = HLS_MODE ? 'hls' : 'ivs';
   const ptrTick = () => {
     const now = Date.now();
     if (now - ptrAt < 120) return;
     ptrAt = now;
-    post({ t: 'ptr', engine });
+    post({ t: 'ptr', engine, mode: BRIDGE_DIAG.mode });
   };
   for (const ev of ['pointermove', 'pointerdown']) document.addEventListener(ev, ptrTick, { capture: true, passive: true });
   document.addEventListener('pointerleave', () => { ptrAt = 0; }, { passive: true });

@@ -83,7 +83,6 @@ const KO_ANDROID_TPL = {
 const KO_STS_RE = /"STS":\s*(\d+)/;
 const KO_STS_LEGACY_RE = /"sts":\s*(\d+)/;
 const KO_VD_RE = /"visitorData":"([^"]+)"/;
-const KO_VER_RE = /"INNERTUBE_CONTEXT_CLIENT_VERSION":"([^"]+)"/;
 const KO_VID_RE = /[?&]v=([0-9A-Za-z_-]{11})/;
 
 async function koFetchText(url, opts) {
