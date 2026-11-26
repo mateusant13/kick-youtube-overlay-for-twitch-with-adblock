@@ -86,7 +86,18 @@ node _tools/ko-real-capture.mjs --port 9446 --url https://www.twitch.tv/<channel
 node _tools/ko-real-capture.mjs --port 9446 --url https://www.twitch.tv/<channel> --seconds 100 \
   --navigate --out .../capture.json                       # record the LOAD: a preroll pod lands here
 node _tools/ko-replica/compare.mjs --real <capture.json> --replica <capture.json|report.json>
+
+node _tools/ko-real-capture.mjs --summarize <capture.json>  # re-analyse a SAVED capture: no Chrome,
+                                                           # no network, same bodies, seconds
 ```
+
+`--summarize` exists because the classifier is part of the instrument: when it was wrong (2026-11-26,
+`rodil`, `non-live-titles=0 ad-segments=1562` on one line, ledger `KO-20261126-07`), the only honest
+way to prove the fix was to re-read the SAME 114 playlists. Ad media is a segment TITLE (the contract
+`twitch-adblock.js:4876` uses, `,live` means content); an `#EXT-X-DATERANGE` marker is reported as
+`ad-markers` and never turns a `,live` segment into an ad one, because Twitch writes a
+`twitch-trigger` row on every playlist of a channel that runs ads and its base64 `TRIGGER-URL` contains
+`ad` by chance.
 
 `compare.mjs` prints one line per dimension and exits 0/1/2:
 

@@ -1370,6 +1370,42 @@
     "The absence half was widened to 1500 ms (past the 800 ms delay with margin) instead of being left at 900 ms, because a `must not reload` arm gets stronger with a longer wait, never weaker."
    ],
    "next": "The next full gate run must show content-fix PASS with the polling arms; a failure there is a product reload that never fired, not a timing margin."
+  },
+  {
+   "id": "KO-20261126-06",
+   "title": "The page-side standby prewarm cache loses the cold open to the pod's own ask by milliseconds and is never consumed",
+   "state": "recurrence-watch",
+   "author": "seat",
+   "reported": "2026-11-26",
+   "fixed_in": null,
+   "commit": null,
+   "hypothesis": "Measured in the replica cold open on 0.8.118 (`dev-preroll-hold`, `RESULT PASS checks=12 failed=0`): `standby-request {why:'prewarm'}` at 115 ms, `standby-prewarm {ok:true, ms:193, why:'resolved'}` at 307 ms, while the pod's own forced asks land at 284 ms (`cold-start`) and 303 ms (`worker-playlist`). consumeStandbyPrewarm() runs on a forced ask and saw an empty slot 5 ms before it was filled, so the ring holds NO `standby-prewarm-used` row and the page-side cache never paid for anything in this window. The reveal was still 1390 ms because the WORKER prewarm resolved it.",
+   "falsifier": "`node -e` over the report rows: a `standby-prewarm-used` row after a `standby-prewarm {ok:true}` proves the cache was consumed; its absence names the race. The user-visible cost is zero here (reveal 1390 ms, no ad pixel), so this stays a measurement, not a fix.",
+   "evidence": [
+    "report G:/Temp/ko-replica/runs/dev-preroll-hold-1795670018437/report.json: standby-prewarm {ok:false, why:'unavailable', ms:null} then {ok:true, ms:193, why:'resolved'}; standby-request at 115 (prewarm), 284 (cold-start), 303 (worker-playlist); zero standby-prewarm-used rows.",
+    "overlay-reveal {ms:1391, lat:3.1, q:'720p', hold:2.43} - the reveal did not wait on the mint.",
+    "standby-refused {why:'busy', ask:'cold-start', frame:true} at 1085 ms: the frame was already up, which is why the late cache ask had nothing to win."
+   ],
+   "next": "Do not add a wait to bridge a 5 ms gap without a measured pod that pays for it. If a real preroll ever shows ad pixels while the page-side cache was warm, re-open: the target then is consuming the cache before the pod's forced ask, not a timer."
+  },
+  {
+   "id": "KO-20261126-07",
+   "title": "The capture classifier counted 1562 `,live` segments as ad media because `ad` occurred inside a base64 TRIGGER-URL",
+   "state": "fixed",
+   "author": "seat",
+   "reported": "2026-11-26",
+   "fixed_in": "0.8.118",
+   "commit": null,
+   "hypothesis": "`analyze()` in `_tools/ko-real-capture.mjs` opened an ad block for ANY `#EXT-X-DATERANGE` line matching /ad|preroll|.../ against the whole line. Twitch's `twitch-trigger` row carries a base64 `X-TV-TWITCH-TRIGGER-URL` in which `ad` occurs by chance, so every playlist of the window opened a pod and the segments after it were counted as ad media - while the tool printed `non-live-titles=0` on the same line. The extension's own contract is the title (`adExtinf = extinf.filter(l => !/,live\\s*$/.test(l))`, twitch-adblock.js:4876).",
+   "falsifier": "`node _tools/ko-real-capture.mjs --summarize <capture.json>` on the SAME bodies: 114 playlists, `non-live-titles=0 ad-playlists=0 ad-segments=0 ad-markers=0`. Pre-fix the identical population printed `ad-playlists=108 ad-segments=1562`. Two selftest cases hold it: `stitched` (a real pod is still 2 ad segments) and `trigger-only` (a trigger row with a base64 URL and every title `,live` is 0 ad segments, 0 markers).",
+   "evidence": [
+    "Before (bg_112, live run, rodil 90 s --navigate): `AD-MEDIA non-live-titles=0 ad-playlists=108 ad-segments=1562` - the two halves of one line contradict each other.",
+    "After, same capture: `AD-MEDIA non-live-titles=0 ad-playlists=0 ad-segments=0 ad-markers=0`; the earlier capture 20261126-011724 re-analysed to the same zeros.",
+    "`node _tools/ko-real-capture.mjs --selftest` -> `SELFTEST PASS 3/3` (steady, stitched, trigger-only).",
+    "The marker test is now the CLASS/ID fields only, so a chance substring in a URL can never open a pod; `ad-markers` reports what the marker actually said.",
+    "compare.mjs verdict unchanged on the same pair (`RESULT CANNOT-MEASURE 4/12`, zero DIVERGE), so the false positive never reached a fidelity claim - it was caught before it did."
+   ],
+   "next": "A window that really serves a pod must still print ad-media from its titles; `--navigate` on a channel with a preroll is the run that closes it."
   }
  ]
 }

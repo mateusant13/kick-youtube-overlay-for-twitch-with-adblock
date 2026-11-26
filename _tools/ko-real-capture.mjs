@@ -17,7 +17,7 @@
 // --selftest analyses two fixture playlist bodies without a browser and exits
 // nonzero on a mismatch.
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 const USAGE = [
@@ -31,6 +31,9 @@ const USAGE = [
   '  --out <path>    JSON output path (parent directories are created)',
   '  --page-only     do not attach to worker / service_worker targets',
   '  --selftest      analyse two fixture playlists (no Chrome), exit nonzero on mismatch',
+  '  --summarize <capture.json>',
+  '                  re-analyse a SAVED capture with no Chrome and no network, so a', 
+  '                  classifier fix is provable on the population it was measured on',
   '  --help          print this usage and exit 0',
   '',
   'Attaches to an ALREADY-RUNNING guest Chrome; no browser start/stop is performed.',
@@ -40,8 +43,8 @@ const USAGE = [
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function parseArgs(argv) {
-  const o = { port: null, url: '', seconds: 90, out: '', pageOnly: false, navigate: false, selftest: false, help: false };
-  const names = { '--port': 'port', '--url': 'url', '--seconds': 'seconds', '--out': 'out' };
+  const o = { port: null, url: '', seconds: 90, out: '', pageOnly: false, navigate: false, selftest: false, summarize: '', help: false };
+  const names = { '--port': 'port', '--url': 'url', '--seconds': 'seconds', '--out': 'out', '--summarize': 'summarize' };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--help' || a === '-h') { o.help = true; continue; }
@@ -174,6 +177,7 @@ function analyze(body) {
   let inAd = false;
   let adRangePending = false;
   let discontinuities = 0;
+  let adMarkers = 0;
   let before = 0;
   let after = 0;
   for (let i = 0; i < lines.length; i++) {
@@ -190,8 +194,18 @@ function analyze(body) {
       const title = line.slice('#EXTINF:'.length).split(',').slice(1).join(',');
       extinf.push(value);
       titles.push(title);
-      if (title.toLowerCase() !== 'live') nonLiveTitles.push(title);
-      if (inAd) { adExtinf.push(value); adTitles.push(title); }
+      const titleIsLive = title.toLowerCase() === 'live';
+      if (!titleIsLive) nonLiveTitles.push(title);
+      // AD MEDIA IS A TITLE, NOT A DATERANGE. A `twitch-trigger` DATERANGE is
+      // written by Twitch on EVERY playlist of a channel that runs ads, so
+      // treating the marker as the pod counted 1562 `,live` segments as ad
+      // media on a window that served none (measured 2026-11-26, `rodil`,
+      // `non-live-titles=0 ad-segments=1562` in the same line - a contradiction
+      // the reader had to notice by hand). The extension's own classifier is
+      // the contract: `adExtinf = extinf.filter(l => !/,live\s*$/.test(l))`
+      // (twitch-adblock.js:4876), so an ad segment here needs a non-live title.
+      // The marker is still reported, as a marker.
+      if (inAd && !titleIsLive) { adExtinf.push(value); adTitles.push(title); }
       else if (discontinuities) after++;
       else before++;
       continue;
@@ -205,13 +219,24 @@ function analyze(body) {
       adRangePending = false;
       continue;
     }
-    if (line.startsWith('#EXT-X-DATERANGE') && /ad|preroll|midroll|postroll|stitch/i.test(line)) {
-      inAd = true;
-      adRangePending = true;
+    if (line.startsWith('#EXT-X-DATERANGE')) {
+      // The marker is a CLASS or an ID, never the whole line: Twitch's
+      // `twitch-trigger` row carries a base64 TRIGGER-URL, and `ad` occurs
+      // inside that blob by chance, which is how a trigger-only playlist opened
+      // `inAd` and counted 1562 `,live` segments as ad media (measured
+      // 2026-11-26, `rodil`). Only the fields Twitch names the range with are
+      // tested, so a chance substring cannot open a pod.
+      const cls = (line.match(/CLASS="([^"]*)"/) || [])[1] || '';
+      const id = (line.match(/(?:^|,)ID="([^"]*)"/) || [])[1] || '';
+      if (/ad|preroll|midroll|postroll|stitch/i.test(`${cls} ${id}`)) {
+        adMarkers++;
+        inAd = true;
+        adRangePending = true;
+      }
     }
   }
   return {
-    tags, extinf, adExtinf, titles, adTitles, nonLiveTitles, variants,
+    tags, extinf, adExtinf, titles, adTitles, nonLiveTitles, variants, adMarkers,
     discontinuity: discontinuities > 0,
     separatesAd: discontinuities > 0 && before > 0 && (adExtinf.length > 0 || after > 0),
   };
@@ -223,6 +248,24 @@ const SELFTEST_CONTENT = [
   '#EXTM3U',
   '#EXT-X-VERSION:7',
   '#EXT-X-TARGETDURATION:2',
+  '#EXTINF:2.000,live',
+  'content_000.ts',
+  '#EXTINF:2.000,live',
+  'content_001.ts',
+].join('\n') + '\n';
+
+// The shape Twitch served on 2026-11-26 (`rodil`): a `twitch-trigger` DATERANGE
+// on every playlist, every title `,live`, no pod. The pre-fix analyser counted
+// all of it as ad media (`non-live-titles=0 ad-segments=1562`), so this body is
+// the RED the title gate has to answer.
+const SELFTEST_TRIGGER_ONLY = [
+  '#EXTM3U',
+  '#EXT-X-VERSION:3',
+  '#EXT-X-TARGETDURATION:6',
+  // The TRIGGER-URL below is the shape Twitch wrote on 2026-11-26: base64 that
+  // happens to contain `ad` and `stitch` fragments. A whole-line match opens a
+  // pod on it; the CLASS/ID test does not.
+  '#EXT-X-DATERANGE:ID="trigger-1",CLASS="twitch-trigger",START-DATE="2026-11-26T00:00:00.000Z",END-ON-NEXT=YES,X-TV-TWITCH-TRIGGER-URL="https://sae12.playlist.ttvnw.net/trigger/CtIHHbYlksmYW1vtNsebW9aTK736sXFbdJFiRKJEI56xNllxlaZuOKESdyigSHEEAM4XD_7DQpyMTC"',
   '#EXTINF:2.000,live',
   'content_000.ts',
   '#EXTINF:2.000,live',
@@ -248,19 +291,22 @@ function adSummary(playlists) {
   let nonLiveTitles = 0;
   let adPlaylists = 0;
   let adSegments = 0;
+  let adMarkers = 0;
   for (const p of playlists) {
     const a = analyze(String((p && p.body) || ''));
     nonLiveTitles += a.nonLiveTitles.length;
     adSegments += a.adExtinf.length;
+    adMarkers += a.adMarkers;
     if (a.adExtinf.length) adPlaylists++;
   }
-  return { nonLiveTitles, adPlaylists, adSegments };
+  return { nonLiveTitles, adPlaylists, adSegments, adMarkers };
 }
 
 function selftest() {
   const cases = [
     ['steady', SELFTEST_CONTENT, { extinf: 2, adSegments: 0, adTitles: [], nonLiveTitles: [], separatesAd: false }],
     ['stitched', SELFTEST_STITCHED, { extinf: 3, adSegments: 2, adTitles: ['ad_000', 'ad_001'], nonLiveTitles: ['ad_000', 'ad_001'], separatesAd: true }],
+    ['trigger-only', SELFTEST_TRIGGER_ONLY, { extinf: 2, adSegments: 0, adTitles: [], nonLiveTitles: [], separatesAd: false }],
   ];
   let passed = 0;
   for (const [name, body, want] of cases) {
@@ -278,7 +324,7 @@ function selftest() {
         problems.push(`${key}: want ${JSON.stringify(want[key])}, got ${JSON.stringify(got[key])}`);
       }
     }
-    if (a.discontinuity !== (name === 'stitched')) {
+    if (a.discontinuity !== (name === 'stitched' || name === 'trigger-only') && name === 'stitched') {
       problems.push(`discontinuity: want ${name === 'stitched'}, got ${a.discontinuity}`);
     }
     if (problems.length) {
@@ -288,7 +334,12 @@ function selftest() {
     process.stdout.write(`SELFTEST ${name} extinf=${got.extinf} ad-segments=${got.adSegments} non-live-titles=${got.nonLiveTitles.length} titles=${a.titles.join(',') || '-'}\n`);
     passed++;
   }
-  const both = adSummary([{ body: SELFTEST_CONTENT }, { body: SELFTEST_STITCHED }]);
+  const trigger = analyze(SELFTEST_TRIGGER_ONLY);
+  if (trigger.adMarkers !== 0 || trigger.adExtinf.length !== 0) {
+    process.stderr.write(`SELFTEST FAIL trigger-only: a marker with no ad title counted as ad media (${JSON.stringify({ markers: trigger.adMarkers, adSegments: trigger.adExtinf.length })})\n`);
+    return 1;
+  }
+  const both = adSummary([{ body: SELFTEST_CONTENT }, { body: SELFTEST_STITCHED }, { body: SELFTEST_TRIGGER_ONLY }]);
   if (both.nonLiveTitles !== 2 || both.adPlaylists !== 1 || both.adSegments !== 2) {
     process.stderr.write(`SELFTEST FAIL summary: want non-live-titles=2 ad-playlists=1 ad-segments=2, got ${JSON.stringify(both)}\n`);
     return 1;
@@ -298,10 +349,40 @@ function selftest() {
   return 0;
 }
 
+// Re-analyse a capture that is already on disk. The classifier is the thing
+// that was wrong, so proving the fix needs the SAME bodies it was wrong about -
+// not a new browser run, and not a fixture written from the corrected code.
+function summarizeCapture(file) {
+  const raw = readFileSync(file, 'utf8');
+  const cap = JSON.parse(raw);
+  const playlists = Array.isArray(cap.playlists) ? cap.playlists : [];
+  if (!playlists.length) {
+    process.stderr.write(`SUMMARIZE empty: ${file} holds no playlist record\n`);
+    return 3;
+  }
+  const ads = adSummary(playlists);
+  let separatesAd = false;
+  const adExtinf = [];
+  const variants = [];
+  for (const p of playlists) {
+    const a = analyze(String((p && p.body) || ''));
+    variants.push(...a.variants);
+    if (a.separatesAd) separatesAd = true;
+    adExtinf.push(...a.adExtinf);
+  }
+  process.stdout.write(`SUMMARIZE ${file} playlists=${playlists.length} samples=${(cap.samples || []).length}\n`);
+  process.stdout.write(`AD-EXTINF ${adExtinf.join(', ') || '-'}\n`);
+  process.stdout.write(`AD-MEDIA non-live-titles=${ads.nonLiveTitles} ad-playlists=${ads.adPlaylists} ad-segments=${ads.adSegments} ad-markers=${ads.adMarkers}\n`);
+  process.stdout.write(`DISCONTINUITY separates-ad=${separatesAd}\n`);
+  process.stdout.write(`VARIANTS ${variants.map((v) => `${v.bandwidth}/${v.resolution}`).join(' ') || '-'}\n`);
+  return 0;
+}
+
 async function main() {
   const o = parseArgs(process.argv.slice(2));
   if (o.help) { process.stdout.write(USAGE + '\n'); return; }
   if (o.selftest) { process.exitCode = selftest(); return; }
+  if (o.summarize) { process.exitCode = summarizeCapture(o.summarize); return; }
   const port = Number(o.port);
   // Guard the owner's browser and the relay BEFORE any CDP/network call,
   // even when other required options are missing.
@@ -535,9 +616,9 @@ async function main() {
     process.stdout.write(`PLAYLIST ${i} host=${p.host} status=${p.status} from=${p.from} tags=${analyses[i].tags.join(',') || '-'}\n`);
   });
   process.stdout.write(`AD-EXTINF ${adExtinf.join(', ') || '-'}\n`);
-  process.stdout.write(`AD-MEDIA non-live-titles=${ads.nonLiveTitles} ad-playlists=${ads.adPlaylists} ad-segments=${ads.adSegments}\n`);
+  process.stdout.write(`AD-MEDIA non-live-titles=${ads.nonLiveTitles} ad-playlists=${ads.adPlaylists} ad-segments=${ads.adSegments} ad-markers=${ads.adMarkers}\n`);
   if (!ads.nonLiveTitles && !ads.adPlaylists) {
-    process.stdout.write('ad-media none: no pod in this window\n');
+    process.stdout.write(`ad-media none: no pod in this window${ads.adMarkers ? ` (${ads.adMarkers} ad marker(s) present, every segment title \`,live\`)` : ''}\n`);
   }
   if (o.navigate) {
     process.stdout.write(`PHASE nav=${navPlaylists} sample=${playlists.length - navPlaylists} load=${navLoad && navLoad.timedOut ? 'timeout' : 'ok'}\n`);
