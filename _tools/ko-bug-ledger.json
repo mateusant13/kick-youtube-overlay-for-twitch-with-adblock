@@ -1500,9 +1500,28 @@
     "replica before (0.8.121, dev-preroll-hold 1795677985765): `native-resume {rs:1, tag:'ad-end', ms:14746}` then `display-clock` PAUSED until ~19 s",
     "the wait runs before every teardown (`frame.remove()`, `audioClaim(false)`, `restoreNativeVideos()`); a first placement after the removal measured `stats.frameMounted() === false` and the arm refused it",
     "one wait per pod: a capped re-entry (`opts.noWait`) measured `handback-ready` followed by a second `handback-wait`, i.e. a loop, before the flag was added",
-    "replica after (0.8.122, dev-preroll-hold 1795684359549): `RESULT PASS scenario=dev-preroll-hold checks=12 failed=0 cannot=0 rows=140`; the pod ended at `rs:4`, so the wait correctly did not fire and the native was playing 17 ms later (`video-waiting` 15016 -> `video-playing` 15017), first `display-clock` after the hand-off `LIVE pos 39.26`"
+    "replica after (0.8.122, dev-preroll-hold 1795684359549): `RESULT PASS scenario=dev-preroll-hold checks=12 failed=0 cannot=0 rows=140`; the pod ended at `rs:4`, so the wait correctly did not fire and the native was playing 17 ms later (`video-waiting` 15016 -> `video-playing` 15017), first `display-clock` after the hand-off `LIVE pos 39.26`",
+    "replica scenario attempt for the wait itself (2026-11-26, dev-handback-wait, deleted after the run): `stall:{atMs:13500, ms:6500, on:'all'}` gave `ad-ui-release {act:'pod-end', ms:14754}`, `native-seek-skipped {rs:4, podExtent:14}`, `native-resume {rs:1}` 14758, `video-playing {rs:4}` 14759 and `handback-wait n=0` — the native reaches the pod end with its pod extent buffered, so the wait does not arm; named as a replica limit in `_tools/ko-replica/README.md`",
+    "refutation pass on 0.8.122 (read-only reviewer, source-traced) found the wait was cancellable ONLY through `stopAdOverlay`: a new `ad-start` during the wait either returned without mounting (old frame still `frame && revealed`) or, with `msg.switch`, mounted a replacement the stale poll then tore down ~150 ms later. Fixed in 0.8.123; the row's own state stays `fixed` pending its live half"
    ],
    "next": "OWED live half: a pod on 0.8.122 in the owner's Chrome whose native sits at `rs < 3` at the pod end must show `handback-wait {rs, capMs}` -> `handback-ready {capped:false}` and one `native-resume` with `rs >= 3`, instead of the measured 0.8.121 freeze (`native-resume {rs:1}` then PAUSED for ~4 s). Re-arm: `node _tools/ko-adlog-window.mjs 9222 1200 --keep handback-wait,handback-ready,native-handoff,native-resume,display-clock` after the next pod."
+  },
+  {
+   "id": "KO-20261126-13",
+   "title": "A new pod during the hand-back wait was not a cancellation, so it either stayed uncovered or lost its replacement frame",
+   "state": "fixed",
+   "author": "seat",
+   "reported": "2026-11-26",
+   "fixed_in": "0.8.123",
+   "commit": null,
+   "hypothesis": "The wait armed by KO-20261126-12 is cancelled only inside `stopAdOverlay`, but the `ad-start` branch (`twitch-adblock.js`) never goes through it: with `overlay.frame && overlay.revealed` true by design during the wait it either `return`ed without mounting the new pod (the ad played uncovered for the rest of the 3 s) or, on `msg.switch`, called `startAdOverlay(..., true)` which nulls `overlay.frame` while the wait stayed armed, so the next 150 ms poll computed `!covered`, logged `handback-ready {capped:false, covered:false}` and tore down the REPLACEMENT frame mid-pod. Two smaller holes found in the same pass: one transient blind frame sample (a repeated `pos` or a single `Paused` report) was terminal and put the frozen native back on screen, and a user play during the wait was ignored for up to 3 s while our picture stayed over the player he had just taken back.",
+   "falsifier": "`cancelHandbackWait(why)` writes `handback-wait-cancelled {ms, why}` and is called at the top of the `ad-start` branch and at the entry of `startAdOverlay`; the finish predicate now requires TWO consecutive blind `cleanFrameCanCover()` samples for `cover-lost`, ends on `userResumedHeld()` as `user-resume`, and `handback-ready` carries `why` (`ready` / `cap` / `cover-lost` / `no-video` / `user-resume`). Arms: `a new pod during the hand-back wait cancels it and keeps a picture up`, `one blind cover sample does not end the hand-back wait`, `a user play during the hand-back wait ends it with its reason`, and `RED: without the cancel a switch during the wait tears the new frame down` (both cancel calls removed; red with `the mutant left the wait armed across a source switch`).",
+   "evidence": [
+    "suite (2026-11-26): `RESULT PASS ad-time-continuity checks=180 failed=0`, `ARMS 24/24 present`",
+    "refutation: read-only reviewer on 0.8.122 traced `ad-start` -> `startAdOverlay` and named the missing canceller; the switch limb is reachable from `need-source` and the page watchdog, the non-switch limb from the ordinary new-pod producer",
+    "census after the reshaped helper: `RESULT PASS guardShaped=111 unexercisedState=32 (budget met)` - the early `return false` in the first version counted as a new silent exit"
+   ],
+   "next": "OWED live half: a pod pair inside 3 s in the owner's Chrome must show `handback-wait-cancelled {why:'ad-start'}` and no `handback-ready` from the old pod. Re-arm: `node _tools/ko-adlog-window.mjs 9222 1200 --keep handback-wait,handback-wait-cancelled,handback-ready,native-resume`."
   }
  ]
 }

@@ -779,6 +779,89 @@ async function main() {
     assert(page.logsOf('native-resume').filter((l) => l.d.tag === 'ad-end').length === 0,
       'the mutant resumed the element while it could not play forward');
   });
+  // A NEW POD ENDS THE WAIT. The wait deliberately keeps the OLD frame revealed,
+  // so `frame && revealed` is the normal state while it is armed and the ad-start
+  // branch used to return without mounting the new pod - or, on a source switch,
+  // let the stale poll see `!covered` and tear the REPLACEMENT frame down
+  // (~150 ms after it mounted). Found by the refutation pass on 0.8.122.
+  await greenArm('a new pod during the hand-back wait cancels it and keeps a picture up', async () => {
+    const page = makeWorld();
+    setNative(page, { ct: 30, edge: 40, bufferedEnd: 40, rs: 1 });
+    await pod(page);
+    await liveFrame(page, 2);
+    page.bypass({ type: 'ad-end' });
+    await settle(200);
+    assert(page.logsOf('handback-wait').length === 1, 'the wait never armed, so this arm measures nothing');
+    page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+    await settle(400);
+    const cancelled = page.logsOf('handback-wait-cancelled');
+    assert(cancelled.length === 1 && cancelled[0].d.why === 'ad-start',
+      `the new pod did not cancel the wait: ${JSON.stringify(cancelled.map((l) => l.d.why))}`);
+    assert(page.logsOf('handback-ready').length === 0, 'the stale wait still ended the hand-back after the new pod');
+    assert(page.logsOf('native-resume').filter((l) => l.d.tag === 'ad-end').length === 0,
+      'the new pod handed the page back while it still owned the picture');
+    assert(page.stats().frameMounted() === true, 'the new pod has no frame up');
+  });
+  // A TRANSIENT BLIND SAMPLE IS NOT A LOST COVER: one heartbeat that repeats its
+  // position (or reports Paused) says nothing about the next 150 ms, and ending
+  // the wait on it is the frozen native this change exists to prevent.
+  await greenArm('one blind cover sample does not end the hand-back wait', async () => {
+    const page = makeWorld();
+    setNative(page, { ct: 30, edge: 40, bufferedEnd: 40, rs: 1 });
+    await pod(page);
+    await liveFrame(page, 2);
+    page.bypass({ type: 'ad-end' });
+    await settle(200);
+    assert(page.logsOf('handback-wait').length === 1, 'the wait never armed, so this arm measures nothing');
+    page.frameMsg({ ...healthySt({ pos: 100.3, lat: 3 }), paused: true });
+    await settle(200);
+    assert(page.logsOf('handback-ready').length === 0,
+      'one blind sample ended the wait and put the frozen native back on screen');
+    await liveFrame(page, 2, 100.6);
+    await settle(400);
+    assert(page.logsOf('handback-ready').length === 0, 'a recovered cover still ended the wait');
+    assert(page.stats().handbackWait() !== null, 'the wait did not survive the blind sample');
+  });
+  // THE USER'S OWN PLAY ENDS THE WAIT: holding our picture over a player he just
+  // took back is the 0.8.114 pause fight from the other side.
+  await greenArm('a user play during the hand-back wait ends it with its reason', async () => {
+    const page = makeWorld();
+    setNative(page, { ct: 30, edge: 40, bufferedEnd: 40, rs: 1 });
+    await pod(page);
+    await liveFrame(page, 2);
+    page.bypass({ type: 'ad-end' });
+    await settle(200);
+    assert(page.logsOf('handback-wait').length === 1, 'the wait never armed, so this arm measures nothing');
+    page.document.fire({ type: 'pointerdown' });
+    page.video.play();
+    page.document.fire({ type: 'play', target: page.video });
+    await settle(400);
+    const ready = page.logsOf('handback-ready').pop();
+    assert(ready, 'the user play did not end the wait');
+    assert(ready.d.why === 'user-resume', `the wait ended as ${JSON.stringify(ready.d.why)}, not the user's play`);
+    assert(ready.d.capped === false, 'the wait ended as the ceiling, not the gesture');
+  });
+  // RED: both cancels removed -> a switch during the wait tears the replacement
+  // frame down 150 ms after it mounted.
+  const RED_NO_CANCEL = mutate([
+    ["        cancelHandbackWait('ad-start');\n", ''],
+    ["    cancelHandbackWait('start-overlay');\n", ''],
+  ]);
+  await redArm('RED: without the cancel a switch during the wait tears the new frame down', RED_NO_CANCEL, async (src) => {
+    const page = makeWorld({ adSource: src });
+    setNative(page, { ct: 30, edge: 40, bufferedEnd: 40, rs: 1 });
+    await pod(page);
+    await liveFrame(page, 2);
+    page.bypass({ type: 'ad-end' });
+    await settle(200);
+    assert(page.logsOf('handback-wait').length === 1, 'the wait never armed in the mutant either, so this arm measures nothing');
+    page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil', switch: true });
+    await settle(400);
+    assert(page.logsOf('handback-wait-cancelled').length === 1,
+      'the mutant left the wait armed across a source switch');
+    assert(page.logsOf('handback-ready').length === 0,
+      'the stale wait tore down the frame the switch had just mounted');
+  });
 
   // ---- 3. the user's sound decision wins ----------------------------------
   {
@@ -3400,6 +3483,9 @@ async function main() {
     'a failed pre-warm is not a precondition: the hold falls back to a mint and reveals',
     'a hand-back onto a native without HAVE_FUTURE_DATA keeps the picture on screen',
     'a native that never recovers is handed back at the ceiling, not held forever',
+    'a new pod during the hand-back wait cancels it and keeps a picture up',
+    'one blind cover sample does not end the hand-back wait',
+    'a user play during the hand-back wait ends it with its reason',
   ];
   const printed = armLog.map((l) => String(l).trim());
   const missing = ARMS.filter((a) => !printed.includes(a));

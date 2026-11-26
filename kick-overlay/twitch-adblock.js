@@ -3062,6 +3062,22 @@
   // SAME element, not arm a second wait on a native that is still at rs 1
   // (measured: `handback-ready` followed 150 ms later by another `handback-wait`,
   // i.e. a loop for as long as the pod-end path kept being called).
+  // A wait belongs to ONE hand-back. Anything that replaces the picture it is
+  // protecting (a new pod, a switch, a teardown that takes another door) ends it
+  // HERE, with a row: an armed wait whose frame was replaced tears the
+  // replacement down 150 ms after it mounted, and a refusal nobody logged is the
+  // silent-green class this repo paid for twice.
+  function cancelHandbackWait(why) {
+    const wait = overlay.handbackWait;
+    // No early return: `clearTimeout` on 0 is a no-op, and the row is written
+    // only when there WAS a wait, so ending nothing stays silent while ending
+    // something is always explained.
+    try { if (wait) clearTimeout(wait.timer); } catch { /* ignore */ }
+    if (wait) adLog('handback-wait-cancelled', { ms: Date.now() - wait.at, why: String(why || '') });
+    overlay.handbackWait = null;
+    return !!wait;
+  }
+
   function stopAdOverlay(reason, opts = {}) {
     const revealedAd = adUiHoldTarget();
     if (revealedAd) holdAfterReveal(revealedAd);
@@ -3070,14 +3086,10 @@
     // player. Stopping it must not post overlay-stop (that clears the worker's
     // ad state without an ad) and must not resume/seek the native player.
     const wasStandby = !!overlay.standby && !overlay.revealed && !overlay.adActive;
-    if (overlay.handbackWait) {
-      // A second teardown (a source switch, a clean stall, a new pod) ends the
-      // wait and proceeds: the wait exists to protect ONE hand-back, never to
-      // hold a frame that something else has already decided to replace.
-      try { clearTimeout(overlay.handbackWait.timer); } catch { /* ignore */ }
-      adLog('handback-wait-cancelled', { ms: Date.now() - overlay.handbackWait.at, why: String(reason || '') });
-      overlay.handbackWait = null;
-    }
+    // A second teardown (a source switch, a clean stall, a new pod) ends the
+    // wait and proceeds: the wait exists to protect ONE hand-back, never to
+    // hold a frame that something else has already decided to replace.
+    cancelHandbackWait(reason);
     if (!wasStandby) overlay.lastEndAt = Date.now();
     // A POD END IS NOT A LICENCE TO PUT A FROZEN ELEMENT ON SCREEN. Measured in
     // the replica 2026-11-26 (dev-preroll-hold 1795677985765, 0.8.121):
@@ -3103,11 +3115,23 @@
           const nv = active ? (overlay.video && overlay.video.isConnected ? overlay.video : mainVideo()) : null;
           const nrs = nv ? Number(nv.readyState) || 0 : 0;
           const ms = Date.now() - wait.at;
-          const capped = ms >= HANDBACK_WAIT_MS;
           const covered = active && cleanFrameCanCover();
-          if (active && (nrs >= 3 || capped || !covered || !nv)) {
+          if (active) wait.blind = covered ? 0 : (wait.blind || 0) + 1;
+          // ONE TRANSIENT SAMPLE IS NOT A LOST PICTURE. `cleanFrameCanCover()`
+          // reads the frame's last report, and a single heartbeat whose `pos`
+          // moved less than the advancing floor, or one `Paused` report, says
+          // nothing about the next 150 ms: ending the wait on it reveals the
+          // frozen native this change exists to keep off screen. Two
+          // consecutive blind samples (300 ms) are a lost cover.
+          const coverLost = !covered && (wait.blind || 0) >= 2;
+          // The user's own takeover ends the wait: a fresh play on the page
+          // element is a gesture, and holding OUR picture over a player he just
+          // took back is the 0.8.114 pause fight from the other side.
+          const why = !nv ? 'no-video' : nrs >= 3 ? 'ready' : userResumedHeld() ? 'user-resume'
+            : ms >= HANDBACK_WAIT_MS ? 'cap' : coverLost ? 'cover-lost' : '';
+          if (active && why) {
             overlay.handbackWait = null;
-            adLogState('handback-ready', { ms, rs: nrs, capped, covered });
+            adLogState('handback-ready', { ms, rs: nrs, capped: why === 'cap', covered, why });
             stopAdOverlay(wait.reason, { noWait: true });
           } else if (active) {
             wait.timer = setTimeout(finish, 150);
@@ -3671,6 +3695,10 @@
   function startAdOverlay(url, channel, switchSource = false, standby = false) {
     if (!AD_OVERLAY_ENABLED) return;
     if (!url) return;
+    // Mounting a frame is the same fact as "the hand-back this wait protected is
+    // gone": a switched source nulls `overlay.frame`, which would make the next
+    // 150 ms poll report `cover-lost` and tear the NEW frame down.
+    cancelHandbackWait('start-overlay');
     if (overlayOwnsPlayback()) {
       if (overlay.adActive || overlay.standby || overlay.frame) stopAdOverlay('overlay-owns');
       return;
@@ -4663,6 +4691,11 @@
       }
       if (msg.type === 'ad-start') {
         if (!AD_OVERLAY_ENABLED) return;
+        // A NEW POD ENDS A HAND-BACK WAIT. The wait keeps the old frame revealed
+        // on purpose, so `frame && revealed` here is the normal state during it:
+        // cancelling first is what lets the new pod mount (and what stops the
+        // stale wait from tearing the replacement down 150 ms later).
+        cancelHandbackWait('ad-start');
         overlay.playlistPodAt = overlay.playlistPodAt || Date.now();
         if (overlay.frame && overlay.standby) {
           overlay.adActive = true;

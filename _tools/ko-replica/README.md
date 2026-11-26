@@ -19,6 +19,16 @@ with `MediaSourceHandle`.
   replica's `se` advances with the element's own clock, so the pod-extent branch can only be proven by
   its unit arm, never by a scenario.
 - **A viewer who watched longer than the pod lasted**, which is the real condition for the same branch.
+- **A native element below `HAVE_FUTURE_DATA` at the pod end while the clean frame is still decoding**,
+  which is the shape the `handback-wait` guard exists for (KO-20261126-12). Attempted and refuted by
+  measurement 2026-11-26: a scenario with `stall:{atMs:13500, ms:6500, on:'all'}` was run on 0.8.122 and
+  produced `ad-ui-release {act:'pod-end', ms:14754}`, `native-seek-skipped {rs:4, podExtent:14}`,
+  `native-resume {rs:1}` 14758 and `video-playing {rs:4}` 14759 - the element reached the pod end with its
+  pod extent buffered, so the wait correctly did not arm (`handback-wait n=0`, one FAIL in the scenario's
+  own `expect` list). The cause is structural: the native and the clean frame read the same segment space,
+  so withholding segments starves both surfaces and the cover disappears with the thing it covers; making
+  only the native starve needs disjoint media per surface, which this fixture does not model, and writing
+  `readyState` from the page would be a fake of the product under test.
 
 Both are named divergences: a capture that prints `ad-segments=0` is a measurement of the window, not a
 `false`, and a scenario that cannot reach a branch reports it as unreached.

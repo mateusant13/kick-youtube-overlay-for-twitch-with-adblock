@@ -120,6 +120,45 @@ Cap: one visible pane per canonical project across workspaces/worktrees. The pan
 - `kick-overlay/content-fix-test.cjs` is NOT wired into the gate and its H4 arm ('the re-pick re-mints exactly once') FAILS at HEAD; measured 2026-11-08 by running it against `git show HEAD:kick-overlay/content.js`, so it is drift from the 0.8.47 frame-ready gate, not a live defect. Run it from `kick-overlay/` (it reads `manifest.json` from the cwd). Do not read its red as a regression you caused.
 - agent-browser: `H:\env\npm-global\agent-browser.cmd`, `connect 9222`. Use it for page UI, not for the extension service worker or `ko.adlog`.
 
+### 0.8.123, same wave: the wait's owner was `stopAdOverlay`, and `ad-start` does not go through it
+
+A read-only refutation pass on the 0.8.122 diff (source-traced, no edits, no runs) found the one
+ownership hole the arms could not see. The wait is cancelled only inside `stopAdOverlay`, but the
+`ad-start` branch never reaches it, and during the wait `overlay.frame && overlay.revealed` are BOTH
+true by design: without `msg.switch` the branch returned without mounting the new pod (the ad played
+uncovered for the rest of the 3 s window), and with `msg.switch` `startAdOverlay(..., true)` nulled
+`overlay.frame` while the wait stayed armed, so the next 150 ms poll computed `!covered`, logged
+`handback-ready {capped:false, covered:false}` and tore down the **replacement** frame mid-pod. Both
+limbs are reachable from the ordinary new-pod producer and from `need-source`.
+
+`cancelHandbackWait(why)` is now the single canceller - it writes `handback-wait-cancelled {ms, why}`
+and is called from `stopAdOverlay`, from the top of the `ad-start` branch and from the entry of
+`startAdOverlay` - and it has no early return, because the first version's `return false` was counted
+by the census as a new guard-shaped silent exit (`guard-shaped silent=64 > budget 63`; reshaped, budget
+untouched at 111).
+
+Two smaller holes from the same pass, both fixed with their own arm: a single transient blind frame
+sample (one repeated `pos` or one `Paused` report) used to be terminal and put the frozen native back on
+screen, so `cover-lost` now needs two consecutive blind samples (300 ms); and a user play during the
+wait was ignored for up to 3 s with our picture over the player he had just taken back, so the wait now
+ends on `userResumedHeld()` as `handback-ready {why:'user-resume'}`. `handback-ready` carries `why`
+(`ready` / `cap` / `cover-lost` / `no-video` / `user-resume`), which is the field the next log read needs.
+
+Arms: `a new pod during the hand-back wait cancels it and keeps a picture up`, `one blind cover sample
+does not end the hand-back wait`, `a user play during the hand-back wait ends it with its reason`, and
+`RED: without the cancel a switch during the wait tears the new frame down` (both cancel calls removed;
+red with `the mutant left the wait armed across a source switch`). `RESULT PASS ad-time-continuity
+checks=180 failed=0`, `ARMS 24/24 present`.
+
+The refutation also REFUTED six claims with named checks, which is worth keeping: every other teardown
+door (clean-stall, timeout, overlay-owns, standby-ad-only, source switch) passes through the canceller;
+the 180 s pod watchdog, the 7 s frame watchdog, the 12 s cold-cover bound and `nativeStallWatch` all sit
+far outside the 3 s wait, and `freezeNativeForPod()` returning null keeps the 500 ms tick from pausing a
+second time; a user PAUSE during the wait already wins through `userPausedInPod`; `capped:false` at
+`rs<3` is not a lie because it always ships beside `covered:false`; and the three 0.8.122 arms cannot
+pass without the product change (arm 1 asserts the live `handbackWait()` and `frameMounted()`, the cap
+arm requires its own `handback-ready`, the RED target occurs once and `mutate` throws when absent).
+
 ## Wave record — 2026-11-11 (later 4), one player per page, a seek that keeps running, no proxy (0.8.75)
 
 Owner reports answered in one build, each verbatim: *"o player da twitch ta funcionando ao mesmo tempo
