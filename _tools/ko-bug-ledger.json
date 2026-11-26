@@ -1465,6 +1465,25 @@
     "`node _tools/ko-verify.mjs` -> `RESULT PASS checks=25 failed=0` (wall 431.07 s) with `silent-census guardShaped=111` unchanged; the three exits the parking inserted were restructured, never budgeted"
    ],
    "next": "LIVE half: a pod on 0.8.120 in his Chrome must show `standby-prewarm-used` (or `standby-prewarm-wait` + `-served` in the same second) and no `standby-request {why:'cold-start'|'ad-ui-hold'}` beside it; an extension reload does not re-inject, so the tab carries it on its next navigation."
+  },
+  {
+   "id": "KO-20261126-11",
+   "title": "A health refusal wrote `why:null`, so the log could not answer whether its own gate was right",
+   "state": "fixed",
+   "author": "seat",
+   "reported": "2026-11-26",
+   "fixed_in": "0.8.121",
+   "commit": null,
+   "hypothesis": "`playing-not-healthy` published `why: posFrozen ? 'pos-frozen' : null`, so a refusal caused by a playhead that did not advance, by `rs < 3`, by `lat` above the reveal ceiling or by an empty forward buffer all read as the same silent `null`. MEASURED in the replica (dev-preroll-hold 1795677250450): `playing-not-healthy {buffered:2.917, rs:4, why:null, pos:25.08}` at 916 ms and `overlay-reveal` at 1392 ms - the only way to learn that the frame had advanced 0.07 s in 0.74 s (a provider start-up stall, correctly refused) was to recompute the predicate by hand from the samples.",
+   "falsifier": "Arm 'A: playing-not-healthy NAMES the gate that refused it' (rs:2 -> `why:'rs'`) and 'A: a frame that advanced 0.07s in 0.74s is refused as advancing, with the movement' (`why:'advancing'`, `advanced:false`, `moved=0.07`), plus the updated RED that restores the bare row and is asserted to carry neither `why` nor `moved`.",
+   "evidence": [
+    "`node ad-time-continuity-test.cjs` -> `RESULT PASS ad-time-continuity checks=175 failed=0`, `ARMS 19/19 present`",
+    "known-answer run on 0.8.121: replica `dev-preroll-hold` 1795677985765 -> `playing-not-healthy {advanced:false, buffered:2.859, moved:0.04, pos:25.1405, rs:4, why:'advancing'}` at 1160 ms, `overlay-reveal {ms:1620, lat:3.1, q:'720p'}` - the same refusal the previous build printed as `why:null`",
+    "the other three refusals in the same run are named too: `why:'rs'` at 4143 / 6618 / 20894 / 23305 ms (buffered 0.03 s, rs 2) and `why:'advancing'` at 29886 ms (moved 0.15)",
+    "`node _tools/ko-census.mjs --gate` -> `RESULT PASS guardShaped=111` (the reason is computed, not a new exit)",
+    "`node _tools/ko-verify.mjs` -> `RESULT PASS checks=25 failed=0` (wall 360.15 s)"
+   ],
+   "next": "No live half is owed: the row is produced by the extension's own heartbeat in any browser, and the replica run above is the same code path."
   }
  ]
 }

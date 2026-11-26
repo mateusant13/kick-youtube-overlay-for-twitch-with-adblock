@@ -2505,6 +2505,28 @@ async function main() {
       assert(pnh.d.lv === 0, `lv ${JSON.stringify(pnh.d.lv)}`);
       assert(pnh.d.bw === 400000, `bw ${JSON.stringify(pnh.d.bw)}`);
     });
+    check('A: playing-not-healthy NAMES the gate that refused it', () => {
+      assert(pnh.d.why === 'rs', `why ${JSON.stringify(pnh.d.why)} (rs:2 must be named 'rs')`);
+    });
+  }
+  {
+    // The replica's own refusal (dev-preroll-hold 1795677250450, 916 ms): rs=4,
+    // 2.92 s buffered, and a playhead that advanced 0.07 s in 0.74 s. The gate
+    // was RIGHT to wait; the row said `why:null`, so it could not say so.
+    const page = makeWorld();
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    await pod(page, { pos: 100, lat: 3 });
+    const st = (pos) => ({ t: 'st', st: { state: 'Playing', paused: false, muted: true, rs: 4, buffered: 2.92, pos, lat: 3, dur: 0, q: { name: '720p' }, lv: 2, bw: 1400000 } });
+    page.frameMsg(st(25.01));
+    await settle(740);
+    page.frameMsg(st(25.08));
+    await settle(30);
+    const pnh = page.logsOf('playing-not-healthy').pop();
+    check('A: a frame that advanced 0.07s in 0.74s is refused as advancing, with the movement', () => {
+      assert(pnh, 'no playing-not-healthy row');
+      assert(pnh.d.why === 'advancing', `why ${JSON.stringify(pnh.d.why)}`);
+      assert(pnh.d.advanced === false && Math.abs(Number(pnh.d.moved) - 0.07) < 0.02, `moved ${JSON.stringify(pnh.d.moved)} advanced ${JSON.stringify(pnh.d.advanced)}`);
+    });
   }
   {
     // RED: pre-fix standby-request had no why/delay shape; our fix logs it.
@@ -2522,8 +2544,8 @@ async function main() {
   {
     // RED: pre-fix playing-not-healthy had no lv/bw fields
     const old = mutate([[
-      "              adLog('playing-not-healthy', { rs: m.st.rs, buffered: m.st.buffered, pos: m.st.pos, why: posFrozen ? 'pos-frozen' : null, lv: m.st.lv == null ? null : m.st.lv, bw: m.st.bw == null ? null : m.st.bw });",
-      "              adLog('playing-not-healthy', { rs: m.st.rs, buffered: m.st.buffered, pos: m.st.pos, why: posFrozen ? 'pos-frozen' : null });",
+      "              adLog('playing-not-healthy', { rs: m.st.rs, buffered: m.st.buffered, pos: m.st.pos, why: refuseWhy, advanced: advancing, moved: (overlay.prevSt && typeof overlay.prevSt.pos === 'number' && typeof m.st.pos === 'number') ? +(Number(m.st.pos) - Number(overlay.prevSt.pos)).toFixed(2) : null, lv: m.st.lv == null ? null : m.st.lv, bw: m.st.bw == null ? null : m.st.bw });",
+      "              adLog('playing-not-healthy', { rs: m.st.rs, buffered: m.st.buffered, pos: m.st.pos });",
     ]]);
     const page = makeWorld({ adSource: old });
     setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });

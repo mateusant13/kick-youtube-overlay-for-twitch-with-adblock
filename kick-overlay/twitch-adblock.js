@@ -4189,6 +4189,18 @@
           const forwardOk = cleanFrameHasForward(m.st);
           const decoding = advancing !== false && forwardOk;
           const healthy = !posFrozen && latOk && rsOk && decoding;
+          // NAME THE REFUSAL. A row that says `why:null` cannot answer "was this
+          // gate right?" - measured on the replica 2026-11-26 (dev-preroll-hold
+          // 1795677250450): `playing-not-healthy {buffered:2.917, rs:4, why:null}`
+          // at 916 ms and the reveal at 1392 ms, where the frame had advanced
+          // 0.07 s in 0.74 s (the provider's own start-up stall, correctly
+          // refused). Without the name, that 476 ms reads as an over-strict gate.
+          const refuseWhy = posFrozen ? 'pos-frozen'
+            : !rsOk ? 'rs'
+              : !latOk ? 'lat'
+                : !cleanFrameHasForward(m.st) ? 'no-forward'
+                  : advancing === false ? 'advancing'
+                    : null;
           // A player that is ALREADY on screen and still decoding is not torn
           // down for a jitter dip: that cycle (unhealthy -> nudge 2s back ->
           // still thin -> stall-stop -> native returns behind) is the owner's
@@ -4211,9 +4223,9 @@
                 buf: typeof m.st.buffered === 'number' ? +Number(m.st.buffered).toFixed(2) : null,
                 pos: typeof m.st.pos === 'number' ? +Number(m.st.pos).toFixed(1) : null,
                 lat: typeof m.st.lat === 'number' ? +Number(m.st.lat).toFixed(1) : null,
-                why: posFrozen ? 'pos-frozen' : null,
+                why: refuseWhy,
               }]).slice(-8);
-              adLog('playing-not-healthy', { rs: m.st.rs, buffered: m.st.buffered, pos: m.st.pos, why: posFrozen ? 'pos-frozen' : null, lv: m.st.lv == null ? null : m.st.lv, bw: m.st.bw == null ? null : m.st.bw });
+              adLog('playing-not-healthy', { rs: m.st.rs, buffered: m.st.buffered, pos: m.st.pos, why: refuseWhy, advanced: advancing, moved: (overlay.prevSt && typeof overlay.prevSt.pos === 'number' && typeof m.st.pos === 'number') ? +(Number(m.st.pos) - Number(overlay.prevSt.pos)).toFixed(2) : null, lv: m.st.lv == null ? null : m.st.lv, bw: m.st.bw == null ? null : m.st.bw });
             }
             if (!overlay.standby || m.st.pos > 2) scheduleOverlayStall('rs' + m.st.rs);
             return;
