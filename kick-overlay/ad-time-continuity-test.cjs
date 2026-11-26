@@ -353,15 +353,33 @@ async function prewarmArms() {
     const page = makePage(src);
     setNative(page, { ct: 0.4, edge: 16, bufferedEnd: 16 });
     await settle(160);
+    // PRECONDITION, NAMED. `ageStandbyPrewarmKick` is a no-op when no warm is in
+    // flight, so an arm that skipped this measured a pod against a warm it never
+    // aged - the same class as a green that cannot fail.
+    const before = page.stats().standbyPrewarm();
+    if (!before.pending) {
+      record('a warm older than a mint never parks the pod: it mints its own source', false,
+        `no warm was in flight to age: ${JSON.stringify(before)}`);
+      return;
+    }
     page.stats().ageStandbyPrewarmKick(3000); // in flight, but far past a mint
     page.stats().adUiHold({ kind: 'wrapper', w: 1280, h: 720 });
-    await settle(15);
-    const wait = page.logsOf('standby-prewarm-wait');
-    const podsAsk = page.logsOf('standby-request').filter((l) => l.d.why === 'ad-ui-hold');
+    // POLL TO A DEADLINE, never a fixed margin: the pod's ask is its own task and
+    // the box decides when that task runs (measured 2026-11-26: a 15 ms margin
+    // read `asks:[]` on a loaded machine while the same arm passed quiet).
+    let podsAsk = [];
+    let wait = [];
+    for (let i = 0; i < 40 && !podsAsk.length; i += 1) {
+      await settle(25);
+      wait = page.logsOf('standby-prewarm-wait');
+      podsAsk = page.logsOf('standby-request').filter((l) => l.d.why === 'ad-ui-hold');
+    }
     record('a warm older than a mint never parks the pod: it mints its own source',
       wait.length === 0 && podsAsk.length === 1 && page.stats().standbyPrewarmWaiters().length === 0,
       `a stuck warm held the pod's only ask: ${JSON.stringify({
         wait, asks: page.logsOf('standby-request'), parked: page.stats().standbyPrewarmWaiters(),
+        held: page.stats().adUiHeldAt(), active: page.stats().adActive(), prewarm: page.stats().standbyPrewarm(),
+        skips: page.logs().filter((l) => l.ev === 'ad-skip' || l.ev === 'ad-ui-hold').map((l) => l.ev + ':' + JSON.stringify(l.d.why || l.d.reason || l.d.act)),
       })}`);
   }
   const RED_STALE_WARM = mutate([[
@@ -801,6 +819,12 @@ async function main() {
     assert(page.logsOf('native-resume').filter((l) => l.d.tag === 'ad-end').length === 0,
       'the new pod handed the page back while it still owned the picture');
     assert(page.stats().frameMounted() === true, 'the new pod has no frame up');
+    // The wait is not lost, it belongs to the NEXT hand-back: the pod that
+    // replaced it must be able to hand back on its own end.
+    page.bypass({ type: 'ad-end' });
+    await settle(300);
+    assert(page.logsOf('handback-wait').length === 2,
+      `the replacement pod's own pod end did not wait: waits=${page.logsOf('handback-wait').length}`);
   });
   // A WARM STANDBY MAY ARRIVE DURING THE WAIT. `finishAdOverlay` asks for one right
   // after every pod end, so cancelling on a standby mount would drop the hand-back
