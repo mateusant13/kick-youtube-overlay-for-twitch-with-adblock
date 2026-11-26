@@ -19,7 +19,7 @@
       ],
       "blast_radius_callers": [],
       "red_arm_cmd": "printf 'function (' >> /tmp/bad.js && node --check /tmp/bad.js",
-      "note": "MEASURED 155 ms on this box 2026-11-26 (I: is an SMR spindle at ~120 ms/file). Ceiling is 4x the measurement: a parser check that needs more than half a second is a cold-store problem, not a file-size problem."
+      "note": "MEASURED 432.03 ms warm / 7757 ms cold at e66f551 (benchmark_history bench-reconcile-20261126T202925Z-final); cold 7757 ms is RED against the 600 ms ceiling (first read after a cold page-cache, SMR spindle ~120 ms/file), a 63.6x cold/warm spread; the two warm gate readings were 353.67 ms then 432.03 ms (after). Ceiling stays 600.0 ms as a bound, ~1.4x the 432.03 ms warm after value — it is not raised to hide the cold REFUTE; a parser check that needs more than half a second is a cold-store problem, not a file-size problem."
     },
     {
       "id": "basic.census_ms",
@@ -38,7 +38,7 @@
       ],
       "blast_radius_callers": [],
       "red_arm_cmd": "",
-      "note": "MEASURED 353 ms (2026-11-26). This is the per-edit instrument for silent decisions, so it must stay interactive."
+      "note": "MEASURED 383.19 ms warm / 621.24 ms cold at e66f551 (benchmark_history bench-reconcile-20261126T202925Z-final); the two gate readings were 621.24 ms first and 383.19 ms after (1.6x spread, under 4x); a separate probe measured 453.48 ms. Ceiling = 2000.0 ms, ~5.2x the warm after value: this is the per-edit instrument for silent decisions, so it must stay interactive."
     },
     {
       "id": "subsystem.bridge_handshake_ms",
@@ -57,7 +57,7 @@
       ],
       "blast_radius_callers": [],
       "red_arm_cmd": "node kick-overlay/bridge-handshake-test.cjs | grep -q 'RESULT PASS'",
-      "note": "MEASURED 83 ms. The 360p start-level defect lived here; the suite must stay inside the inner loop."
+      "note": "MEASURED 216.79 ms in a quiet window at e66f551 (benchmark_history bench-quiet-20261126T2045Z); the contended reading was 190.43 ms warm / 370.63 ms cold with two sibling agents on the same SMR volume (bench-reconcile-20261126T202925Z-final), and a separate probe read 272.03 ms. Ceiling = 2000.0 ms, ~9.2x the quiet value: the 360p start-level defect lived here, and the suite must stay inside the inner loop."
     },
     {
       "id": "subsystem.mute_decision_ms",
@@ -76,7 +76,7 @@
       ],
       "blast_radius_callers": [],
       "red_arm_cmd": "node kick-overlay/mute-decision-test.cjs | grep -q 'RESULT PASS'",
-      "note": "MEASURED 70 783 ms before the virtual clock and 887 ms after it (2026-11-26, identical checks=95). The ceiling is 15 s: a behavioural suite that once paid 70 s of real sleeps must not creep back above the interactive bound."
+      "note": "MEASURED 640.39 ms in a quiet window at e66f551 (benchmark_history bench-quiet-20261126T2045Z); the contended reading was 679.27 ms warm / 1073.04 ms cold (bench-reconcile-20261126T202925Z-final). Historically MEASURED 70 783 ms before the virtual clock and 887 ms after it (2026-11-26, identical checks=95). Ceiling = 15 000 ms, ~23x the quiet value: a behavioural suite that once paid 70 s of real sleeps must not creep back above the interactive bound."
     },
     {
       "id": "subsystem.ad_time_continuity_ms",
@@ -95,7 +95,7 @@
       ],
       "blast_radius_callers": [],
       "red_arm_cmd": "node kick-overlay/ad-time-continuity-test.cjs | grep -q 'RESULT PASS'",
-      "note": "MEASURED 268 250 ms before the virtual clock and 5 133 ms after it (2026-11-26, identical checks=185, ARMS 29/29). Ceiling 60 s: it is the suite every ad-path change must pass, so it has to stay runnable inside a lane."
+      "note": "MEASURED 4235.22 ms in a quiet window at e66f551 (benchmark_history bench-quiet-20261126T2045Z). The contended reading that preceded it was 12 979.36 ms warm / 16 493.28 ms cold with two sibling agents running node on the same SMR volume (bench-reconcile-20261126T202925Z-final), a 3.1x contention factor, so that pair is the queue and not the instrument. Historically MEASURED 268 250 ms before the virtual clock and 5 133 ms after it (2026-11-26, identical checks=185, ARMS 29/29). Ceiling = 60 000 ms, ~14x the quiet value: it is the suite every ad-path change must pass, so it has to stay runnable inside a lane."
     },
     {
       "id": "e2e.gate_wall_ms",
@@ -114,7 +114,26 @@
       ],
       "blast_radius_callers": [],
       "red_arm_cmd": "node _tools/ko-verify.mjs | grep -q 'RESULT PASS'",
-      "note": "MEASURED 365 290 ms at 0.8.126, BEFORE the virtual clock; the suites it runs are now 0.9 s and 4.7 s instead of 70.8 s and 268.3 s, so the gate must drop by roughly five minutes on the next landing. Ceiling 600 s keeps the pre-clock number honest until the AFTER benchmark replaces it."
+      "note": "MEASURED 365 290 ms at 0.8.126 (historical pre-clock reading; NOT re-measured in this lane because the 365 s gate is out of scope); ceiling = 600000.0 ms stated bound, ~1.6x that historical value. The suites it runs are now 0.9 s and 4.7 s instead of 70.8 s and 268.3 s, so the gate must drop by roughly five minutes on the next landing; kept until an AFTER benchmark replaces it."
+    },
+    {
+      "id": "basic.import_or_boot_ms",
+      "tier": "basic",
+      "input_desc": "the shared test clock both behavioural suites require (`_tools/test-clock.cjs`)",
+      "output_desc": "module loads, exit 0",
+      "metric_name": "wall_ms",
+      "unit": "ms",
+      "direction": "lower_is_better",
+      "ceiling": 3000.0,
+      "command": "node -e \"require('./_tools/test-clock.cjs')\"",
+      "parse_mode": "wall_ms",
+      "parse_pattern": "",
+      "owner_paths": [
+        "_tools/test-clock.cjs"
+      ],
+      "blast_radius_callers": [],
+      "red_arm_cmd": "node -e \"require('./_tools/test-clock.cjs').nope()\"",
+      "note": "MEASURED 329.52 ms warm / 489.33 ms cold at e66f551 (benchmark_history bench-reconcile-20261126T202925Z-final); gate pair 489.33 ms first, 329.52 ms after (1.5x spread, under 4x). Ceiling = 3000.0 ms, ~9.1x the warm after value and the stated startup bound. Deviation from the assignment, approved by Main: kick-overlay/_clock.cjs does not exist in the worktree or I: root; both behavioural suites require ../_tools/test-clock.cjs, so command and owner_paths name that shared clock; the red arm require(...).nope() exits 1."
     }
   ]
 }

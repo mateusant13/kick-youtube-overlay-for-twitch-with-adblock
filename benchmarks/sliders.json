@@ -1,115 +1,115 @@
 {
   "schema": "revival.sliders/v1",
-  "updated_at": "2026-11-26T19:53:04Z",
+  "updated_at": "2026-11-26T20:44:21.321Z",
   "scale_0_100": [
     {
       "id": "delivery_balance",
       "label": "Delivery Balance (Product vs Meta)",
-      "baseline": 0,
-      "current": 0,
+      "baseline": 92,
+      "current": 92,
       "target": 85,
       "counterpart": "Gate rigor & hygiene",
-      "proof_cmd": "",
-      "evidence": "UNMEASURED"
+      "proof_cmd": "node harness/twins/slider_probe.mjs delivery_balance",
+      "evidence": "MEASURED 92/100: 11 of 12 recent commits touch product paths (kick-overlay/, _tools/, harness/); 1 commit is meta-only. Underlying: git log -n12 --name-only --format=%x00%H"
     },
     {
       "id": "observability",
       "label": "Observability & Runtime Forensics",
-      "baseline": 0,
-      "current": 0,
+      "baseline": 9,
+      "current": 9,
       "target": 90,
       "counterpart": "Runtime overhead (<2%)",
-      "proof_cmd": "",
-      "evidence": "UNMEASURED"
+      "proof_cmd": "node harness/twins/slider_probe.mjs observability",
+      "evidence": "MEASURED 9/100: 58 of 643 decision exits name themselves in the ring (census --json, guardShaped=111). Underlying: node _tools/ko-census.mjs --json"
     },
     {
       "id": "inner_loop_speed",
       "label": "Agentic Inner-Loop Speed (<15s + Offline Twins)",
-      "baseline": 0,
-      "current": 0,
+      "baseline": 96,
+      "current": 96,
       "target": 90,
       "counterpart": "Live calibration freshness",
-      "proof_cmd": "",
-      "evidence": "UNMEASURED"
+      "proof_cmd": "node harness/twins/slider_probe.mjs inner_loop_speed",
+      "evidence": "MEASURED 96/100: the declared fast_test exited 0 in 0.538 s of the 15 s budget. Wall time moves with the warm page cache, so this is ONE recorded run (`--all --json`, 2026-11-26T20:44:21Z) and a later reading a few points away is the same state, not a regression. Underlying: node _tools/ko-census.mjs --gate && node kick-overlay/bridge-handshake-test.cjs && node --check kick-overlay/twitch-adblock.js"
     },
     {
       "id": "architecture_coherence",
       "label": "Architecture & Contradiction Elimination",
-      "baseline": 0,
-      "current": 0,
+      "baseline": 99,
+      "current": 99,
       "target": 85,
       "counterpart": "Migration blast radius",
-      "proof_cmd": "",
-      "evidence": "UNMEASURED"
+      "proof_cmd": "node harness/twins/slider_probe.mjs architecture_coherence",
+      "evidence": "MEASURED 99/100: feature gate verdict FAIL with 1 unmapped file of 116 tracked (_tools/test-clock.cjs); the proportional score does not hide the red gate. Underlying: python C:/Users/Administrador/.agents/skills/project-revival/scripts/feature_map_sync.py --repo . --gate"
     },
     {
       "id": "metric_gate_coverage",
       "label": "Per-I/O Metric Budgets & Blast-Radius Gates",
-      "baseline": 0,
-      "current": 0,
+      "baseline": 71,
+      "current": 71,
       "target": 90,
       "counterpart": "Gate wall time (<60s)",
-      "proof_cmd": "",
-      "evidence": "UNMEASURED"
+      "proof_cmd": "node harness/twins/slider_probe.mjs metric_gate_coverage",
+      "evidence": "MEASURED 71/100: 5 of 7 metrics qualify (ceiling > 0, non-empty red_arm_cmd, history row within 24 h); basic.census_ms has no red arm and e2e.gate_wall_ms has no recent history. Underlying: read benchmarks/budgets.json + benchmarks/history.jsonl"
     },
     {
       "id": "harness_falsifiers",
       "label": "Feature x Angle Harness Falsifiers (with RED arms)",
-      "baseline": 0,
-      "current": 0,
+      "baseline": 96,
+      "current": 96,
       "target": 85,
       "counterpart": "Maintenance burden",
-      "proof_cmd": "",
-      "evidence": "UNMEASURED"
+      "proof_cmd": "node harness/twins/slider_probe.mjs harness_falsifiers",
+      "evidence": "MEASURED 96/100: 24 of 25 feature x angle rows have a non-empty neg and an existing node-command target across 5 feature families; blanking one neg lowers the probe reading to 92. Underlying: read harness/angles.tsv"
     },
     {
       "id": "reversibility_safety",
       "label": "Reversibility (Git Checkpoints + Worktrees + Rollback)",
-      "baseline": 0,
-      "current": 0,
+      "baseline": 100,
+      "current": 100,
       "target": 95,
       "counterpart": "Staging step friction",
-      "proof_cmd": "",
-      "evidence": "UNMEASURED"
+      "proof_cmd": "node harness/twins/slider_probe.mjs reversibility_safety",
+      "evidence": "MEASURED 100/100: 4 of 4 capabilities met (1 parseable checkpoint row, wt-new, wt-land with --receipt and --gate-cmd, rollback with --confirm), 25 points each. Underlying: python C:/Users/Administrador/.agents/skills/project-revival/scripts/git_checkpoint.py --help"
     },
     {
       "id": "autonomy_end_to_end",
       "label": "Zero-Owner-Dependency Autonomy",
-      "baseline": 0,
-      "current": 0,
+      "baseline": 100,
+      "current": 100,
       "target": 95,
       "counterpart": "Safety boundary discipline",
-      "proof_cmd": "",
-      "evidence": "UNMEASURED"
+      "proof_cmd": "node harness/twins/slider_probe.mjs autonomy_end_to_end",
+      "evidence": "MEASURED 100/100: 4 of 4 friction rows carry a non-empty verify_cmd and status VERIFIED (three offline twin replays and the per-edit fast_test triple; the timings live in revival/FRICTION.json because the friction gate rewrites them). Underlying: read revival/FRICTION.json"
     }
   ],
   "natural_unit_pairs": [
     {
       "id": "detectability",
       "unit": "pct_faults_named",
-      "current": null,
+      "current": 9.02,
       "target": 95,
       "counterpart_metric": "instrument_wall_ms",
-      "counterpart_value": null,
-      "proof_cmd": ""
+      "counterpart_value": 539,
+      "proof_cmd": "node _tools/ko-census.mjs --json && node harness/twins/replay.mjs --all --json"
     },
     {
       "id": "inner_loop_wall",
       "unit": "seconds",
-      "current": null,
+      "current": 0.538,
       "target": 15,
       "counterpart_metric": "twin_calibration_age_h",
-      "counterpart_value": null,
-      "proof_cmd": ""
+      "counterpart_value": 0.274,
+      "proof_cmd": "node _tools/ko-census.mjs --gate && node kick-overlay/bridge-handshake-test.cjs && node --check kick-overlay/twitch-adblock.js"
     },
     {
       "id": "e2e_correctness",
       "unit": "pct_golden_pass",
-      "current": null,
+      "current": 100,
       "target": 100,
       "counterpart_metric": "e2e_p95_ms",
-      "counterpart_value": null,
-      "proof_cmd": ""
+      "counterpart_value": 539,
+      "proof_cmd": "node harness/twins/replay.mjs --all --json"
     }
   ]
 }

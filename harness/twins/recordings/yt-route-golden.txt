@@ -1,0 +1,8 @@
+PASS a watch page with only a videoId resolves to no channel
+PASS a page with only a UC channel id resolves to no channel
+PASS a page handle still resolves by the same-handle doctrine
+PASS a stored mapping still wins over the handle guess
+PASS the kick probe refuses a handle that cannot exist
+PASS negative arm (guessed channel): the pre-fix resolver is caught inventing a channel
+
+RESULT PASS yt-route checks=6 failed=0

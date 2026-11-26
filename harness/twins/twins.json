@@ -1,0 +1,79 @@
+{
+  "schema": "revival.twins/v1",
+  "updated_at": "2026-11-26T20:28:02Z",
+  "twin_budget_s": 15,
+  "twins": [
+    {
+      "id": "dev-handback-wait",
+      "kind": "ring-replay",
+      "live_dependency": "friction.twitch_live_dep",
+      "scenario": "_tools/ko-replica/scenarios/dev-handback-wait.json",
+      "source_run": "G:/Temp/ko-replica/runs/dev-handback-wait-1795722597544",
+      "recorded": "harness/twins/recordings/dev-handback-wait.json",
+      "replay_cmd": "node harness/twins/replay.mjs --twin dev-handback-wait",
+      "expected_lines": [
+        "EPISODE 1  ver=0.8.126  slug=replicach  span=32.0s  events=95",
+        "HAND-BACK (the pod ended: how the native came back)",
+        "VERDICT build=0.8.126 (manifest=?) defects=3"
+      ],
+      "expected_defect_lines": [
+        "  - player parked at readyState<3 5x (3.7s total)",
+        "  - hand-back at 28.0s resumed at rs=2 (parked)",
+        "  - 2 frozen display period(s)"
+      ],
+      "expected_rc": 1,
+      "cannot_replay": [
+        "a real stitched-ad playlist: five 100 s live captures served zero pods",
+        "a hand-back with basis:'pod-end' where se trails the wall clock by a pod length",
+        "a viewer who watched longer than the pod lasted",
+        "decoded pixels or Chrome-only DOM behaviour: a ring records the extension's decisions, not what Chrome painted",
+        "a fresh live run: this is a recorded ring from the named replica run"
+      ]
+    },
+    {
+      "id": "dev-ring-buzzyi",
+      "kind": "ring-replay",
+      "live_dependency": "friction.browser_live_wait",
+      "scenario": "_tools/ko-replica/scenarios/dev-ring-buzzyi.json",
+      "source_run": "G:/Temp/ko-replica/runs/dev-ring-buzzyi-1795723785197",
+      "recorded": "harness/twins/recordings/dev-ring-buzzyi.json",
+      "replay_cmd": "node harness/twins/replay.mjs --twin dev-ring-buzzyi",
+      "expected_lines": [
+        "EPISODE 1  ver=0.8.126  slug=replicach  span=1m20.5  events=168",
+        "VERDICT build=0.8.126 (manifest=?) defects=1"
+      ],
+      "expected_defect_lines": [
+        "  - player parked at readyState<3 1x (0.0s total)"
+      ],
+      "expected_rc": 1,
+      "cannot_replay": [
+        "a real stitched-ad playlist: five 100 s live captures served zero pods",
+        "a hand-back with basis:'pod-end' where se trails the wall clock by a pod length",
+        "a viewer who watched longer than the pod lasted",
+        "decoded pixels or Chrome-only DOM behaviour: a ring records the extension's decisions, not what Chrome painted",
+        "a fresh live run: this is a replayed real-broadcast ring, not a fresh live page wait"
+      ]
+    },
+    {
+      "id": "yt-route",
+      "kind": "suite-golden",
+      "live_dependency": "friction.youtube_live_dep",
+      "scenario": null,
+      "source_run": null,
+      "recorded": "harness/twins/recordings/yt-route-golden.txt",
+      "replay_cmd": "node harness/twins/replay.mjs --twin yt-route",
+      "expected_lines": [
+        "PASS negative arm (guessed channel): the pre-fix resolver is caught inventing a channel",
+        "RESULT PASS yt-route checks=6 failed=0"
+      ],
+      "expected_defect_lines": [],
+      "expected_rc": 0,
+      "cannot_replay": [
+        "a live YouTube watch page or its current DOM",
+        "live kick.com cross-origin probe responses",
+        "decoded pixels or Chrome-only DOM behaviour: this twin checks resolver output text",
+        "any routing case outside the six checks in the recorded golden"
+      ]
+    }
+  ]
+}
