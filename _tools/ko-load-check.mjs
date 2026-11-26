@@ -15,17 +15,24 @@
 //
 //   node _tools/ko-load-check.mjs            # print the reading
 //   node _tools/ko-load-check.mjs --gate     # exit 2 when the box is busy
+//   node _tools/ko-load-check.mjs --json     # explicit machine form (default is already one JSON line)
 //
 // Exit codes: 0 ready (or informational), 2 busy -> QUEUE the heavy step,
 // 3 CANNOT-MEASURE (the counters did not advance).
 import os from 'node:os';
+import { evaluateLoad, exitCodeFor } from './gate/load-verdict.mjs';
 
 const GATE = process.argv.includes('--gate');
+// `--json` is accepted for callers that want the machine form spelled out;
+// the default already prints exactly one JSON line, so it changes no bytes.
 const SAMPLE_MS = Number(process.env.KO_LOAD_SAMPLE_MS || 1500);
 const MAX_TOTAL = Number(process.env.KO_LOAD_MAX_TOTAL || 70); // % of the whole box
 const MAX_CORE = Number(process.env.KO_LOAD_MAX_CORE || 90); // % of one core, any core
 
-const CPU_COUNT = os.cpus().length;
+// TEST ONLY: KO_LOAD_FIXTURE substitutes deterministic snapshots so the
+// exit-code contract is testable without depending on the machine's real load.
+// Unset in normal use; no other behaviour reads it.
+const FIXTURE = process.env.KO_LOAD_FIXTURE;
 
 function snap() {
   return os.cpus().map((c) => {
@@ -36,47 +43,32 @@ function snap() {
   });
 }
 
-const a = snap();
-await new Promise((r) => setTimeout(r, SAMPLE_MS));
-const b = snap();
-
-if (a.length !== b.length || a.length === 0) {
-  console.log(JSON.stringify({ verdict: 'CANNOT-MEASURE', why: 'core count changed between samples', cores: CPU_COUNT }));
-  process.exit(3);
+function fixturePair(kind, cores) {
+  const before = Array.from({ length: cores }, () => ({ idle: 0, total: 1000 }));
+  if (kind === 'ready') {
+    return [before, Array.from({ length: cores }, () => ({ idle: 1000, total: 2000 }))];
+  }
+  if (kind === 'busy') {
+    return [before, Array.from({ length: cores }, () => ({ idle: 0, total: 2000 }))];
+  }
+  // 'cannot': identical snapshots, so no counter advances in the window.
+  return [before, before.map((s) => ({ ...s }))];
 }
 
-let advanced = 0;
-const perCore = a.map((s, i) => {
-  const dt = b[i].total - s.total;
-  const di = b[i].idle - s.idle;
-  if (dt <= 0) return null;
-  advanced += 1;
-  return Math.round((1 - di / dt) * 1000) / 10;
-});
-
-if (advanced === 0) {
-  console.log(JSON.stringify({ verdict: 'CANNOT-MEASURE', why: 'no cpu counter advanced in the window', windowMs: SAMPLE_MS }));
-  process.exit(3);
+let a;
+let b;
+if (FIXTURE === undefined) {
+  a = snap();
+  await new Promise((r) => setTimeout(r, SAMPLE_MS));
+  b = snap();
+} else {
+  if (FIXTURE !== 'ready' && FIXTURE !== 'busy' && FIXTURE !== 'cannot') {
+    console.log(JSON.stringify({ verdict: 'CANNOT-MEASURE', why: 'bad KO_LOAD_FIXTURE value' }));
+    process.exit(3);
+  }
+  [a, b] = fixturePair(FIXTURE, Math.max(os.cpus().length, 1));
 }
 
-const cores = perCore.filter((x) => x !== null);
-const total = Math.round((cores.reduce((s, x) => s + x, 0) / cores.length) * 10) / 10;
-const pinned = cores.filter((x) => x > MAX_CORE).length;
-const busiest = Math.max(...cores);
-const ready = total <= MAX_TOTAL && pinned === 0;
-
-const out = {
-  verdict: ready ? 'READY' : 'BUSY',
-  windowMs: SAMPLE_MS,
-  cores: cores.length,
-  total,
-  busiest,
-  pinned,
-  ceilings: { total: MAX_TOTAL, core: MAX_CORE },
-  perCore: cores,
-  advice: ready
-    ? 'one heavy step at a time is allowed now (the gate is that step)'
-    : 'QUEUE the heavy step: the box has no headroom, and a suite started now buys wall time and steals the owner\'s machine',
-};
+const out = evaluateLoad(a, b, { total: MAX_TOTAL, core: MAX_CORE, windowMs: SAMPLE_MS });
 console.log(JSON.stringify(out));
-process.exit(ready || !GATE ? 0 : 2);
+process.exit(exitCodeFor(out.verdict, { gate: GATE }));
