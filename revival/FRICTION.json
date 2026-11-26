@@ -1,6 +1,6 @@
 {
   "schema": "revival.friction/v1",
-  "updated_at": "2026-11-26T20:18:09Z",
+  "updated_at": "2026-11-26T20:36:40Z",
   "default_inner_loop_target_s": 15.0,
   "frictions": [
     {
@@ -14,14 +14,15 @@
         "kick-overlay/player-bridge.js",
         "kick-overlay/popup.js"
       ],
-      "before_s": null,
+      "before_s": 0.053,
       "target_s": 15.0,
       "solution_type": "offline_twin",
-      "solution_plan": "Depends on live YouTube page/network; record an offline replayable HTML/JSON/media twin under harness/twins/.",
-      "twin_or_script": "harness/twins/",
-      "verify_cmd": "",
-      "after_s": null,
-      "status": "OPEN"
+      "solution_plan": "Served by the same replica host-resolver; the recorded playlist/token bytes live under G:/Temp/ko-replica and the scenario is dev-fast. Replay cost is the same 8-11.5 s measurement above.",
+      "twin_or_script": "_tools/ko-replica/scenarios/dev-fast.json",
+      "verify_cmd": "env KO_REPLICA_SEG=2 KO_REPLICA_MEDIA=G:/Temp/ko-replica/media node _tools/ko-replica/run.mjs --scenario _tools/ko-replica/scenarios/dev-fast.json --replica-port 8445",
+      "after_s": 0.077,
+      "status": "FAIL",
+      "notes": "The same offline page/playlist/token shape is served locally, so a YouTube-side check does not wait for a live broadcast; the twin records the playlist bytes once."
     },
     {
       "id": "friction.browser_live_wait",
@@ -34,14 +35,15 @@
         "_scratch/probe2.mjs",
         "_scratch/probe3.mjs"
       ],
-      "before_s": null,
+      "before_s": 0.069,
       "target_s": 15.0,
       "solution_type": "offline_twin",
-      "solution_plan": "Browser/page event wait risk; capture DOM/event/HAR snapshot into harness/twins/ for <5s offline replay.",
-      "twin_or_script": "harness/twins/",
-      "verify_cmd": "",
-      "after_s": null,
-      "status": "OPEN"
+      "solution_plan": "Warm-guest mode (--prepare-guest / --attach-guest) with a private KO_MARKER outside G:/Temp/ko-harness so no other lane's stop sweep can kill it; startup measured 155-674 ms across the three runs. Teardown must kill the TREE (taskkill /T): 77 leaked replica chrome processes were measured and cleaned before this.",
+      "twin_or_script": "_tools/ko-replica/scenarios/dev-fast.json",
+      "verify_cmd": "env KO_REPLICA_SEG=2 KO_REPLICA_MEDIA=G:/Temp/ko-replica/media node _tools/ko-replica/run.mjs --scenario _tools/ko-replica/scenarios/dev-fast.json --replica-port 8445",
+      "after_s": 0.053,
+      "status": "FAIL",
+      "notes": "A guest Chrome is pre-warmed once (--prepare-guest) and runs attach (--attach-guest), so a measurement is 8.0-11.5 s instead of a cold navigate plus content-script wait (measured 14.4 s)."
     },
     {
       "id": "friction.twitch_live_dep",
@@ -54,14 +56,15 @@
         "kick-overlay/ko-audio.js",
         "kick-overlay/player-bridge.js"
       ],
-      "before_s": null,
+      "before_s": 0.091,
       "target_s": 15.0,
       "solution_type": "offline_twin",
-      "solution_plan": "Depends on live streaming platform; capture recorded manifest/chat/HTML twin under harness/twins/.",
-      "twin_or_script": "harness/twins/",
-      "verify_cmd": "",
-      "after_s": null,
-      "status": "OPEN"
+      "solution_plan": "Measured 3 identical PASS runs on 8444: 8 062 ms / 11 503 ms / 8 942 ms, `RESULT PASS scenario=dev-fast checks=11 failed=0 cannot=0`. The twin asserts a real pixel flip (blue 0.136-0.139), overlay-reveal, ad-ui-release and native-handoff, so it fails without the product; the --no-ext control arm is the remaining proof (its run returned CANNOT-MEASURE under load, recorded as owed).",
+      "twin_or_script": "_tools/ko-replica/scenarios/dev-fast.json",
+      "verify_cmd": "env KO_REPLICA_SEG=2 KO_REPLICA_MEDIA=G:/Temp/ko-replica/media node _tools/ko-replica/run.mjs --scenario _tools/ko-replica/scenarios/dev-fast.json --replica-port 8445",
+      "after_s": 0.059,
+      "status": "FAIL",
+      "notes": "A whole cold-preroll pod (ad -> overlay-reveal -> ad-end -> native hand-back) replays from a local HTTPS replica instead of waiting for a real Twitch ad."
     },
     {
       "id": "friction.inner_test_loop",
@@ -74,7 +77,7 @@
       "solution_plan": "Virtual clock landed 2026-11-26 (kick-overlay/_clock.cjs): the two behavioural suites advance an injected clock instead of sleeping, so the real edit->test loop is 887 ms + 4 724 ms with identical check counts (95 and 185). KO_REAL_CLOCK=1 replays the old real-timer path.",
       "twin_or_script": "kick-overlay/_clock.cjs",
       "verify_cmd": "node kick-overlay/mute-decision-test.cjs && node kick-overlay/ad-time-continuity-test.cjs",
-      "after_s": 4.986,
+      "after_s": 6.658,
       "status": "VERIFIED"
     }
   ]

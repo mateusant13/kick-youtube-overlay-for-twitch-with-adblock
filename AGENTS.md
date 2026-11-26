@@ -2759,7 +2759,7 @@ Follow this exact decision tree on **every** user message before touching code:
 
 | Feature | Files | Inputs -> Outputs | Interlinks |
 |---|---:|---|---|
-| `_tools` | 38 | the repository working tree and its git history, the extension's ring dump (`chrome.storage.local['ko.adlog']`) read over CDP -> a gate verdict + receipt (`_evidence/ko-verify-latest.md`), machine artifacts per verified bug (`_evidence/<bug>-arms.md`) and reachability records | kick-overlay |
+| `_tools` | 57 | the repository working tree and its git history, the extension's ring dump (`chrome.storage.local['ko.adlog']`) read over CDP -> a gate verdict + receipt (`_evidence/ko-verify-latest.md`), machine artifacts per verified bug (`_evidence/<bug>-arms.md`) and reachability records | kick-overlay |
 | `kick-overlay` | 23 | the Twitch watch page DOM: `[data-a-target="video-player"]`, the squeezeback/slate ad text, the page's own `HTMLVideoElement`, Twitch's HLS playlists as fetched by the page's own player worker (token, `adExtinf`, `#EXT-X-DATERANGE`) and the GQL usher (`playbackAccessToken`) -> the overlay iframe + bar (`#ko-wrap`, `#ko-g1`, seek bar) with the kick/YouTube picture, published attributes the instruments read: `data-ko-owner`, `data-ko-audio-m/-v/-vis/-wt/-it`, `data-ko-adpark`, `data-ko-adblock` | _tools |
 
 Full macro contracts, verify commands, and file ownership live in `features/INDEX.md` and `features/features.json` (enforced on every gate by `feature_map_sync.py --gate`).

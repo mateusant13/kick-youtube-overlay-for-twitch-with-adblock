@@ -58,6 +58,12 @@
     kick: { muted: false, volume: 1 },
     yt: { muted: false, volume: 1 },
   };
+  // A MUTE REMEMBERS THE LEVEL IT SILENCED. `intents[surface].volume` is the
+  // audible level, never the momentary `0` a mute button writes. The level is
+  // kept separately so an unmute restores it in ONE event (and survives a
+  // reload of this tab), instead of depending on the page sending a second
+  // volumechange with the old level.
+  const levels = Object.create(null);
   // Every audio decision is reported, so the log answers the owner's questions
   // instead of the code being asked again: which surface was audible, WHAT
   // changed its state, and whether a swap carried the mute. content.js forwards
@@ -76,6 +82,7 @@
   const policy = new Set();              // surfaces silenced by browser policy
   const sent = Object.create(null);      // surface -> last state COMMANDED (echo guard)
   const writes = new WeakMap();          // Element -> { at, muted, volume }
+  const policyFrames = new Map();         // surface -> the frame a policy was tested on
   const listeners = new Set();           // intent change subscribers
   let lastApplyStamp = '';               // last reported derived state
   let requested = null;                  // the surface the page's own layers show
@@ -105,6 +112,7 @@
   };
   const isNum = (v) => typeof v === 'number' && isFinite(v);
   const clamp = (v) => Math.max(0, Math.min(1, Number(v)));
+  const levelOf = (key) => (isNum(levels[key]) && levels[key] > 0.001 ? clamp(levels[key]) : 1);
 
   // Restore this tab's own choices. Runs once, before the object is exported.
   function restoreTab() {
@@ -123,6 +131,8 @@
       const it = intents[key] || (intents[key] = { muted: false, volume: 1 });
       if (typeof v.m === 'boolean') it.muted = v.m;
       if (isNum(v.v)) it.volume = clamp(v.v);
+      if (isNum(v.v) && v.v > 0.001) levels[key] = clamp(v.v);
+      if (isNum(v.l) && v.l > 0.001) levels[key] = clamp(v.l);
     }
   }
 
@@ -131,7 +141,7 @@
     if (!store) return;
     const rec = {};
     for (const key of Object.keys(intents)) {
-      rec[key] = { m: !!intents[key].muted, v: clamp(intents[key].volume) };
+      rec[key] = { m: !!intents[key].muted, v: clamp(intents[key].volume), l: levelOf(key) };
     }
     try {
       store.setItem(TAB_KEY, JSON.stringify(rec));
@@ -462,7 +472,15 @@
   function claim(surface) {
     const next = surface || null;
     if (next === claimed) return KOAudio;
-    if (!next) releasedAt = Date.now();
+    if (!next) {
+      releasedAt = Date.now();
+      // A MACHINE policy is a verdict on the frame that was tested. It belongs
+      // to the claim that owned that frame; the hand-back drops it with the
+      // claim, so a refusal from a dead pod cannot silence the page that comes
+      // back. Without this, `overlay.audioRefused` survived as a second writer
+      // long after the frame it described was gone.
+      if (policy.has('ad')) setPolicy('ad', false, { origin: 'ad:claim-release', why: 'handback' });
+    }
     const prevClaim = claimed;
     claimed = next;
     // The claim is the single fact that decides whose sound is on screen, so it
@@ -483,11 +501,33 @@
     return KOAudio;
   }
 
-  function setPolicy(surface, on) {
+  // Policy is the authority's OWN machine decision, never a second writer: a
+  // caller may only ASK for it, and the ask must name its author and the frame
+  // it tested. An unlabelled ask is refused out loud, not applied.
+  function setPolicy(surface, on, opts) {
+    const origin = String((opts && opts.origin) || 'code:UNLABELLED');
+    const why = String((opts && opts.why) || 'direct');
+    const frame = opts && opts.frame ? String(opts.frame) : null;
+    // The BRIDGE refuses an unlabelled or frame-less ask before it reaches
+    // here; a direct in-world call (popup, content script) stays valid.
     const had = policy.has(surface);
-    if (on) policy.add(surface);
-    else policy.delete(surface);
-    if (had !== !!on) apply();
+    if (on) {
+      const prev = policyFrames.get(surface) || null;
+      if (prev && prev !== frame) {
+        // The frame that was refused is not the frame on screen now.
+        report('audio-refused', { why: 'stale-frame-policy', surface, from: prev, frame, origin });
+        return KOAudio;
+      }
+      policyFrames.set(surface, frame);
+      policy.add(surface);
+    } else {
+      policy.delete(surface);
+      policyFrames.delete(surface);
+    }
+    if (had !== !!on) {
+      report('audio-policy', { surface, on: !!on, why, origin, frame, visible: visibleNow() });
+      apply();
+    }
     return KOAudio;
   }
 
@@ -508,8 +548,22 @@
           ownWrite: !!opts.ev.ownWrite,
         }
       : null;
-    if (patch && typeof patch.muted === 'boolean') it.muted = patch.muted;
-    if (patch && isNum(patch.volume)) it.volume = clamp(patch.volume);
+    const patchMuted = patch && typeof patch.muted === 'boolean' ? !!patch.muted : null;
+    const wantsMute = patchMuted === null ? it.muted : patchMuted;
+    let vol = patch && isNum(patch.volume) ? clamp(patch.volume) : it.volume;
+    if (patch && isNum(patch.volume) && patch.volume <= 0.001 && patchMuted !== true) {
+      // A zero with no mute decision is not an audible level: it is a silence
+      // someone else wrote. Refuse it by name instead of persisting it.
+      report('audio-refused', { why: 'zero-volume-without-mute', surface: String(surface), origin, volume: patch.volume });
+    }
+    // The native volumechange reader already normalises its OWN patch (the
+    // level it silenced), so it is the writer of that decision here. All other
+    // callers—bar, popup, bridge—get the level rule at this arbiter.
+    const fromNativeReader = String((opts && opts.origin) || '') === 'user:pointer';
+    if (!fromNativeReader && vol <= 0.001) vol = levelOf(surfaceOf(surface));
+    if (vol > 0.001) levels[surfaceOf(surface)] = vol;
+    if (patchMuted !== null) it.muted = patchMuted;
+    it.volume = vol;
     const changed = before.muted !== it.muted || Math.abs(before.volume - it.volume) > 0.0001;
     if (changed) {
       report('audio-intent', {
@@ -577,6 +631,21 @@
   // exception to the claim guard needs the opposite: a named control or a real
   // volume key, never a target-less click standing in for one.
   let lastInputCertified = false;
+  // A letter typed in chat is not a volume gesture. `m` in a text box is text,
+  // not Twitch's mute shortcut; without this check a fresh keydown certified
+  // whatever the player wrote next as the user's decision (owner report
+  // 2026-11-16: "tentei falar com um streamer e mutou sozinho").
+  function editableTarget(t) {
+    try {
+      if (!t || typeof t !== 'object') return false;
+      if (t.isContentEditable) return true;
+      if (/^(INPUT|TEXTAREA|SELECT)$/i.test(String(t.tagName || ''))) return true;
+      if (typeof t.closest === 'function' && t.closest('[contenteditable], [role="textbox"], [data-a-target="chat-input"], #chat-input')) return true;
+    } catch {
+      /* a detached stub has no ancestor chain: no positive evidence */
+    }
+    return false;
+  }
   function describeTarget(t) {
     try {
       if (!t || typeof t !== 'object') return null;
@@ -655,6 +724,32 @@
     '[role="slider"]', '[class*="volume-slider"]', '[class*="ad-volume"]',
     '[data-purpose="volume-control"]',
   ].join(',');
+  // A wildcard selector is a HINT, not a certificate: `[aria-label*="olume"]`
+  // and `[data-a-target*="mute"]` must also name a whole volume/mute word on
+  // the element itself. Otherwise a label like "Absolute" certifies a machine
+  // mute through the adjacent substring selector while MUTE_WORD_RE above
+  // would refuse the very same word. One owning predicate for both shapes.
+  const VOLUME_NAME_RE = /\b(?:volume|volumes|(?:un)?mut(?:e|ed|ing))\b/i;
+  const WILDCARD_SELS = VOLUME_CONTROL_SEL.split(',').map((s) => s.trim()).filter((s) => s.includes('*='));
+  function wildcardHitWithoutName(el) {
+    try {
+      let matched = false;
+      for (const sel of WILDCARD_SELS) {
+        if (typeof el.matches === 'function' && el.matches(sel)) matched = true;
+      }
+      if (!matched) return false;
+      for (let e = el; e; e = e.parentElement) {
+        if (typeof e.getAttribute !== 'function') continue;
+        for (const attr of ['aria-label', 'data-a-target']) {
+          const v = e.getAttribute(attr);
+          if (typeof v === 'string' && VOLUME_NAME_RE.test(v)) return false;
+        }
+      }
+      return true;
+    } catch {
+      return false; // no positive refutation from an element we cannot read
+    }
+  }
   function volumeCapableTarget(ev) {
     try {
       const t = ev && ev.target;
@@ -680,6 +775,7 @@
         try {
           generic = typeof hit.matches === 'function' && hit.matches('[role="slider"]');
         } catch { generic = false; }
+        if (wildcardHitWithoutName(hit)) return false;
         return !generic || !!named;
       }
       // A keyboard shortcut can change a volume, but ONLY the keys that do:
@@ -697,8 +793,10 @@
       // fresh input (see the caller), so a refused mute can never trap a silent
       // tab, and every refusal names itself in `audio-refused`.
       const kind = String((ev && ev.type) || '');
-      if (kind !== 'keydown') return false;
+      if (kind !== 'keydown' || editableTarget(ev && ev.target)) return false;
       const key = String((ev && (ev.key || ev.code)) || '');
+      // ONLY the player's own volume keys certify a mute. Everything else
+      // (space, chat text, seek arrows) is refused at the reader below.
       return key === 'm' || key === 'M' || key === 'ArrowUp' || key === 'ArrowDown';
     } catch {
       return false;

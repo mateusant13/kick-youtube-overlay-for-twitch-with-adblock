@@ -68,7 +68,7 @@ const PRE_FIX_SENTINEL = [[
 // 3. no continuous intent tracking: the frame is told a frozen "muted" instead
 //    of the authority's state, so an unmute never reaches the clean player.
 const PRE_FIX_INTENT = [[
-  '    const a = audioState();\n    const muted = !!(a.muted || overlay.audioRefused);',
+  '    const a = audioState();\n    const muted = !!a.muted; // THE authority, never `|| overlay.audioRefused`',
   '    const a = { volume: 1 };\n    const muted = true;',
 ]];
 // 4. resume any paused native, in any visibility.
@@ -108,8 +108,8 @@ const PRE_FIX_HEALTH = [
 
 // 9. the reveal re-sent the mute on every heartbeat instead of on transition.
 const PRE_FIX_MUTE_SPAM = [[
-  '    if (last && last.muted === muted && Math.abs(last.volume - volume) < 0.02) return;',
-  '    if (false) return;',
+  '    if (!(last && last.muted === muted && Math.abs(last.volume - volume) < 0.02)) {',
+  '    if (true) {',
 ]];
 
 // 10. a standby left PAUSED by a previous pod was read as a ready cover: the
@@ -1043,6 +1043,203 @@ async function main() {
       'the mutant left the wait armed across a source switch');
     assert(page.logsOf('handback-ready').length === 0,
       'the stale wait tore down the frame the switch had just mounted');
+  });
+  async function waitArmPage(src, { rs = 1 } = {}) {
+    const page = src ? makeWorld({ adSource: src }) : makeWorld();
+    setNative(page, { ct: 30, edge: 40, bufferedEnd: 40, rs });
+    await pod(page);
+    await liveFrame(page, 2);
+    page.bypass({ type: 'ad-end' });
+    await settle(60);
+    assert(page.logsOf('handback-wait').length === 1, 'the wait never armed, so this arm measures nothing');
+    return page;
+  }
+  // 1. A retry belongs to the hand-back, not to the wait that is protecting it.
+  await greenArm('no native retry resumes the element behind an armed hand-back wait', async () => {
+    const page = await waitArmPage();
+    await settle(1400);
+    assert(page.stats().handbackWait() !== null, 'the wait ended before the retry window');
+    const retries = page.logsOf('native-resume').filter((l) => l.d.tag === '300ms' || l.d.tag === '1200ms');
+    assert(retries.length === 0, `a retry resumed the native behind the wait: ${JSON.stringify(retries.map((l) => l.d.tag + ':' + l.d.rs))}`);
+  });
+  const RED_RETRY_BEHIND_WAIT = mutate([
+    ["        return adLogState('handback-wait', { rs: wrs,", "        adLogState('handback-wait', { rs: wrs,"],
+    ['    if (!v || !v.isConnected || overlay.handbackWait) return;', '    if (!v || !v.isConnected) return;'],
+  ]);
+  await redArm('RED: a retry resumes the native while the wait is armed', RED_RETRY_BEHIND_WAIT, async (src) => {
+    const page = await waitArmPage(src);
+    await settle(1400);
+    const retries = page.logsOf('native-resume').filter((l) => l.d.tag === '300ms' || l.d.tag === '1200ms');
+    assert(retries.length === 0, `the mutant resumed the native behind the wait: ${JSON.stringify(retries.map((l) => l.d.tag + ':' + l.d.rs))}`);
+  });
+  // 2. One hand-back, one wait. A second DOM pod-end keeps the first one.
+  await greenArm('a second pod-end keeps the one live hand-back wait', async () => {
+    const page = await waitArmPage();
+    page.bypass({ type: 'ad-end' });
+    await settle(250);
+    assert(page.logsOf('handback-wait').length === 1, 'a second pod-end armed another wait');
+    assert(page.logsOf('handback-wait-cancelled').length === 0, 'the duplicate pod-end cancelled the live wait');
+    assert(page.logsOf('handback-wait-kept').length === 1, 'the duplicate pod-end was not reported');
+    assert(page.stats().handbackWait() !== null, 'the wait did not survive the duplicate pod-end');
+  });
+  const RED_DUPLICATE_WAIT = mutate([
+    ["    if (hadWait && reason === 'ad-end' && !opts.noWait) {\n      adLog('handback-wait-kept', { ms: Date.now() - overlay.handbackWait.at });\n      return;\n    }\n", ''],
+    ['!opts.noWait && !hadWait && reason ===', '!opts.noWait && !overlay.handbackWait && reason ==='],
+  ]);
+  await redArm('RED: a second pod-end cancels and re-arms the wait', RED_DUPLICATE_WAIT, async (src) => {
+    const page = await waitArmPage(src);
+    page.bypass({ type: 'ad-end' });
+    await settle(250);
+    assert(page.logsOf('handback-wait').length === 1,
+      `the mutant armed ${page.logsOf('handback-wait').length} waits for one hand-back`);
+  });
+  // 3. A new pod replaces the picture: end the wait before touching the element.
+  await greenArm('a new ad-hold cancels the hand-back wait before it pauses', async () => {
+    const page = await waitArmPage();
+    page.bypass({ type: 'ad-hold' });
+    await settle(60);
+    const cancelled = page.logsOf('handback-wait-cancelled');
+    assert(cancelled.length === 1 && cancelled[0].d.why === 'ad-hold',
+      `ad-hold did not cancel the wait: ${JSON.stringify(cancelled.map((l) => l.d.why))}`);
+    assert(page.stats().handbackWait() === null, 'the wait survived the new pod');
+  });
+  const RED_HOLD_WITHOUT_CANCEL = mutate([[
+    "        // A new pod replaces the protected picture. End the wait BEFORE this\n        // branch pauses the native or reveals a standby over it.\n        cancelHandbackWait('ad-hold');\n", '',
+  ]]);
+  await redArm('RED: ad-hold leaves the wait armed over the replacement', RED_HOLD_WITHOUT_CANCEL, async (src) => {
+    const page = await waitArmPage(src);
+    page.bypass({ type: 'ad-hold' });
+    await settle(60);
+    assert(page.logsOf('handback-wait-cancelled').length === 1,
+      'the mutant left the wait armed while a new pod took the picture');
+  });
+  // 4. A warm standby may replace the frame without being torn down by the
+  // wait it arrived during. The wait belongs to the ORIGINAL picture.
+  await greenArm('a standby replacing the protected frame survives the wait exit', async () => {
+    const page = await waitArmPage();
+    const before = page.frame;
+    page.stats().testStandbySwap('https://clean.example/next.m3u8');
+    await settle(60);
+    assert(page.frame && page.frame !== before, 'the standby never replaced the frame, so this arm measures nothing');
+    assert(page.logsOf('handback-wait-cancelled').length === 0, 'the warm standby cancelled the wait');
+    assert(page.stats().handbackWait() !== null, 'the wait did not survive the replacement');
+    page.video.readyState = 4;
+    await settle(400);
+    const ready = page.logsOf('handback-ready').pop();
+    assert(ready && ready.d.why === 'ready', `no ready exit after rs=4: ${JSON.stringify(ready && ready.d)}`);
+    assert(page.stats().frameMounted() === true, 'the wait tore down the standby it did not own');
+  });
+  const RED_TEARDOWN_REPLACEMENT = mutate([
+    ["    if (!opts.keepFrame) {\n      try { overlay.frame.remove(); } catch { /* ignore */ }\n    }\n", "    try { overlay.frame.remove(); } catch { /* ignore */ }\n"],
+    ['    if (!opts.keepFrame) overlay.frame = null;', '    overlay.frame = null;'],
+  ]);
+  await redArm('RED: the wait tears down the standby that replaced its frame', RED_TEARDOWN_REPLACEMENT, async (src) => {
+    const page = await waitArmPage(src);
+    page.stats().testStandbySwap('https://clean.example/next.m3u8');
+    await settle(60);
+    page.video.readyState = 4;
+    await settle(400);
+    assert(page.stats().frameMounted() === true, 'the mutant removed the replacement frame at hand-back');
+  });
+  // 5. The blind counter reads REPORTS, and a replacement frame still reports.
+  await greenArm('two blind reports still end the wait after a standby replaces the frame', async () => {
+    const page = await waitArmPage();
+    page.stats().testStandbySwap('https://clean.example/next.m3u8');
+    await settle(60);
+    page.frameMsg(healthySt({ pos: 110, lat: 3, paused: true }));
+    await settle(1100);
+    page.frameMsg(healthySt({ pos: 110.1, lat: 3, paused: true }));
+    await settle(500);
+    const ready = page.logsOf('handback-ready').pop();
+    assert(ready && ready.d.why === 'cover-lost', `the lost cover was not believed: ${JSON.stringify(ready && ready.d)}`);
+    assert(ready.d.ms < 3000, `the lost cover was only noticed at the ceiling: ${JSON.stringify(ready.d)}`);
+    assert(page.stats().frameMounted() === true, 'the cover-lost exit tore down the replacement frame');
+  });
+  const RED_ZERO_ST_AT = mutate([[
+    '            const stAt = overlay.lastStAt || 0;', '            const stAt = 0;',
+  ]]);
+  await redArm('RED: a report clock stuck at zero makes cover-lost unreachable', RED_ZERO_ST_AT, async (src) => {
+    const page = await waitArmPage(src);
+    page.stats().testStandbySwap('https://clean.example/next.m3u8');
+    await settle(60);
+    page.frameMsg(healthySt({ pos: 110, lat: 3, paused: true }));
+    await settle(1100);
+    page.frameMsg(healthySt({ pos: 110.1, lat: 3, paused: true }));
+    await settle(500);
+    const ready = page.logsOf('handback-ready').pop();
+    assert(ready && ready.d.why === 'cover-lost',
+      `the mutant could only leave at the ceiling: ${JSON.stringify(ready && ready.d)}`);
+  });
+  // 6. The wait is released BEFORE a new pod's hold asks for its own freeze.
+  await greenArm('a new pod is held before the wait that would refuse its freeze is released', async () => {
+    const page = await waitArmPage();
+    page.video.paused = false;
+    page.stats().setAdUiDetailForTest(() => ({ kind: 'countdown' }));
+    page.stats().adTestClock({ clearHold: true });
+    page.stats().stopAdOverlay('switch');
+    await settle(20);
+    const logs = page.logs();
+    const iCancel = logs.findIndex((l) => l.ev === 'handback-wait-cancelled' && l.d.why === 'switch');
+    const iHold = logs.findIndex((l) => l.ev === 'ad-ui-hold' && l.d.act === 'ad-after-reveal');
+    assert(iCancel >= 0 && iHold >= 0 && iCancel < iHold,
+      `the new pod's hold ran before the release: cancel=${iCancel} hold=${iHold}`);
+  });
+  const RED_HOLD_BEFORE_CANCEL = mutate([[
+    "    cancelHandbackWait(reason);\n    const revealedAd = adUiHoldTarget();\n    if (revealedAd) holdAfterReveal(revealedAd);\n",
+    "    const revealedAd = adUiHoldTarget();\n    if (revealedAd) holdAfterReveal(revealedAd);\n    cancelHandbackWait(reason);\n",
+  ]]);
+  await redArm('RED: a new pod is held while the wait still refuses its freeze', RED_HOLD_BEFORE_CANCEL, async (src) => {
+    const page = await waitArmPage(src);
+    page.video.paused = false;
+    page.stats().setAdUiDetailForTest(() => ({ kind: 'countdown' }));
+    page.stats().adTestClock({ clearHold: true });
+    page.stats().stopAdOverlay('switch');
+    await settle(20);
+    const logs = page.logs();
+    const iCancel = logs.findIndex((l) => l.ev === 'handback-wait-cancelled' && l.d.why === 'switch');
+    const iHold = logs.findIndex((l) => l.ev === 'ad-ui-hold' && l.d.act === 'ad-after-reveal');
+    assert(iCancel >= 0 && iHold >= 0 && iCancel < iHold,
+      `the mutant held the pod before releasing the wait: cancel=${iCancel} hold=${iHold}`);
+  });
+  // 7. A hold is not a second writer on the element the wait owns.
+  await greenArm('a hold cannot pause the native while the hand-back wait owns it', async () => {
+    const page = await waitArmPage();
+    page.video.paused = false;
+    assert(page.stats().pauseNativeForHold(page.video) === false, 'pauseNativeForHold claimed a pause it did not make');
+    assert(page.video.paused === false, 'a second writer paused the native behind the wait');
+    assert(page.stats().handbackWait() !== null, 'the wait did not survive the refused pause');
+  });
+  const RED_HOLD_PAUSE = mutate([[
+    '      if (overlay.handbackWait) return false; // a live hand-back owns this element\n', '',
+  ]]);
+  await redArm('RED: a hold pauses the native behind the wait', RED_HOLD_PAUSE, async (src) => {
+    const page = await waitArmPage(src);
+    page.video.paused = false;
+    page.stats().pauseNativeForHold(page.video);
+    assert(page.video.paused === false, 'the mutant paused the element the wait needs to reach HAVE_FUTURE_DATA');
+  });
+  // 8. Nor is a second resume: ad-ui-release and the retries share the gate.
+  const SECOND_RESUME_SOURCE = mutate([[
+    '    if (overlay.adActive) return;\n    if (overlay.frame && !overlay.standby) return;\n', '',
+  ]]);
+  await greenArm('a second resume cannot hand the native back while the wait is live', async () => {
+    const page = await waitArmPage(SECOND_RESUME_SOURCE);
+    page.stats().resumeNativeIfAllowed(page.video, 'ad-ui-release', { seek: true });
+    await settle(20);
+    const rows = page.logsOf('native-resume').filter((l) => l.d.tag === 'ad-ui-release');
+    assert(rows.length === 0, `a second writer resumed the native behind the wait: ${JSON.stringify(rows.map((l) => l.d))}`);
+  });
+  const RED_SECOND_RESUME = mutate([
+    ['    if (overlay.adActive) return;\n    if (overlay.frame && !overlay.standby) return;\n', ''],
+    ['    if (!v || !v.isConnected || overlay.handbackWait) return;', '    if (!v || !v.isConnected) return;'],
+  ]);
+  await redArm('RED: a second writer resumes the native behind the wait', RED_SECOND_RESUME, async (src) => {
+    const page = await waitArmPage(src);
+    page.stats().resumeNativeIfAllowed(page.video, 'ad-ui-release', { seek: true });
+    await settle(20);
+    const rows = page.logsOf('native-resume').filter((l) => l.d.tag === 'ad-ui-release');
+    assert(rows.length === 0,
+      `the mutant handed the native back twice: ${JSON.stringify(rows.map((l) => l.d.tag + ':' + l.d.rs))}`);
   });
 
   // ---- 3. the user's sound decision wins ----------------------------------
@@ -2114,10 +2311,12 @@ async function main() {
       // when the suite was started from the repo root, so it asserted on cwd
       // instead of on the file it names.
       const src = fs.readFileSync(path.join(__dirname, 'twitch-adblock.js'), 'utf8');
-      // Find the clause by its CONDITION, not by the constant: the comment
-      // above it is long enough to eat any fixed-size window.
-      const at = src.indexOf('!adHoldWorthy(adUiDetail(), mainVideo())');
-      assert(at > 0, 'the cooldown hatch is not the strong predicate in this file');
+      // The cooldown now reads the SAME owning predicate as both start doors:
+      // `podEvidence()` asks `adHoldWorthy()`, and the hatch reads its verdict.
+      const strong = src.indexOf('adHoldWorthy(d, mainVideo())');
+      assert(strong > 0, 'the shared evidence predicate no longer asks adHoldWorthy');
+      const at = src.lastIndexOf('!ev.worthy');
+      assert(at > strong, 'the cooldown hatch is not the strong predicate in this file');
       // ...and it must sit inside the cooldown clause, not somewhere else.
       const cool = src.lastIndexOf('AD_REOPEN_COOLDOWN_MS &&', at);
       assert(cool > 0 && at - cool < 900,
@@ -3128,7 +3327,7 @@ async function main() {
   const WORKER_AD = {
     type: 'playlist',
     url: 'https://video-edge-a.playlist.ttvnw.net/v1/playlist/live.m3u8?pt=popout',
-    extinf: 7, adExtinf: 3, adOnly: false, hasStitched: true,
+    extinf: 7, adExtinf: 3, adOnly: true, hasStitched: true,
     adExtinfSamples: ['#EXTINF:2.000,', '#EXTINF:2.000,', '#EXTINF:4.000,'],
     changed: false,
   };
@@ -3143,7 +3342,7 @@ async function main() {
     const posts = page.bypassPosts().filter((p) => p.type === 'ad-hold');
     assert(posts.length === 1, `expected one ad-hold post, got ${posts.length}`);
     const p = posts[0];
-    assert(p.from === 'worker-playlist' && p.extinf === 7 && p.adExtinf === 3 && p.adOnly === false &&
+    assert(p.from === 'worker-playlist' && p.extinf === 7 && p.adExtinf === 3 && p.adOnly === true &&
       p.hasStitched === true && p.adSec === 8,
       `the playlist evidence did not ride the post: ${JSON.stringify(p)}`);
     const row = page.logsOf('bypass-msg').find((l) => l.d.type === 'ad-hold' && l.d.from === 'worker-playlist');
@@ -3671,6 +3870,14 @@ async function main() {
     'a click outside the player does not authorize a machine play',
     'a resume from earlier in the pod does not end the hand-back wait',
     'a native that was already starved at take-over still gets the hand-back wait',
+    'no native retry resumes the element behind an armed hand-back wait',
+    'a second pod-end keeps the one live hand-back wait',
+    'a new ad-hold cancels the hand-back wait before it pauses',
+    'a standby replacing the protected frame survives the wait exit',
+    'two blind reports still end the wait after a standby replaces the frame',
+    'a new pod is held before the wait that would refuse its freeze is released',
+    'a hold cannot pause the native while the hand-back wait owns it',
+    'a second resume cannot hand the native back while the wait is live',
   ];
   const printed = armLog.map((l) => String(l).trim());
   const missing = ARMS.filter((a) => !printed.includes(a));

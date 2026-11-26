@@ -204,16 +204,45 @@
         try {
           const d = JSON.parse(String(ev && ev.detail));
           const target = audio.visible() || 'twitch';
+          // `Number(null)` IS `0`: a JSON intent with `volume:null` used to be
+          // written as a real, permanent volume-0 intent. Only a JSON number
+          // is a level; anything else is refused by name, not coerced.
+          const vol = d && typeof d.volume === 'number' && Number.isFinite(d.volume) ? d.volume : undefined;
+          if (d && 'volume' in d && vol === undefined) {
+            persist({ ev: 'audio-refused', d: { why: 'invalid-intent-volume', surface: target, received: String(d.volume), origin: 'code:adpath' } });
+          }
           audio.setIntent(
             target,
             {
               muted: typeof d.muted === 'boolean' ? d.muted : undefined,
-              volume: Number.isFinite(Number(d.volume)) ? Number(d.volume) : undefined,
+              volume: vol,
             },
             { persist: true, origin: 'code:adpath' },
           );
         } catch {
           /* malformed intent */
+        }
+      },
+      true,
+    );
+    // The MAIN-world ad path cannot call the arbiter. It asks for a FRAME
+    // policy here, naming its author and the frame that was actually refused.
+    // An ask with no author or no frame is a machine write, refused out loud.
+    document.addEventListener(
+      'ko-audio-frame-policy',
+      (ev) => {
+        try {
+          const d = JSON.parse(String(ev && ev.detail));
+          const author = String((d && d.author) || '');
+          const frame = String((d && d.frame) || '');
+          if (!author.startsWith('ad:') || !frame) {
+            persist({ ev: 'audio-refused', d: { why: 'unlabelled-frame-policy', author, frame, surface: 'ad' } });
+            return;
+          }
+          audio.setPolicy('ad', d.on === true, { origin: author, why: String(d.why || ''), frame });
+          root.setAttribute('data-ko-audio-policy', d.on === true ? author : '');
+        } catch {
+          persist({ ev: 'audio-refused', d: { why: 'malformed-frame-policy', surface: 'ad' } });
         }
       },
       true,

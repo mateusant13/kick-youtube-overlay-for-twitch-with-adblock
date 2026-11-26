@@ -202,6 +202,15 @@ arm), `--keep-guest`, `--out`, `--capture-out <path>`. Every run writes `report.
 `G:/Temp/ko-replica/runs/<name>-<ts>/` with the samples, the ring rows of that page load, and one
 verdict per check.
 
+`--prepare-guest` launches one detached guest, waits for the real page world, prints `GUEST_READY
+port=…`, and leaves it alive; `--guest-port <port> --attach-guest` then gives each measured run a
+NEW tab in that guest (brought to front after load) so content scripts re-inject and the pod starts
+fresh. This is for timing a whole scenario without paying the cold Chrome attach: measured 2026-11-26
+the navigate→content-script gap moved from 0.4 s to 14.4 s under box load. The prepared guest is not
+killed by the runner; kill its exact PIDs when the batch is over.
+
+Teardown is lane-safe: each run gives its guest a private `KO_MARKER`, probes its own free debug port, and kills only the browser PID named in that marker (tree via `taskkill /T`). It never invokes `ko-guest stop`, whose shared-marker sweep would kill another lane's browser; two concurrent replica runs on separate `--replica-port`s are safe.
+
 `--capture-out` writes every playlist body the replica served in the same shape
 `_tools/ko-real-capture.mjs` emits (one entry per `host+path+query`, capped, rewritten at most twice a
 second), so the offline page and a real page are compared by the same reader:
@@ -232,12 +241,17 @@ implemented: it executes the baseline.
 | `dev-midroll-hold.json` | stitched midroll at 10 s for 14 s | the picture stays the stream, the pod ends, hand-back |
 | `dev-timeline-probe.json` | 16 ct/blue samples at 2 s steps over 32 s, no expectations | fixture sanity: wall-clock paced timeline (`--no-ext`) |
 | `dev-handback-wait.json` | midroll 10-24 s; native-only segment refusal (init + 1 segment, then 503 to 30 s) | `handback-wait {rs:2}` -> `handback-ready {why:'cap'}` with a clean content picture, no reload |
+| `dev-fast.json` | cold preroll at 0 for 6 s, no stall, three in-pod pixels, 1.5 s tail | full pod journey in <=15 s wall: clean source mint, `overlay-reveal`, `native-handoff`, no reload; `--no-ext` prints `RESULT FAIL` |
 
 Checks are `row`, `absent`, `within`, `noReload`, `probe`, `pixelBlue`, `pixelNotBlue`, `pixelDark`,
 `rowsAtMost`, `rowField` (`op` is `lt`, `in`, or `eq`) and `coverDuring` (a clean, non-blue sample
 within the wait-to-ready window, `at` can be an array). A failure is a product finding when the
 fixture's own preconditions (worker playlist observed, standby minted, hold taken) pass; those
 preconditions are checks of their own so a broken fixture cannot read as a broken extension.
+
+`controlVerdict: "FAIL"` is opt-in per scenario: with `--no-ext`, a scenario that fails its inverted
+pixel checks prints `RESULT FAIL` instead of the default `CONTROL-FAIL`, so a pass/fail pair can be
+quoted verbatim. It never changes the positive arm or a scenario that does not ask for it.
 
 The `stall` knob takes `on:'native' | 'content' | 'all'` (default `all`), `atMs`, `ms`, and
 `allowFirst`. With `on:'native'` the edge answers ONLY the first `allowFirst` native segment

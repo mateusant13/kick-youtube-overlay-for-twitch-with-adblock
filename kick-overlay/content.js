@@ -1011,7 +1011,7 @@ const NOT_CHANNEL = new Set([
 
 // Build marker for the diag stream — lets us tell which code a tab runs
 // (content scripts of pre-reload tabs survive extension reloads).
-const KO_VER = '0.8.126';
+const KO_VER = '0.8.127';
 // How long a lost picture may last before the native player is allowed to
 // reclaim the screen (owner 2026-11-11: an ad and the player fighting).
 const OWNER_GRACE_MS = 6000;
@@ -1703,7 +1703,7 @@ window.addEventListener('message', (ev) => {
       KO.ytLoadedUrl = KO.pendingYtUrl;
       KO.pendingYtUrl = null;
       if (KO.player !== 'youtube') {
-        ytSend({ t: 'mute', m: true });
+        ytCmd('mute'); // every mute goes through the registered writer's command surface
         ytSend({ t: 'pause' });
       }
     }
@@ -1745,8 +1745,13 @@ window.addEventListener('message', (ev) => {
     if (typeof st.volume === 'number' && st.volume >= 0 && !st.muted) {
       const audio = window.KOAudio;
       const want = audio ? audio.wanted('yt') : null;
+      // A 1 Hz status sample is NOT a gesture. Our own frame has no volume
+      // control (player-bridge.js never binds one), so a differing value is a
+      // delayed echo of a command WE sent, not the user's slider. Recording it
+      // with `ownWrite:false` hard-coded overwrote a newer bar decision.
       if (audio && want && Math.abs(want.volume - st.volume) > 0.02) {
-        audio.setIntent('yt', { volume: st.volume }, { persist: true, origin: 'user:frame-slider', ev: { ownWrite: false, input: 'in-frame', inputAgeMs: null, userActive: true } });
+        diag('audio-refused', { why: 'frame-sample-not-a-gesture', surface: 'yt', frame: +st.volume.toFixed(2), intent: +want.volume.toFixed(2) });
+        audio.apply();
       }
     }
     if (KO.player === 'youtube') throttledYtProbe();
@@ -3140,7 +3145,7 @@ function mount() {
     const surface = KO.player === 'youtube' ? 'yt' : 'kick';
     const cur = audio ? audio.intent(surface) : { muted: KO.player === 'youtube' ? KO.ytMuted : KO.kickMuted, volume: KO.player === 'youtube' ? KO.ytVol : KO.kickVol };
     const muted = !cur.muted;
-    if (audio) audio.setIntent(surface, { muted, volume: !muted && cur.volume === 0 ? 1 : cur.volume }, { persist: true, origin: 'user:ui:bar-mute' });
+    if (audio) audio.setIntent(surface, { muted, volume: cur.volume }, { persist: true, origin: 'user:ui:bar-mute' });
     updateKickVolUI();
   });
   const volwrap = bar.querySelector('#ko-volwrap');
@@ -3154,7 +3159,10 @@ function mount() {
     const v = volFrac(e);
     const audio = window.KOAudio;
     const surface = KO.player === 'youtube' ? 'yt' : 'kick';
-    if (audio) audio.setIntent(surface, { volume: v, muted: v === 0 }, { origin: 'user:ui:bar-slider' });
+    const keep = audio ? audio.intent(surface).volume : 0;
+    // Sliding to zero is a MUTE, not a level of zero: the remembered level
+    // stays so one unmute restores it without a second event.
+    if (audio) audio.setIntent(surface, { volume: v === 0 ? keep : v, muted: v === 0 }, { origin: 'user:ui:bar-slider' });
     updateKickVolUI();
   };
   volwrap.addEventListener('pointerdown', (e) => {

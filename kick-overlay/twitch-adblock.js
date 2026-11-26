@@ -82,8 +82,18 @@
     if (!WORKER_LIVE_MEDIA.test(String(msg.url || ''))) return;
     if (Number(msg.adExtinf) > 0 || !!msg.adOnly) {
       workerRouteClean = 0;
+      // THE MARKER IS NOT THE AD. A refresh can keep listing ad segments
+      // after content came back (owner ring: adExtinf:16 beside extinf:17),
+      // so the same owning predicate the page's ad-hold uses decides here:
+      // a hold-worthy DOM shape, or an all-ad playlist. A stale number alone
+      // gets a refusal row naming what was actually seen.
+      const ev = podEvidence(msg);
+      if (!ev.worthy) { podEvidenceRefuse('worker-playlist', ev); return; }
       if (workerRoutePodAt) return; // one pod per episode, not one per segment refresh
       workerRoutePodAt = Date.now();
+      podEnded = false;
+      podMaxLogged = false;
+      lastPodEvidence = ev;
       // The route can fire BEFORE the page's cold-start standby request lands,
       // and `adActive` would then suppress every later request: measured in the
       // first fixed replica run, ad-hold at 284 ms with no frame, and the first
@@ -100,6 +110,7 @@
           adOnly: !!msg.adOnly,
           hasStitched: !!msg.hasStitched,
           adSec: workerAdSeconds(msg),
+          changed: msg.changed || null,
           at: Date.now(),
         });
       } catch {
@@ -109,8 +120,9 @@
     }
     if (Number(msg.extinf) > 0 && Number(msg.adExtinf) === 0 && workerRoutePodAt) {
       if (++workerRouteClean < WORKER_ROUTE_CLEAN_END) return;
-      workerRoutePodAt = 0;
-      workerRouteClean = 0;
+      // The route's clean streak is a page-side end door: it must clear the
+      // route flag and release the freeze even when no ad-end message follows.
+      endPlaylistPod('clean-playlists', { from: 'worker-playlist' });
       try {
         if (playlistBypassChannel) playlistBypassChannel.postMessage({
           type: 'ad-end', page: pageId, from: 'worker-playlist', channel: pageChannel(),
@@ -801,6 +813,13 @@
   // Same door with `standby = true`: a warm buffer must be able to arrive during a
   // hand-back wait without cancelling it (see the guard in `startAdOverlay`).
   stats.testStandby = (url) => startAdOverlay(url, 'test', false, true);
+  // Diagnostic seams for the writers of a hand-back wait: drive the real
+  // doors from the harness instead of adding a second lifecycle path.
+  stats.pauseNativeForHold = pauseNativeForHold;
+  stats.resumeNativeIfAllowed = resumeNativeIfAllowed;
+  stats.stopAdOverlay = stopAdOverlay;
+  // switchSource + standby = a warm frame replacing the one the wait protects.
+  stats.testStandbySwap = (url) => startAdOverlay(url, 'test', true, true);
 
   // ---- live-time alignment helpers ----------------------------------------
   // The live edge of a native <video>. Twitch live reports duration=Infinity,
@@ -999,9 +1018,10 @@
   // Our own pause explains a paused element only while the hold that made it is
   // still recent: a pod can run for minutes, so the stamp is bounded rather than
   // alive forever.
-  const SELF_PAUSE_TRUST_MS = 10 * 60 * 1000;
-  function selfPausedRecently() {
-    return !!overlay.selfPausedAt && Date.now() - overlay.selfPausedAt < SELF_PAUSE_TRUST_MS;
+  const SELF_PAUSE_TRUST_MS = 12 * 1000; // the hold's own budget; 10 min called an expired hold's pause ours
+  function selfPausedRecently(maxMs) {
+    const budget = Number.isFinite(maxMs) ? maxMs : SELF_PAUSE_TRUST_MS;
+    return !!overlay.selfPausedAt && Date.now() - overlay.selfPausedAt < budget;
   }
 
   // The DOM tick calls adUiHold() and adUiHoldTick() back to back. The pause
@@ -1015,6 +1035,7 @@
       if (!v || v.paused) return false;
       if (userResumedHeld()) return false; // the user unpaused during a DOM hold
       if (resumeRefusedByUser(v)) return false; // a user-parked player stays parked
+      if (overlay.handbackWait) return false; // a live hand-back owns this element
       v.pause();
       overlay.selfPausedAt = Date.now();
       return true;
@@ -1046,6 +1067,7 @@
   function markAdPark(on) {
     try {
       const root = document.documentElement;
+      adParkShown = !!on; // every direct writer keeps the derived cache in step with the attribute
       if (root) root.setAttribute('data-ko-adpark', on ? '1' : '0');
     } catch { /* document tearing down */ }
   }
@@ -1200,7 +1222,8 @@
     const root = document.documentElement;
     const m = root ? root.getAttribute('data-ko-audio-m') : null;
     const v = root ? root.getAttribute('data-ko-audio-v') : null;
-    return { muted: m === '1', volume: Number.isFinite(Number(v)) ? Number(v) : 1 };
+    const policy = root ? String(root.getAttribute('data-ko-audio-policy') || '') : '';
+    return { muted: m === '1', volume: Number.isFinite(Number(v)) ? Number(v) : 1, policy };
   }
 
   // "I cover the page" / "I no longer do": the claim is what makes the native
@@ -1237,22 +1260,65 @@
       /* ignore */
     }
   }
+  // A MACHINE verdict is an ASK, not a write. The arbiter decides whether the
+  // frame that was refused may silence the surface it covers; the author and
+  // the frame's token travel with the ask, so a verdict on a dead frame is
+  // refused by name instead of muting the one on screen.
+  function audioFramePolicy(on, why) {
+    try {
+      const frame = String(overlay.token || (overlay.frame && overlay.frame.src) || 'frame');
+      document.dispatchEvent(new CustomEvent('ko-audio-frame-policy', {
+        detail: JSON.stringify({ on: !!on, author: on ? 'ad:autoplay' : 'ad:frame-audible', why: String(why || ''), frame }),
+      }));
+    } catch {
+      adLogState('audio-refused', { why: 'frame-policy-undeliverable', surface: 'ad' });
+    }
+  }
 
-  // ONE writer for the clean frame, diffed against what it was last told.
+  // ONE writer for the clean frame: the authority's derived state, and nothing
+  // else. `overlay.audioRefused` used to be ORed into `muted`, which made this
+  // path a SECOND writer that survived a newer unmute intent. Now a refusal is
+  // an ask to the arbiter (above), logged with its frame, and the command sent
+  // here is only what the authority published for THIS frame.
   function applyOverlayAudio() {
-    if (!overlay.frame) return;
+    if (!overlay.frame) {
+      adLogState('audio-refused', { why: 'no-frame', surface: 'ad' });
+      return;
+    }
+    const first = audioState();
+    const token = String(overlay.token || '');
+    const refusal = !!overlay.audioRefused;
+    if (refusal && overlay.audioRefusalFor && overlay.audioRefusalFor !== token) {
+      adLogState('audio-refused', { why: 'stale-frame', surface: 'ad', from: overlay.audioRefusalFor, frame: token });
+      overlay.audioRefused = false;
+      overlay.audioRefusalFor = null;
+    } else if (refusal && !overlay.audioRefusalFor) {
+      overlay.audioRefusalFor = token || 'frame';
+    }
+    const mine = !!overlay.audioRefused && overlay.audioRefusalFor === (token || overlay.audioRefusalFor);
+    if (mine && first.policy !== 'ad:autoplay') {
+      audioFramePolicy(true, 'frame-autoplay');
+      adLogState('audio-refused', { why: 'frame-autoplay', surface: 'ad', frame: overlay.audioRefusalFor, authorityMuted: first.muted });
+    } else if (!mine && first.policy === 'ad:autoplay') {
+      audioFramePolicy(false, 'frame-audible');
+      adLogState('audio-resolved', { why: 'frame-audible', surface: 'ad', frame: token });
+    }
+    // The ask above is synchronous across the bridge, so read the state it
+    // published again before writing a command. A stale `a` here would let the
+    // outer call undo the mute the re-entrant observer just applied.
     const a = audioState();
-    const muted = !!(a.muted || overlay.audioRefused);
+    const muted = !!a.muted; // THE authority, never `|| overlay.audioRefused`
     const volume = a.volume;
     const last = overlay.audioSent;
-    if (last && last.muted === muted && Math.abs(last.volume - volume) < 0.02) return;
-    overlay.audioSent = { muted, volume };
-    overlay.audioSentAt = Date.now();
-    overlay.audioAgreedAt = 0; // a new command restarts the "how long until the frame agrees" clock
-    overlay.audioSends = (overlay.audioSends || 0) + 1;
-    adLogState('overlay-audio', { muted, volume: +Number(volume).toFixed(2), refused: !!overlay.audioRefused });
-    overlaySend({ t: 'mute', m: muted });
-    overlaySend({ t: 'volume', v: volume });
+    if (!(last && last.muted === muted && Math.abs(last.volume - volume) < 0.02)) {
+      overlay.audioSent = { muted, volume };
+      overlay.audioSentAt = Date.now();
+      overlay.audioAgreedAt = 0; // a new command restarts the agreement clock
+      overlay.audioSends = (overlay.audioSends || 0) + 1;
+      adLogState('overlay-audio', { muted, volume: +Number(volume).toFixed(2), refused: mine, source: 'ko-audio' });
+      overlaySend({ t: 'mute', m: muted });
+      overlaySend({ t: 'volume', v: volume });
+    }
   }
 
   // The authority republishes the attributes on every change; a fresh frame
@@ -2263,7 +2329,128 @@
     }, true);
   } catch { /* ignore */ }
 
-  function adUiRelease(fromUiOff) {
+// ---- ONE OWNING PREDICATE FOR THE POD BOUNDARY ---------------------------
+// A playlist marker is a CLAIM, not evidence: it keeps listing ad segments
+// after content returned. The only evidence a pod may start on is a painted /
+// labelled ad DOM shape or an all-ad playlist. Both start doors (the page
+// route above and the worker's ad-hold) call this one predicate.
+  let lastPodEvidence = null;
+  let podEnded = false;
+  let podMaxLogged = false;
+  let playlistSawDomAd = false;
+  let podMaxMs = AD_POD_MAX_MS; // test seam shortens the SAME timer, not a second one
+
+  function podEvidence(msg) {
+    const d = adUiDetail();
+    const dom = adHoldWorthy(d, mainVideo());
+    const adOnly = !!(msg && msg.adOnly);
+    return {
+      worthy: !!(dom || adOnly),
+      dom,
+      from: msg && msg.from ? String(msg.from) : '',
+      kind: d ? String(d.kind || '') : null,
+      adOnly,
+      adExtinf: msg ? Number(msg.adExtinf) || 0 : 0,
+      extinf: msg ? Number(msg.extinf) || 0 : 0,
+      hasStitched: !!(msg && msg.hasStitched),
+      changed: msg ? (msg.changed === undefined ? (msg.adChanged || null) : msg.changed) : null,
+      markerAgeMs: msg && msg.at ? Math.max(0, Date.now() - Number(msg.at)) : null,
+    };
+  }
+
+  function podEvidenceRefuse(from, ev) {
+    adLog('ad-skip', {
+      reason: 'no-ad-evidence', from: String(from || ''),
+      adUi: ev.kind || null, adOnly: !!ev.adOnly,
+      adExtinf: ev.adExtinf || null, extinf: ev.extinf || null,
+      hasStitched: !!ev.hasStitched, markerAgeMs: ev.markerAgeMs || null,
+    });
+  }
+
+  // The two rows `AGENTS.md` promises and harness/angles.tsv reads. They used
+  // to have no producer at all: the worker wrote `bypass-msg`, which named
+  // none of the evidence fields the verdict needs.
+  function emitPodStart(msg, ev) {
+    adLog('ad-bypass-start', {
+      channel: msg.channel || pageChannel() || null,
+      from: String(msg.from || 'playlist'),
+      adExtinf: ev.adExtinf, extinf: ev.extinf, adOnly: !!ev.adOnly,
+      hasStitched: !!ev.hasStitched, changed: ev.changed === undefined ? null : ev.changed,
+    });
+  }
+
+  function emitPodMax(detail) {
+    if (podMaxLogged) { adLog('ad-pod-max', { reason: 'already-logged' }); return; }
+    podMaxLogged = true;
+    adLog('ad-pod-max', Object.assign({
+      podAgeMs: null, adExtinf: null, extinf: null, adOnly: null, markerAgeMs: null,
+    }, detail || {}));
+  }
+
+  // A pod end has many doors (DOM leave, clean streak, ceiling, timeout,
+  // ownership). Every one goes through here, so the route flag, the ceiling
+  // timer and the freeze cannot outlive the pod whichever door fired.
+  function endPod(reason, detail, frozenAd) {
+    const wasOpen = !!(workerRoutePodAt || overlay.playlistPodAt || overlay.adActive || overlay.revealed || adUiHeldAt);
+    workerRoutePodAt = 0;
+    workerRouteClean = 0;
+    playlistSawDomAd = false;
+    try { clearTimeout(overlay.podMaxTimer); } catch { /* ignore */ }
+    overlay.podMaxTimer = 0;
+    if (wasOpen && !podEnded) {
+      podEnded = true;
+      adLog('ad-pod-end', Object.assign({ reason: String(reason || '') }, detail || {}));
+      // A playlist pod with NO DOM evidence at its start can end with the ad-UI
+      // detector still "on" (a permanent shell). That is its own freeze, not a
+      // new ad: release it. A pod that started on a real DOM ad is left held.
+      if (frozenAd && lastPodEvidence && lastPodEvidence.from && !lastPodEvidence.dom) releasePodFreeze(reason);
+      lastPodEvidence = null;
+    }
+  }
+
+  // A pod that ended while the ad-UI detector was still truthy re-took the
+  // freeze with holdAfterReveal and then never resumed it (no DOM transition
+  // follows a permanent shell). The POD's pause is ours to release; a later
+  // tick is free to take a new hold for a new ad.
+  function releasePodFreeze(reason) {
+    const v = mainVideo();
+    const eligible = !!(v && v.isConnected && v.paused && !userResumedHeld()
+      && !resumeRefusedByUser(v) && selfPausedRecently(AD_POD_MAX_MS + 5000));
+    if (!eligible) { adLog('pod-freeze-release', { reason: String(reason || ''), released: false }); return; }
+    adLog('pod-freeze-release', { reason: String(reason || ''), released: true, ct: +Number(v.currentTime || 0).toFixed(1) });
+    resumeNative(v, 'pod-freeze-release');
+  }
+
+  // A playlist-opened pod has no DOM transition of its own. Its ceiling and
+  // clean-streak doors call this so `ad-ui-release {act:'pod-end'}` is real
+  // for that pod, then endPod makes the cleanup unconditional.
+  function endPlaylistPod(reason, detail) {
+    adUiRelease(true, reason);
+    endPod(reason, detail);
+  }
+
+  function playlistPodDomLeave() {
+    const open = !!(overlay.playlistPodAt && (overlay.adActive || overlay.revealed));
+    if (!open || !playlistSawDomAd || adUiHeldAt || overlay.handbackWait) return;
+    endPlaylistPod('dom-ad-left', { from: 'ad-ui-off' });
+  }
+
+  // The ceiling is a TIMER, not a branch inside a playlist fetch: a stalled
+  // fetch used to hold the cover for the page's 180 s timeout.
+  function podMaxEnd() {
+    const ev = lastPodEvidence || {};
+    const podAgeMs = overlay.playlistPodAt ? Date.now() - overlay.playlistPodAt : null;
+    emitPodMax({
+      podAgeMs, adExtinf: ev.adExtinf == null ? null : ev.adExtinf,
+      extinf: ev.extinf == null ? null : ev.extinf,
+      adOnly: ev.adOnly == null ? null : !!ev.adOnly,
+      markerAgeMs: ev.markerAgeMs == null ? null : ev.markerAgeMs,
+    });
+    endPlaylistPod('pod-max', { podAgeMs });
+    requestStandby(1200, false, 'pod-max');
+  }
+
+  function adUiRelease(fromUiOff, reason) {
     // THE REASON IS CLEARED ON EVERY EPISODE END, HELD OR NOT. It used to sit
     // after `if (!adUiHeldAt) return;`, so the first pod that was refused
     // poisoned the per-episode dedupe for the rest of the page load: the ring
@@ -2291,12 +2478,12 @@
     // finishAdOverlay() owns the chrome-linger grace and stopAdOverlay() the
     // single audio-claim release, so this only chooses the door.
     if (fromUiOff && overlay.playlistPodAt && (overlay.adActive || overlay.revealed)) {
+      const podAgeMs = Date.now() - overlay.playlistPodAt;
       adLog('ad-ui-release', {
-        act: 'pod-end',
-        heldMs,
-        podAgeMs: Date.now() - overlay.playlistPodAt,
-        revealed: !!overlay.revealed,
+        act: 'pod-end', reason: String(reason || 'dom-ad-off'),
+        heldMs, podAgeMs, revealed: !!overlay.revealed,
       });
+      endPod(String(reason || 'dom-ad-off'), { heldMs, podAgeMs });
       finishAdOverlay();
       return;
     }
@@ -2315,7 +2502,7 @@
     const v = mainVideo();
     if (!v || !v.isConnected) return;
     adLog('ad-ui-release', { heldMs, act: v.paused ? 'resume' : 'playing', reasserts });
-    if (v.paused) resumeNative(v, 'ad-ui-release');
+    if (v.paused && !overlay.handbackWait) resumeNative(v, 'ad-ui-release');
   }
   // Exposed for diagnostics/tests only; not used by the ad path.
   stats.adUiDetail = adUiDetail;
@@ -2323,6 +2510,15 @@
   // halves are driven directly - the decision (`adHoldWorthy`) and the effect.
   stats.adUiHold = adUiHold;
   stats.adUiRelease = adUiRelease;
+  // Test seam: shorten the SAME ceiling timer so a 60 s boundary is reachable
+  // in a suite without pretending the page's 180 s timeout ended the pod.
+  stats.setPodMaxMs = (ms) => {
+    const n = Number(ms);
+    if (Number.isFinite(n) && n > 0) podMaxMs = n;
+  };
+  stats.podMaxMs = () => podMaxMs;
+  stats.workerRoutePodAt = () => workerRoutePodAt;
+  stats.playlistSawDomAd = () => playlistSawDomAd;
   // Test/diagnostic seam: drive standby lifecycle rows without a worker round trip.
   stats.requestStandby = requestStandby;
   stats.standbyBypass = () => ({ at: standbyBypassAt, pod: standbyBypassPod });
@@ -2577,7 +2773,7 @@
   // `native-catchup` rows 13, 17 and 17 s forward after the pod ended
   // ("flicked/glitched ... then advanced and returned").
   function resumeNative(v, tag, { seek = true } = {}) {
-    if (!v || !v.isConnected) return;
+    if (!v || !v.isConnected || overlay.handbackWait) return;
     let seekedNow = false;
     try {
       // Hand the native back AT THE SAME OFFSET the clean player was showing.
@@ -3015,7 +3211,7 @@
   }
 
   function resumeNativeIfAllowed(v, tag, opts) {
-    if (!v || !v.isConnected) return;
+    if (!v || !v.isConnected || overlay.handbackWait) return;
     if (overlay.adActive) return;
     if (overlay.frame && !overlay.standby) return;
     if (resumeRefusedByUser(v)) {
@@ -3115,17 +3311,25 @@
   }
 
   function stopAdOverlay(reason, opts = {}) {
+    // ONE WAIT PER HAND-BACK. A repeated DOM pod-end while a wait is live must
+    // not cancel it and arm a second one over the same picture.
+    const hadWait = !!overlay.handbackWait;
+    if (hadWait && reason === 'ad-end' && !opts.noWait) {
+      adLog('handback-wait-kept', { ms: Date.now() - overlay.handbackWait.at });
+      return;
+    }
+    // Cancel BEFORE the new pod's hold: freezeNativeForPod() refuses to pause
+    // into an armed wait, so holding first loses that pod's immediate freeze.
+    cancelHandbackWait(reason);
     const revealedAd = adUiHoldTarget();
     if (revealedAd) holdAfterReveal(revealedAd);
+    endPod(reason, null, !!revealedAd);
     adLayoutRelease();
     // A standby that was never adopted is invisible content behind the native
     // player. Stopping it must not post overlay-stop (that clears the worker's
     // ad state without an ad) and must not resume/seek the native player.
     const wasStandby = !!overlay.standby && !overlay.revealed && !overlay.adActive;
-    // A second teardown (a source switch, a clean stall, a new pod) ends the
-    // wait and proceeds: the wait exists to protect ONE hand-back, never to
-    // hold a frame that something else has already decided to replace.
-    cancelHandbackWait(reason);
+    // The wait was cancelled above, before any new pod's hold could be refused.
     if (!wasStandby) overlay.lastEndAt = Date.now();
     // A POD END IS NOT A LICENCE TO PUT A FROZEN ELEMENT ON SCREEN. Measured in
     // the replica 2026-11-26 (dev-preroll-hold 1795677985765, 0.8.121):
@@ -3138,7 +3342,7 @@
     // Only a pod end qualifies; a clean-stall/ad-only teardown has no picture to
     // wait on. Bounded by HANDBACK_WAIT_MS so a native that never recovers still
     // gets the hand-back it would have had.
-    if (!opts.noWait && !overlay.handbackWait && reason === 'ad-end' && overlay.frame && overlay.revealed && cleanFrameCanCover()) {
+    if (!opts.noWait && !hadWait && reason === 'ad-end' && overlay.frame && overlay.revealed && cleanFrameCanCover()) {
       const wv = overlay.video && overlay.video.isConnected ? overlay.video : mainVideo();
       const wrs = wv ? Number(wv.readyState) || 0 : 0;
       // A PARKED PLAYER IS NOT A STARVED ONE. `resumeRefusedByUser()` says no for
@@ -3156,7 +3360,7 @@
       // those 14 s, so three more seconds of it is not a new interruption.
       const waitRefused = (document.visibilityState && document.visibilityState !== 'visible') || !!userPausedInPod;
       if (wv && wrs < 3 && !waitRefused) {
-        const wait = { at: Date.now(), reason, capped: false, timer: 0 };
+        const wait = { at: Date.now(), reason, capped: false, timer: 0, frame: overlay.frame, blind: 0, blindAt: 0, blindStAt: 0 };
         overlay.handbackWait = wait;
         const finish = () => {
           // A cancelled wait clears this timer; `active` keeps a callback that
@@ -3195,9 +3399,12 @@
           const why = !nv ? 'no-video' : nrs >= 3 ? 'ready' : resumeSinceWait ? 'user-resume'
             : ms >= HANDBACK_WAIT_MS ? 'cap' : coverLost ? 'cover-lost' : '';
           if (active && why) {
+            // A replacement (a warm standby) is not ours to tear down: this
+            // wait belongs to the picture it armed on, not to the new frame.
+            const replaced = !!overlay.frame && overlay.frame !== wait.frame;
             overlay.handbackWait = null;
-            adLogState('handback-ready', { ms, rs: nrs, capped: why === 'cap', covered, why });
-            stopAdOverlay(wait.reason, { noWait: true });
+            adLogState('handback-ready', { ms, rs: nrs, capped: why === 'cap', covered, why, replaced });
+            stopAdOverlay(wait.reason, { noWait: true, keepFrame: replaced });
           } else if (active) {
             wait.timer = setTimeout(finish, 150);
           }
@@ -3312,7 +3519,9 @@
       } catch { /* ignore */ }
       overlay.switchPrev = null;
     }
-    try { overlay.frame.remove(); } catch { /* ignore */ }
+    if (!opts.keepFrame) {
+      try { overlay.frame.remove(); } catch { /* ignore */ }
+    }
     if (!wasStandby) {
       // ONE row per pod, and only when THIS pod actually took over. `!wasStandby`
       // alone named every teardown as a hand-back when an earlier pod's
@@ -3410,7 +3619,7 @@
       bypassStats.stops++;
       bypassStats.last = { type: 'stop', reason: String(reason || ''), at: Date.now() };
     }
-    overlay.frame = null;
+    if (!opts.keepFrame) overlay.frame = null;
     overlay.token = null;
     overlay.url = null;
     overlay.channel = null;
@@ -3434,7 +3643,7 @@
     try { clearTimeout(overlay.coldTimer); } catch { /* ignore */ }
     overlay.coldTimer = 0;
     overlay.nativeHidden = false;
-    overlay.standby = false;
+    overlay.standby = !!opts.keepFrame;
     overlay.adActive = false;
     overlay.playlistPodAt = 0;
     standbyBypassPod = null;
@@ -3794,9 +4003,10 @@
       return;
     }
     if (overlay.frame) {
-      // standby-start never calls this with an existing frame; guard anyway so
-      // a standby can never be reloaded into a visible player.
-      if (standby) return;
+      // A warm standby never replaces a visible frame. An explicit source
+      // switch is the one door that may, even when the new frame is a standby
+      // arriving during a hand-back wait (its frame is not ours to tear down).
+      if (standby && !switchSource) return;
       if (switchSource) {
         // 0.8.17: the old hls.js instance can stay stuck in Buffering after an
         // ad-only playlist (measured on necros). Build a fresh iframe for the
@@ -4053,8 +4263,9 @@
         if (overlay.badge) overlay.badge.textContent = 'sem anúncio · carregando…';
         // Start muted so Chrome can autoplay the frame, then hand it straight to
         // the authority's state (which already includes the user's decision).
-        overlaySend({ t: 'mute', m: true });
-        overlay.audioSent = { muted: true, volume: audioState().volume };
+        // The frame starts from the authority's state: no direct mute write.
+        overlay.audioSent = null; // a fresh frame knows nothing we told the old one
+        applyOverlayAudio();
         overlaySend({ t: 'load', url: overlay.url });
         overlaySend({ t: 'play' });
         return;
@@ -4532,8 +4743,8 @@
     // iframe. Sending here too avoids a race on warm starts.
     setTimeout(() => {
       if (!overlay.frame) return;
-      overlaySend({ t: 'mute', m: true }); // autoplay gate, corrected below
-      overlay.audioSent = { muted: true, volume: audioState().volume };
+      overlay.audioSent = null; // a fresh frame knows nothing we told the old one
+      applyOverlayAudio();
       overlaySend({ t: 'load', url: overlay.url });
       overlaySend({ t: 'play' });
       applyOverlayAudio();
@@ -4579,6 +4790,21 @@
       }
       if (msg.type === 'ad-hold') {
         if (!AD_OVERLAY_ENABLED) return;
+        // A new pod replaces the protected picture. End the wait BEFORE this
+        // branch pauses the native or reveals a standby over it.
+        cancelHandbackWait('ad-hold');
+        // THE START DOOR SHARES THE ROUTE'S PREDICATE. This covers BOTH pod
+        // sources: the worker's lastAdMarker post and the page's playlist
+        // route. A stale marker with no ad painted is refused with one row
+        // naming what was seen, not silently covered for three minutes.
+        const ev = podEvidence(msg);
+        // An UNATTRIBUTED ad-hold is the page's own DOM-detected signal (the
+        // test seam stands in for it). The two real pod-start doors both carry
+        // `from`, so a playlist claim with no ad evidence is refused here.
+        if (msg.from && !ev.worthy) { podEvidenceRefuse(msg.from, ev); return; }
+        lastPodEvidence = ev;
+        podEnded = false;
+        podMaxLogged = false;
         if (
           !overlay.adActive &&
           overlay.lastEndAt &&
@@ -4590,7 +4816,7 @@
           // an ad at all - his "tomou anuncio DE NOVO" after our player came in.
           // `adHoldWorthy` is what decides an ad everywhere else in this file;
           // the cooldown reads the same verdict or it reads nothing.
-          !adHoldWorthy(adUiDetail(), mainVideo())
+          !ev.worthy
         ) {
           // The playlist marker that produced the pod we just closed is still
           // there, and the page itself shows no ad. Refusing is the whole fix:
@@ -4642,6 +4868,9 @@
         const v = mainVideo();
         if (!v) return;
         overlay.held = true;
+        emitPodStart(msg, ev);
+        try { clearTimeout(overlay.podMaxTimer); } catch { /* ignore */ }
+        overlay.podMaxTimer = setTimeout(podMaxEnd, podMaxMs);
         // Live-time alignment: remember where the native sat relative to the
         // edge, and whether it was PLAYING. Both are used to (a) put the clean
         // player at the same offset so the swap is invisible, and (b) refuse to
@@ -4812,6 +5041,15 @@
       }
       if (msg.type === 'ad-end') {
         if (!AD_OVERLAY_ENABLED) return;
+        if (String(msg.reason || '') === 'pod-max') {
+          emitPodMax({
+            podAgeMs: msg.podAgeMs === undefined ? null : msg.podAgeMs,
+            adExtinf: msg.adExtinf === undefined ? null : msg.adExtinf,
+            extinf: msg.extinf === undefined ? null : msg.extinf,
+            adOnly: msg.adOnly === undefined ? null : !!msg.adOnly,
+            markerAgeMs: msg.markerAgeMs === undefined ? null : msg.markerAgeMs,
+          });
+        }
         finishAdOverlay();
         return;
       }
@@ -4998,6 +5236,7 @@
       // Nothing to do costs one `.paused` read; a re-pause is the page's own
       // play() being undone, which is the hold's documented job since 0.8.51.
       if (overlay.adActive || overlay.revealed) freezeNativeForPod();
+      if (ad && overlay.playlistPodAt && (overlay.adActive || overlay.revealed)) playlistSawDomAd = true;
       if (ad !== rec.ad) {
         const since = rec.adSince;
         // THE EPISODE BOUNDARY IS THE ONLY PLACE A REASON CANNOT GO STALE. The
@@ -5078,6 +5317,10 @@
         // has nothing to do costs nothing.
         adUiHold(adDetail);
       }
+      // A DOM ad that appeared during a playlist pod and then left is an
+      // independent end door: the playlist marker can keep claiming an ad
+      // long after the page has shown content again.
+      if (!ad) playlistPodDomLeave();
       const v = sampleVideo();
       const playing = !!(v && !v.paused && v.w > 0 && v.rs >= 2);
       if (playing !== rec.playing) {
@@ -5256,6 +5499,9 @@
     // player with a clean lower-quality HLS stream during stitched ads. This
     // is opt-out via the adblock toggle (data-ko-adblock=0).
     const AD_BYPASS_ENABLED = true;
+    // Same ceiling as the page's own timer: a stopped playlist fetch must not
+    // leave this worker's adBypassActive true for the page's 180 s timeout.
+    const AD_POD_MAX_MS = 60000;
     const realFetch = self.fetch.bind(self);
     const cleanCache = new Map();
     const mediaFallbackCache = new Map();
@@ -5301,6 +5547,9 @@
         if (msg.type === 'overlay-stop') {
           adBypassActive = false;
           cleanPlaylistStreak = 0;
+          bypassStartedAt = 0;
+          try { clearTimeout(podMaxTimer); } catch { /* ignore */ }
+          podMaxTimer = 0;
           debugLog('bypass.overlayStop', { reason: String(msg.reason || '').slice(0, 60) });
         } else if (msg.type === 'need-source' && adBypassActive) {
           switchCleanSource(msg.channel || lastChannel);
@@ -5545,6 +5794,30 @@
     let bypassBusy = false;
     let lastBypassAt = 0;
     let cleanPlaylistStreak = 0;
+    let podMaxTimer = 0;
+    // ONE worker end door: every reason clears the same state and posts the
+    // same ad-end shape the page turns into its promised ad-pod-max row.
+    function workerEndPod(reason, detail) {
+      adBypassActive = false;
+      cleanPlaylistStreak = 0;
+      bypassStartedAt = 0;
+      try { clearTimeout(podMaxTimer); } catch { /* ignore */ }
+      podMaxTimer = 0;
+      postBypass(Object.assign({
+        type: 'ad-end', channel: lastChannel, reason: String(reason || ''),
+      }, detail || {}));
+    }
+    function workerPodMax() {
+      if (!adBypassActive || !bypassStartedAt || Date.now() - bypassStartedAt <= AD_POD_MAX_MS) return;
+      const ev = lastAdMarker || {};
+      workerEndPod('pod-max', {
+        podAgeMs: Date.now() - bypassStartedAt,
+        adExtinf: ev.adExtinf === undefined ? null : ev.adExtinf,
+        extinf: ev.extinf === undefined ? null : ev.extinf,
+        adOnly: ev.adOnly === undefined ? null : !!ev.adOnly,
+        markerAgeMs: ev.at ? Date.now() - ev.at : null,
+      });
+    }
     let switchBusy = false;
     let lastSwitchAt = 0;
     // The first ~4s of a fresh page are usually content before the preroll.
@@ -5683,7 +5956,7 @@
       }
     }
 
-    async function maybeStartBypass() {
+    async function maybeStartBypass(info) {
       if (!lastChannel || bypassBusy) return;
       if (Date.now() - lastBypassAt < 15000) return;
       bypassBusy = true;
@@ -5703,11 +5976,14 @@
         type: 'ad-hold',
         channel: lastChannel,
         from: 'playlist',
-        adExtinf: lastAdMarker ? lastAdMarker.adExtinf : undefined,
-        extinf: lastAdMarker ? lastAdMarker.extinf : undefined,
-        adOnly: lastAdMarker ? lastAdMarker.adOnly : undefined,
-        hasStitched: lastAdMarker ? lastAdMarker.hasStitched : undefined,
+        adExtinf: info ? info.adExtinf : (lastAdMarker ? lastAdMarker.adExtinf : undefined),
+        extinf: info ? info.extinf : (lastAdMarker ? lastAdMarker.extinf : undefined),
+        adOnly: info ? !!info.adOnly : (lastAdMarker ? !!lastAdMarker.adOnly : undefined),
+        hasStitched: info ? !!info.hasStitched : (lastAdMarker ? lastAdMarker.hasStitched : undefined),
+        changed: info ? (info.changed === undefined ? null : info.changed) : (lastAdMarker ? lastAdMarker.changed : undefined),
         adChanged: lastAdMarker ? lastAdMarker.changed : undefined,
+        markerAgeMs: lastAdMarker ? Date.now() - lastAdMarker.at : null,
+        at: Date.now(),
       });
       try {
         let url = null;
@@ -5735,6 +6011,8 @@
         if (url) {
           adBypassActive = true;
           bypassStartedAt = Date.now();
+          try { clearTimeout(podMaxTimer); } catch { /* ignore */ }
+          podMaxTimer = setTimeout(workerPodMax, AD_POD_MAX_MS);
           postBypass({ type: 'ad-start', channel: lastChannel, url });
         } else {
           postBypass({ type: 'ad-fail', channel: lastChannel });
@@ -5998,22 +6276,10 @@
           // after the ad was over - 360p on screen for the whole wait. A real
           // break is under a minute, so a playlist-derived pod may not outlive
           // AD_POD_MAX_MS; past it the native is handed back and the row says so.
-          if (adBypassActive && bypassStartedAt && Date.now() - bypassStartedAt > AD_POD_MAX_MS) {
-            const podAgeMs = Date.now() - bypassStartedAt;
-            adBypassActive = false;
-            cleanPlaylistStreak = 0;
-            bypassStartedAt = 0;
-            postBypass({
-              type: 'ad-end',
-              channel: lastChannel,
-              reason: 'pod-max',
-              podAgeMs,
-              adExtinf: info.adExtinf,
-              extinf: info.extinf,
-              adOnly: info.adOnly,
-              markerAgeMs: lastAdMarker ? Date.now() - lastAdMarker.at : undefined,
-            });
-          }
+          // The ceiling is armed by a timer when the pod opened. Calling the
+          // same decision here only catches a playlist refresh that lands
+          // after it; a stopped fetch no longer holds the cover open.
+          workerPodMax();
           if (info.extinf > 0) {
             if (liveMedia && info.adExtinf > 0) {
               // Any stitched ad, not just an all-ad preroll. A midroll can be
@@ -6023,16 +6289,14 @@
               // with the clean hls.js stream immediately; stripAds() still
               // removes future ad segments from the native playlist.
               cleanPlaylistStreak = 0;
-              if (AD_BYPASS_ENABLED && !adBypassActive) maybeStartBypass();
+              if (AD_BYPASS_ENABLED && !adBypassActive) maybeStartBypass(info);
             } else if (liveMedia && adBypassActive) {
               // One clean playlist can still sit next to buffered ad media.
               // Require two consecutive clean refreshes before uncovering the
               // native player, so a midroll tail is not shown.
               cleanPlaylistStreak++;
               if (cleanPlaylistStreak >= 2) {
-                adBypassActive = false;
-                cleanPlaylistStreak = 0;
-                postBypass({ type: 'ad-end', channel: lastChannel });
+                workerEndPod('clean-playlists', {});
               }
             } else {
               cleanPlaylistStreak = 0;

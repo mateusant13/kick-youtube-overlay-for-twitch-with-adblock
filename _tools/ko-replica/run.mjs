@@ -45,10 +45,15 @@ const freePort = () => new Promise((res, rej) => {
     srv.close(() => res(p));
   });
 });
-const GUEST_PORT = process.argv.some((a) => a === '--guest-port' || a.startsWith('--guest-port='))
-  ? Number(argOf('guest-port', 9446))
-  : await freePort();
+const AUTO_GUEST_PORT = !process.argv.some((a) => a === '--guest-port' || a.startsWith('--guest-port='));
+const GUEST_PORT = AUTO_GUEST_PORT ? await freePort() : Number(argOf('guest-port', 9446));
 const REPLICA_PORT = Number(argOf('replica-port', 8443));
+// A PRIVATE marker OUTSIDE the harness marker dir: `ko-guest stop` scans every
+// guest*.json in G:/Temp/ko-harness and kills every live browser it names.
+// Two replica lanes on one box (measured 2026-11-26, 8443 vs 8444) turned a
+// private marker placed there into a cross-lane kill. This runner never invokes
+// the sweep; it kills only the browser named HERE, and peers cannot see it.
+const GUEST_MARKER = join('G:/Temp/ko-replica', `guest-marker-${GUEST_PORT}-${Date.now()}.json`);
 // `--capture-out` makes the replica server write the playlist bodies it served
 // in the same shape `_tools/ko-real-capture.mjs` emits, so `compare.mjs` can
 // diff the offline page against a real capture:
@@ -56,10 +61,22 @@ const REPLICA_PORT = Number(argOf('replica-port', 8443));
 const CAPTURE_OUT = argOf('capture-out', '');
 const NO_EXT = flag('no-ext');
 const KEEP_GUEST = flag('keep-guest');
+// Pre-warm mode: launch a guest once, leave it alive, then let content-keyed
+// runs attach to it and navigate a fresh page. A cold Chrome on this box took
+// 14.4 s from navigate to content-script boot under load, which no 15 s scenario
+// can absorb. Measured runs pay only the warm reload.
+const PREPARE_GUEST = flag('prepare-guest');
+const ATTACH_GUEST = flag('attach-guest');
+const REUSE_GUEST = PREPARE_GUEST || ATTACH_GUEST;
 const SCRATCH = process.env.KO_REPLICA_SCRATCH || 'G:/Temp/ko-replica/runs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const scenario = JSON.parse(readFileSync(SCN, 'utf8'));
+// A scenario may ask the control arm for the plain `FAIL` verdict when its
+// whole point is a pass/fail pair (`dev-fast` is an offline twin of the
+// friction arms). Default stays CONTROL-FAIL: the timeline probe's vacuous
+// control arm is a different thing from a demonstrated product failure.
+const CONTROL_FAIL_VERDICT = NO_EXT && scenario.controlVerdict === 'FAIL' ? 'FAIL' : 'CONTROL-FAIL';
 const channel = scenario.channel || 'replicach';
 const runDir = join(SCRATCH, `${scenario.name}-${Date.now()}`);
 mkdirSync(runDir, { recursive: true });
@@ -104,9 +121,10 @@ if (!serverReady) {
 }
 
 // ---- guest Chrome ---------------------------------------------------------
-// A port that still listens is a previous run's browser, and Chrome's answer is
-// a `bind()` failure plus a ProcessSingleton abort — never a CDP handshake. The
-// probe asks BOTH stacks (`::1` and `127.0.0.1`): the leaked guest measured
+// A port that still listens belongs to somebody else's browser: NEVER sweep
+// the shared guest markers to clear it. An auto-picked port was free a moment
+// ago, so a live listener here is a real conflict; report it and refuse.
+// The probe asks BOTH stacks (`::1` and `127.0.0.1`): a leaked guest measured
 // 2026-11-25 answered on `[::1]:9446` alone while `ko-guest stop` reported the
 // port freed.
 const net = await import('node:net');
@@ -124,8 +142,9 @@ async function waitClosed(ms) {
   }
   return false;
 }
-spawnSync(process.execPath, [join(ROOT, '_tools', 'ko-guest.mjs'), 'stop'], { stdio: 'ignore', windowsHide: true });
-if (await portOpen('127.0.0.1') || await portOpen('::1')) {
+// No marker sweep. A private port was already probed free; a foreign listener
+// is a blocker, never a process this run is allowed to kill.
+if (!ATTACH_GUEST && (await portOpen('127.0.0.1') || await portOpen('::1'))) {
   if (!(await waitClosed(10000))) {
     console.log(`CANNOT-MEASURE port ${GUEST_PORT} still listening after a stop: a previous guest browser survived its launcher`);
     process.exit(2);
@@ -223,6 +242,7 @@ const guestEnv = {
   KO_GUEST_PORT: String(GUEST_PORT),
   KO_GUEST_URL: `https://www.twitch.tv/${channel}`,
   KO_GUEST_UDD: RUN_UDD,
+  KO_GUEST_MARKER: GUEST_MARKER,
   KO_GUEST_EXTRA_ARGS: JSON.stringify([
     '--ignore-certificate-errors',
     `--host-resolver-rules=${resolver}`,
@@ -231,28 +251,50 @@ const guestEnv = {
 if (NO_EXT) guestEnv.KO_NO_EXT = '1';
 let guest = null;
 function launchGuest() {
+  if (ATTACH_GUEST) { guest = null; return null; }
   guest = spawn(process.execPath, [join(ROOT, '_tools', 'ko-guest.mjs'), 'start'], {
-    env: guestEnv, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+    env: guestEnv,
+    stdio: PREPARE_GUEST ? ['ignore', 'ignore', 'ignore'] : ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+    detached: PREPARE_GUEST,
   });
-  guest.stdout.on('data', (d) => evidence.notes.push(`guest: ${String(d).trim()}`));
-  guest.stderr.on('data', (d) => evidence.notes.push(`guest-err: ${String(d).trim()}`));
+  if (guest.stdout) {
+    guest.stdout.on('data', (d) => evidence.notes.push(`guest: ${String(d).trim()}`));
+    guest.stderr.on('data', (d) => evidence.notes.push(`guest-err: ${String(d).trim()}`));
+  }
+  if (PREPARE_GUEST) {
+    guest.unref();
+    writeFileSync(join('G:/Temp/ko-replica', 'guest-reuse.json'), JSON.stringify({ port: GUEST_PORT, marker: GUEST_MARKER, pid: guest.pid, at: Date.now() }));
+  }
   return guest;
 }
-launchGuest();
+if (!ATTACH_GUEST) launchGuest();
 
-// ORDER MATTERS: the marker-based `stop` is what kills the Chrome TREE. Killing
-// the launcher first leaves the browser alive with its profile lock and its
-// CDP port — measured 2026-11-25: a run exited with the launcher killed, the
-// next run's Chrome bound only ::1 (IPv4 `bind()` refused) and never answered
-// CDP, and `ko-guest stop` then printed "nothing to stop" because the marker
-// was already gone. The launcher is killed only after the tree is reaped.
-function stopAll() {
-  if (!KEEP_GUEST) {
-    spawnSync(process.execPath, [join(ROOT, '_tools', 'ko-guest.mjs'), 'stop'], { stdio: 'ignore', windowsHide: true });
+// ORDER MATTERS: kill the Chrome TREE by the PID in THIS run's marker, then
+// the launcher. Killing the launcher first leaves the browser alive with its
+// profile lock and its CDP port (measured 2026-11-25). Idempotent: `process.on
+// ('exit')` calls this again after the explicit stop at the end of the run.
+let stoppedAll = false;
+function ourChromePid() {
+  try {
+    const j = JSON.parse(readFileSync(GUEST_MARKER, 'utf8'));
+    return j && Number(j.port) === GUEST_PORT && j.pid ? Number(j.pid) : null;
+  } catch { return null; }
+}
+function killOurGuest() {
+  const pid = ourChromePid();
+  if (pid) {
+    try { spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); } catch { /* gone */ }
   }
-  try { guest.kill(); } catch { /* ignore */ }
+  try { if (guest) guest.kill(); } catch { /* ignore */ }
+  try { rmSync(GUEST_MARKER, { force: true }); } catch { /* ignore */ }
+}
+function stopAll() {
+  if (stoppedAll) return;
+  stoppedAll = true;
+  if (!KEEP_GUEST && !REUSE_GUEST) killOurGuest();
   try { server.kill(); } catch { /* ignore */ }
-  if (!KEEP_GUEST && !process.env.KO_REPLICA_KEEP_UDD) {
+  if (!KEEP_GUEST && !REUSE_GUEST && !process.env.KO_REPLICA_KEEP_UDD) {
     // `uddDirs` is declared after the server-start refusal path can reach
     // this function, so an early stop reads it in its temporal dead zone.
     try {
@@ -302,7 +344,7 @@ for (let attempt = 1; attempt <= 2 && !cdp; attempt++) {
   if (cdp) break;
   evidence.notes.push(`guest: attempt ${attempt} never answered CDP`);
   try { guest.kill(); } catch { /* ignore */ }
-  spawnSync(process.execPath, [join(ROOT, '_tools', 'ko-guest.mjs'), 'stop'], { stdio: 'ignore', windowsHide: true });
+  killOurGuest();
   if (attempt === 1) {
     await sleep(3000);
     if (!(await waitClosed(8000))) evidence.notes.push(`guest: port ${GUEST_PORT} still listening before the retry`);
@@ -313,10 +355,25 @@ for (let attempt = 1; attempt <= 2 && !cdp; attempt++) {
 if (!cdp) finishEarly('guest-cdp-never-answered-2-launches');
 
 let page = null;
-for (let i = 0; i < 160 && !page; i++) {
-  const { targetInfos } = await cdp.send('Target.getTargets');
-  page = targetInfos.find((t) => t.type === 'page' && /twitch\.tv\//.test(t.url)) || null;
-  if (!page) await sleep(250);
+if (ATTACH_GUEST) {
+  // A NEW TARGET, not a reload of the prepared tab: reusing a tab kept the
+  // isolated-world guard from re-injecting its content script (measured 2026-
+  // 11-26: ext:true in page world but 0 worker-playlist rows).
+  const created = await cdp.send('Target.createTarget', { url: `https://www.twitch.tv/${channel}`, background: true }, undefined, 15000);
+  page = { targetId: created.targetId, url: `https://www.twitch.tv/${channel}` };
+} else {
+  for (let i = 0; i < 160 && !page; i++) {
+    try {
+      // A guest that dies while loading its extension leaves the socket open:
+      // the default 30 s send timeout crashed the whole run. A dead guest is a
+      // CANNOT-MEASURE with its launcher stderr, not an uncaught exception.
+      const { targetInfos } = await cdp.send('Target.getTargets', {}, undefined, 5000);
+      page = targetInfos.find((t) => t.type === 'page' && /twitch\.tv\//.test(t.url)) || null;
+    } catch (e) {
+      evidence.notes.push(`targets: ${String(e)}`);
+    }
+    if (!page) await sleep(250);
+  }
 }
 if (!page) {
   try {
@@ -358,6 +415,17 @@ if (!NO_EXT) {
     });
     return true;
   })()`);
+}
+if (PREPARE_GUEST) {
+  // Wait for the real content script, not merely the page target: a target can
+  // exist 14 s before the extension world is injected on a loaded box.
+  for (let i = 0; i < 100; i++) {
+    const ok = await evaluate(NO_EXT ? '!!window.__koReplica' : '!!window.__koTwitchAdblock && !!window.__koReplica');
+    if (ok === true) break;
+    await sleep(200);
+  }
+  console.log(`GUEST_READY scenario=${scenario.name} port=${GUEST_PORT} marker=${GUEST_MARKER}`);
+  process.exit(0);
 }
 async function evaluate(expr) {
   try {
@@ -491,6 +559,21 @@ async function centerRgb() {
 }
 
 // ---- timeline -------------------------------------------------------------
+if (ATTACH_GUEST) {
+  // The new target starts its own navigation, hence a fresh server episode.
+  for (let i = 0; i < 100; i++) {
+    const st = await evaluate(`(() => ({ href: location.href, ready: !!window.__koReplica, ext: ${NO_EXT ? 'true' : '!!window.__koTwitchAdblock'} }))()`);
+    if (st && st.ready && st.ext && String(st.href).includes(`/${channel}`)) break;
+    await sleep(200);
+  }
+  // A background target is throttled: no MSE decode, no reveal, no handoff.
+  // Do this AFTER the page is ready; bringing an unloaded target forward then
+  // letting another tab steal focus produced `visibility:hidden` (measured
+  // 2026-11-26 in dev-fast run 2: 27 ring rows, no reveal, no handoff).
+  await cdp.send('Page.bringToFront', {}, sessionId, 5000);
+  await sleep(200);
+  await cdp.send('Page.bringToFront', {}, sessionId, 5000);
+}
 const samples = (scenario.samples || []).slice().sort((a, b) => a.at - b.at);
 // Scenario times are relative to the PAGE's navigation start (the server
 // starts its episode clock on the same GET), not to when this runner attached.
@@ -792,7 +875,7 @@ if (NO_EXT) {
   failures = evidence.checks.filter((c) => !c.ok && /^pixel at /.test(c.name)).length;
   evidence.arm = 'control-no-extension';
 }
-evidence.verdict = cannot > 0 ? 'CANNOT-MEASURE' : NO_EXT ? (controlOk ? 'CONTROL-PASS' : 'CONTROL-FAIL') : failures > 0 ? 'FAIL' : 'PASS';
+evidence.verdict = cannot > 0 ? 'CANNOT-MEASURE' : NO_EXT ? (controlOk ? 'CONTROL-PASS' : CONTROL_FAIL_VERDICT) : failures > 0 ? 'FAIL' : 'PASS';
 const report = JSON.stringify(evidence, null, 2);
 writeFileSync(join(runDir, 'report.json'), report);
 if (OUT) writeFileSync(OUT, report);
@@ -805,6 +888,7 @@ if (OUT) writeFileSync(OUT, report);
 // above). A missing file is a loud line, never a silent pass.
 console.log(`RESULT ${evidence.verdict} scenario=${scenario.name} checks=${evidence.checks.length} failed=${failures} cannot=${cannot} build=${evidence.build || 'n/a'} rows=${log.length}`);
 console.log(`report ${join(runDir, 'report.json')}`);
+if (ATTACH_GUEST && page) await cdp.send('Target.closeTarget', { targetId: page.targetId }, undefined, 5000).catch(() => {});
 cdp.close();
 stopAll();
 if (CAPTURE_OUT) {

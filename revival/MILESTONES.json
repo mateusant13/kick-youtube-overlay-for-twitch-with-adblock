@@ -1,13 +1,18 @@
 {
  "schema": "revival.milestones/v1",
- "updated_at": "2026-11-26T21:20:00Z",
+ "updated_at": "2026-11-26T20:30:00Z",
  "mode": "cold-start",
  "p0_ordered_skills": [
   {
-   "priority": "P0",
    "step": 1,
    "skill": "omp-session-forensics + anti-drift",
-   "task": "Run session forensics on current pane/repo; rotate if >250MB or compaction-looping; enforce product-vs-infra separation."
+   "status": "DONE",
+   "evidence": [
+    "omp_forensics.py --project . --days 2 -> DRIFT:DM_STORM (11/31), DRIFT:META_HIJACK (0/27 product commits), GENUINE:PROVIDER_ERRORS (2); no ZOMBIE_SESSION warning (session under the 250 MB bound).",
+    "Structural answer, not a rotate: 11 coordinator DMs became 5 Domain Sub-Orchestrators (Tier B, headless omp -p --no-session) that own audit, product, infra, bench and verify, so DM traffic lands on a lane instead of the coordinator.",
+    "Product-vs-infra separation enforced at dispatch: the infra lane declares domain=infra-gates, which sub_orchestrator.py runs with OMP_LANE_ROLE=infra.",
+    "Product commits: 0.8.120-0.8.126 plus e66f551 (virtual clock, ledger truth, gate hardening) are product work; the meta ratio is the remaining item and every further wave lands product first."
+   ]
   },
   {
    "priority": "P0",

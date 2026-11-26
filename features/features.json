@@ -1,9 +1,9 @@
 {
   "schema": "revival.features/v1",
   "repo": "kicktwitchyoutube_instagram",
-  "git_head": "35c8d8f",
-  "generated_at": "2026-11-26T20:03:54Z",
-  "total_tracked_files": 116,
+  "git_head": "0d3ddae",
+  "generated_at": "2026-11-26T20:36:08Z",
+  "total_tracked_files": 136,
   "feature_count": 2,
   "features": [
     {
@@ -13,6 +13,24 @@
       "files": [
         "_tools/cdp-daemon.mjs",
         "_tools/cdp.mjs",
+        "_tools/gate/arms.mjs",
+        "_tools/gate/checks/artifacts.mjs",
+        "_tools/gate/checks/index.mjs",
+        "_tools/gate/checks/instruments.mjs",
+        "_tools/gate/checks/ledger.mjs",
+        "_tools/gate/checks/revival.mjs",
+        "_tools/gate/checks/static-contracts.mjs",
+        "_tools/gate/checks/suites.mjs",
+        "_tools/gate/checks/syntax.mjs",
+        "_tools/gate/checks/tooling.mjs",
+        "_tools/gate/checks/vacuous-green-test.mjs",
+        "_tools/gate/checks/vacuous-green.mjs",
+        "_tools/gate/load-check-test.mjs",
+        "_tools/gate/load-verdict.mjs",
+        "_tools/gate/product.mjs",
+        "_tools/gate/receipt-data.mjs",
+        "_tools/gate/receipt.mjs",
+        "_tools/gate/registry.mjs",
         "_tools/ko-adlog-verdict.mjs",
         "_tools/ko-adlog-window.mjs",
         "_tools/ko-auto-install.ps1",
@@ -48,15 +66,16 @@
         "_tools/ko-twitch-net.mjs",
         "_tools/ko-verify.mjs",
         "_tools/ko-yt-net.mjs",
-        "_tools/relay.mjs"
+        "_tools/relay.mjs",
+        "_tools/test-clock.cjs"
       ],
-      "file_count": 38,
-      "recent_commit_touches": 118,
+      "file_count": 57,
+      "recent_commit_touches": 121,
       "recent_commit_subjects": [
+        "gate: split ko-verify into modules; test the load pre-flight; refuse vacuous PASS",
+        "revival v3.0.1 P0-04..P0-08: virtual clock, ledger truth, gate hardening",
         "fix(ad): end a playlist pod when the ad UI leaves, and stop starting the standby at 360p (0.8.111)",
         "fix(overlay): native stall watchdog, arrow seek parity, ad standby silence (0.8.110)",
-        "gate: refuse growth of silent decisions (ko-census)",
-        "fix(adblock): the extension saw no ad at all \u2014 measure paint, read the slate, hook SharedWorker (0.8.94)",
         "verdict: read the squeeze, his gestures and the DVR rescue",
         "Add the offline Twitch ad-delivery replica and a control arm",
         "one look instrument, and never a tab on his screen"
@@ -114,12 +133,13 @@
         "kick-overlay/yt-route-test.cjs"
       ],
       "file_count": 23,
-      "recent_commit_touches": 309,
+      "recent_commit_touches": 296,
       "recent_commit_subjects": [
         "0.8.126: a starved live gets the hand-back wait, and the level row prints the ladder",
         "0.8.125: a rect of zero is not a small player, so the clean picture no longer opens at 360p",
         "0.8.124: the hand-back wait counts reports, not polls, and a play needs a gesture in the player",
         "0.8.123: a new pod cancels the hand-back wait instead of losing its own frame",
+        "revival v3.0.1 P0-04..P0-08: virtual clock, ledger truth, gate hardening",
         "fix(harness): poll the reload arms instead of racing the 800 ms delay; 0.8.118"
       ],
       "how_it_works": "Three worlds, one page. The ISOLATED content script (`content.js`) mounts the kick/YouTube layer in an iframe (`player.html`), arbitrates ownership of the screen (`data-ko-owner`, `overlayOwnsPicture`, `OWNER_GRACE_MS`), pauses/resumes the page's own `<video>` through the stall watchdog (`nativeStallWatch`, which refuses with a named row), publishes the display clock verdicts (LIVE/BEHIND/REPEAT/FROZEN/PAUSED), sets the toolbar badge (`setBadge` -> `chrome.action`) and heals a stale tab only while it is hidden. `ko-audio.js` is the single writer of mute/volume (intent x policy x visible surface), persisted per tab in sessionStorage. The MAIN-world ad path (`twitch-adblock.js`) detects an ad by paint + slate text + the worker-hooked playlist, opens a pod, mints a clean source over Twitch's GQL usher, covers the native with the clean picture only once it is decoding at the sync target (`cleanLatTarget`, reveal waits for the caught-up report), freezes the page element for the pod's duration, and hands back exactly once (timeline-reset detection, buffered-edge or wall-clock target, `handback-wait` until `rs >= 3` or 3 s). `adblock-bridge.js` crosses the world boundary in both directions; `background.js` installs the DNR rules and the packaged resources (it holds no storage record and no badge).",

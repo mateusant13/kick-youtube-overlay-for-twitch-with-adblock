@@ -35,7 +35,7 @@
    "hypothesis": "resumeNative() seeked the native to `buffered.end - 0.5`, which is the newest frame the ELEMENT holds, not the offset the clean player was showing. On a native Twitch paused while it was covered that is a seek across the whole pod (a visible jump); on one that kept buffering it is a free jump forward past the clean position. Independently, ad-end called resumeNativeIfAllowed(), which refuses while `overlay.adActive` is still set and a revealed frame is still mounted - both true at that moment - so the hand-back was deferred to the 300ms retry, i.e. a frozen native frame followed by a jump.",
    "falsifier": "At ad-end the native must already stand at the offset the clean player had (edge - cleanLatTarget, within 1.5s), with no seek at all when it is already there. A hand-back that moves the native by seconds, or that leaves it frozen for a retry, is the defect.",
    "evidence": [
-    "Owner report 2026-11-07: 'quando acaba o ad e o player volta, aí acontece um salto no tempo por causa disso'",
+    "Owner report 2026-11-07: 'quando acaba o ad e o player volta, a\u00ed acontece um salto no tempo por causa disso'",
     "Pre-fix code: `const be = v.buffered && v.buffered.length ? v.buffered.end(v.buffered.length - 1) : 0; if (be > v.currentTime + 3) { v.currentTime = be - 0.5 }` and ad-end `resumeNativeIfAllowed(v, 'now')` where that helper returns early on `overlay.adActive` / revealed frame",
     "Fix (0.8.44): the hand-off seeks to `nativeEdge - cleanLatTarget()` (skip when the gap is under RESUME_GAP_SEC, log from/to/lat/gap), and ad-end resumes the native DIRECTLY under the user-intent guard only, so the frame and the picture change in the same tick",
     "kick-overlay/ad-time-continuity-test.cjs drives the REAL kick-overlay/twitch-adblock.js through the shared stubbed DOM (mute-decision-test.cjs makePage/settle) and through the real ad path (ad-hold -> ad-start -> frame ready -> 3 healthy Playing ticks -> reveal -> ad-end): `ad-end on a native already at the target offset does not seek` and `a native parked behind by the pod is handed back at edge-3`",
@@ -79,7 +79,7 @@
    "hypothesis": "resumeNative() called play() on the native whenever the lifecycle allowed it, with no check on (a) document.visibilityState and (b) whether the user had paused the native before the pod. A tab left paused in the background is therefore started by the ad path as soon as a standby start or an ad-end tick reaches it, which is audible from another tab.",
    "falsifier": "A native that was already paused at take-over (and never played) must still be paused at ad-end, and a hidden tab must never be started. A cold preroll (paused at currentTime<1, i.e. the page just loaded) is the one case where starting it is correct.",
    "evidence": [
-    "Owner report 2026-11-07: 'tem vezes que estou em outra aba, com uma aba da twitch pausada, por algum motivo é despausado sozinho por causa da extensão'",
+    "Owner report 2026-11-07: 'tem vezes que estou em outra aba, com uma aba da twitch pausada, por algum motivo \u00e9 despausado sozinho por causa da extens\u00e3o'",
     "Pre-fix code: resumeNative() had no visibility check and resumeNativeIfAllowed() only gated on the overlay lifecycle (`overlay.adActive`, revealed frame), never on the user's own pause",
     "Fix (0.8.44): overlay.pauseBeforeAd / overlay.coldPreroll captured at take-over (both the ad-hold and the ad-start-without-hold paths) and a resumeRefusedByUser(v) guard - hidden tab, or a paused non-cold native - applied by resumeNativeIfAllowed and by the 1s watch tick and by ad-end",
     "kick-overlay/ad-time-continuity-test.cjs drives the REAL kick-overlay/twitch-adblock.js through the shared stubbed DOM (mute-decision-test.cjs makePage/settle) and through the real ad path (ad-hold -> ad-start -> frame ready -> 3 healthy Playing ticks -> reveal -> ad-end): `a player the user had paused is not restarted after the pod`, `a pod that ends while the tab is hidden never starts playback`, `a cold preroll still hands back a running player at edge-3`",
@@ -103,7 +103,7 @@
    "evidence": [
     "Pre-fix code, kick-overlay/twitch-adblock.js: ad-hold `if (overlay.frame && !overlay.standby) { ... return; }` had no channel comparison, and standby-start compared `overlay.channel` with `pageChannel()` only for a standby",
     "Pre-fix code, same module: no route watcher at all (grep popstate|pushState|setInterval|pathname found only pageChannel() and the document_start standby requests)",
-    "kick-overlay/channel-switch-test.cjs runs the REAL twitch-adblock.js against the shared stubbed DOM (mute-decision-test.cjs), drives ad-hold -> ad-start -> ready -> 3 healthy Playing ticks to a revealed overlay, then changes location.pathname like Twitch does. Pre-fix run (source before the fix), recorded output: `FAIL a revealed overlay of the previous channel is stopped on a channel switch`, `FAIL the native player is handed back after the switch  native still hidden (hidden)`, `FAIL an ad on the new channel cold-starts its own clean player  loads after the switch: [\"https://clean.example/live.m3u8\"]` — RESULT FAIL checks=9 failed=6",
+    "kick-overlay/channel-switch-test.cjs runs the REAL twitch-adblock.js against the shared stubbed DOM (mute-decision-test.cjs), drives ad-hold -> ad-start -> ready -> 3 healthy Playing ticks to a revealed overlay, then changes location.pathname like Twitch does. Pre-fix run (source before the fix), recorded output: `FAIL a revealed overlay of the previous channel is stopped on a channel switch`, `FAIL the native player is handed back after the switch  native still hidden (hidden)`, `FAIL an ad on the new channel cold-starts its own clean player  loads after the switch: [\"https://clean.example/live.m3u8\"]` \u2014 RESULT FAIL checks=9 failed=6",
     "Fix (0.8.43): a 900 ms pathname watcher in the page module (same cadence as content.js SPA_MS). On a channel change it stops any overlay whose overlay.channel no longer matches pageChannel(); stopAdOverlay() restores the hidden videos, resumes the native player and posts overlay-stop so the worker clears adBypassActive and can retry on the new channel. Same-channel sub-routes (/ch/clips) do not trigger it",
     "Post-fix: node kick-overlay/channel-switch-test.cjs -> RESULT PASS channel-switch checks=9 failed=0 (revealed dropped, native handed back, new ad cold-starts on the new channel, standby dropped, sub-route keeps the overlay, negative arm with the guard disabled still keeps the old player and native hidden)",
     "Live arm, guest Chrome (port 9333), real module driven through its own BroadcastChannel protocol with a real minted clean master for twitch.tv/necros: standby-start -> Standby 0.01 / native visible, ad-hold -> overlay-reveal reason standby, adfix opacity 1, native visibility:hidden muted:true. Real click on the sidebar link to /aggeo (SPA): at the first 500 ms sample the A player was removed (adfix null), native visibility restored to visible and playing (ct 0 -> 3.6 s), and the new channel standby started at T+1s",
@@ -127,13 +127,13 @@
    "evidence": [
     "Owner report 2026-10-26: 'when i mute, the ad comes, player swaps, it unmutes. respect the last user decision.'",
     "Pre-fix code, kick-overlay/twitch-adblock.js revealOverlay(): `if (!overlay.unmuteTried) { overlay.unmuteTried = true; overlaySend({ t: 'mute', m: false }); ... }` with no read of wasMuted/holdWasMuted",
-    "Pre-fix code, stopAdOverlay(): `v.muted = overlay.wasMuted` — captured at pod start, so an in-pod unmute was reverted",
+    "Pre-fix code, stopAdOverlay(): `v.muted = overlay.wasMuted` \u2014 captured at pod start, so an in-pod unmute was reverted",
     "Pre-fix code, unmuteHandler on document pointerdown: unmuted on ANY page click, regardless of the user's mute",
     "kick-overlay/mute-decision-test.cjs runs the real twitch-adblock.js through ad-hold -> ad-start -> frame ready -> 3 healthy Playing ticks -> reveal in a stubbed DOM: muted user gets no mute:false (and the badge offers click-to-sound), a generic page click does not unmute, a badge click does, ad-end restores the decision; an unmuted user still gets sound",
     "Its negative arm replays the pre-fix gate (`if (overlay.muteIntent)` -> `if (false)`) and the muted scenario then DOES see mute:false, so the detector is exercised in both directions",
     "Gate: node _tools/ko-verify.mjs -> RESULT PASS checks=12 failed=0, including the new mute-decision check",
-    "Owner Chrome 0.8.42, live twitch.tv/Caedrel (native player really playing: rs=4, currentTime 141.1 s), real reveal path through `stats.testOverlay(<live kick hls>)`. Arm muted: `overlay-reveal` at 30,153 ms (reason `playing`), `reveal-muted` at 30,158 / 31,100 / 32,094 ms, ZERO `unmute-ok`; badge `sem anúncio · 1080p · clique para som`; revealed frame muted=true, rs=4, t=31 s. Arm unmuted, same page: `overlay-reveal` 25,692 ms, `unmute-ok` 27,202 ms, no `reveal-muted`; badge `sem anúncio · 1080p` (no sound offer); revealed frame muted=false, rs=4, t=32.2 s. Two earlier runs reproduced the same split (4x reveal-muted and 3x reveal-muted vs 1x unmute-ok each)",
-    "The badge text is read with an anchored match on `sem anúncio ·`; the revealed frame is identified among several player.html targets by rs>=2 (a cold standby sits at rs=1, t=0). Both were initially mis-sampled (a Twitch promo banner and the idle standby), which is why the numbers above come from the corrected instrument",
+    "Owner Chrome 0.8.42, live twitch.tv/Caedrel (native player really playing: rs=4, currentTime 141.1 s), real reveal path through `stats.testOverlay(<live kick hls>)`. Arm muted: `overlay-reveal` at 30,153 ms (reason `playing`), `reveal-muted` at 30,158 / 31,100 / 32,094 ms, ZERO `unmute-ok`; badge `sem an\u00fancio \u00b7 1080p \u00b7 clique para som`; revealed frame muted=true, rs=4, t=31 s. Arm unmuted, same page: `overlay-reveal` 25,692 ms, `unmute-ok` 27,202 ms, no `reveal-muted`; badge `sem an\u00fancio \u00b7 1080p` (no sound offer); revealed frame muted=false, rs=4, t=32.2 s. Two earlier runs reproduced the same split (4x reveal-muted and 3x reveal-muted vs 1x unmute-ok each)",
+    "The badge text is read with an anchored match on `sem an\u00fancio \u00b7`; the revealed frame is identified among several player.html targets by rs>=2 (a cold standby sits at rs=1, t=0). Both were initially mis-sampled (a Twitch promo banner and the idle standby), which is why the numbers above come from the corrected instrument",
     "Why the trigger is synthetic: 150 s on live Caedrel with the native player playing, 141 samples -> 5 `ad-net` requests, 0 samples with a visible ad (visibility checked with getBoundingClientRect + computed style, ad label text matched), 0 native pauses, 0 `cold-cover`, 0 `overlay-reveal`; the worker rewrote the playlist to `index-muted-*.m3u8`. There was no ad on screen to cover, so a Twitch-served pod could not be the trigger",
     "Sound: HTMLMediaElement.volume is pinned to 0 in the measurement tab (no browser-level mute exists in this CDP build: Browser.setMuted / Target.setMuted / Page.setAudioMuted all return \"wasn't found\"), and `muted` is left truthful, so the arm results are not artefacts of silencing"
    ],
@@ -220,7 +220,7 @@
    "verified": false,
    "verified_by": "was instrument-verified on 2026-11-07T17:01Z against 0.8.45; that record measured the OLD contract (opaque frame over a hidden native), which KO-20261107-05 demoted as the black-screen defect. Demoted back to fixed in the same change.",
    "owner_validation": "pending: a Twitch-served ad that actually paints on the owner Chrome, across repeated runs and channels; that is also the only measurement that gives real coverMs/revealMs.",
-   "next": "Re-arm on the owner Chrome at his next pod: cold-cover must log painted:true, the native videos must be hidden, ko-adfix-cover must be display:flex, and the frame must stay unraised until overlay-reveal. The guest arm (ko-real-arm-d1.mjs 9333) returned NO-VERDICT on 2026-11-08 for its own precondition: the frame was already revealed at attach (frame_seen_at_ms=1, frame opacity 1), so the hold took the warm path — do not read that as a pass. Do not chase it with guest restarts: repeated guest starts are the terminal popups.",
+   "next": "Re-arm on the owner Chrome at his next pod: cold-cover must log painted:true, the native videos must be hidden, ko-adfix-cover must be display:flex, and the frame must stay unraised until overlay-reveal. The guest arm (ko-real-arm-d1.mjs 9333) returned NO-VERDICT on 2026-11-08 for its own precondition: the frame was already revealed at attach (frame_seen_at_ms=1, frame opacity 1), so the hold took the warm path \u2014 do not read that as a pass. Do not chase it with guest restarts: repeated guest starts are the terminal popups.",
    "arms_artifact": "_evidence/KO-20261023-01-arms.md",
    "verified_at": "2026-11-07",
    "reachability_artifact": "_evidence/KO-20261023-01-reachability.txt",
@@ -388,8 +388,8 @@
    "reported": "2026-11-08",
    "fixed_in": "0.8.49",
    "commit": null,
-   "hypothesis": "`healthy` required 4s of forward buffer while the bridge syncs at liveSyncDuration:3, so on the owner's connection every genuine tick (measured buffered 3.38-3.65, rs=4) was 'playing-not-healthy'; that scheduled the stall guard, whose maybeNudgeOverlay seeked pos-2 TWICE (a visible 2s rewind), and then stopAdOverlay('clean-stall') handed the native back. catchUpClean's own seek aimed at edge-3, which is 4-5s beyond buffered.end, so each catch-up starved the frame and ended in the same teardown: 'trocou o player, voltou vários segundos'.",
-   "falsifier": "His own ko.adlog: 49 playing-not-healthy, 14 overlay-nudge, 20 overlay-catchup, 4 overlay-stall-stop; every catch-up (e.g. lat 8.2 pos 125.9 to 131) is followed by buffered≈2 and a stall-stop, and every nudge moves the position backwards.",
+   "hypothesis": "`healthy` required 4s of forward buffer while the bridge syncs at liveSyncDuration:3, so on the owner's connection every genuine tick (measured buffered 3.38-3.65, rs=4) was 'playing-not-healthy'; that scheduled the stall guard, whose maybeNudgeOverlay seeked pos-2 TWICE (a visible 2s rewind), and then stopAdOverlay('clean-stall') handed the native back. catchUpClean's own seek aimed at edge-3, which is 4-5s beyond buffered.end, so each catch-up starved the frame and ended in the same teardown: 'trocou o player, voltou v\u00e1rios segundos'.",
+   "falsifier": "His own ko.adlog: 49 playing-not-healthy, 14 overlay-nudge, 20 overlay-catchup, 4 overlay-stall-stop; every catch-up (e.g. lat 8.2 pos 125.9 to 131) is followed by buffered\u22482 and a stall-stop, and every nudge moves the position backwards.",
    "evidence": [
     "Owner ko.adlog 2026-11-08 (buzzyi_ pod, sid mw7yvdpn-51gfd): playing-not-healthy buffered 3.5933/3.6507/3.4354 at rs=4 while playing",
     "overlay-nudge {pos:29.36} -> seek 27.36 (2s back), x14",
@@ -428,7 +428,7 @@
    "hypothesis": "cleanLatTarget() adopted the native's own latency clamped to [2,8], so a pod that started on a native sitting 8s behind put the clean picture 8s behind live for its whole duration (and the catch-up only fired above 8, i.e. never). resumeNative() then seeked the native to edge - cleanLatTarget(): the offset captured at TAKE-OVER, not the offset the clean player was actually showing at ad-end, so any drift became a jump on hand-back.",
    "falsifier": "log evidence: overlay-catchup lat 8.0-9.0 repeatedly (the clean player parked at the adopt-8 ceiling) and native-handoff/native-resume with the pod's own ct, not the clean offset.",
    "evidence": [
-    "Owner ko.adlog 2026-11-08: overlay-catchup {lat:8.2}/{8.5}/{8.8}/{9.0} — the clean player sat at the adoption ceiling",
+    "Owner ko.adlog 2026-11-08: overlay-catchup {lat:8.2}/{8.5}/{8.8}/{9.0} \u2014 the clean player sat at the adoption ceiling",
     "native-handoff {ct:1157.5} at pod start and native-resume {ct:14445.9} at hand-back: the two surfaces were never on one offset"
    ],
    "verified": false,
@@ -463,7 +463,7 @@
    "hypothesis": "The mute/volume intent was one shared row (`ko.v2.vols`) written by whichever tab the user touched and fed back into EVERY tab by `chrome.storage.onChanged` -> `applyVols(s.vols)` -> `KOAudio.setIntent(...)` -> `apply()`. Since ko-audio derives `muted = intent || policy || surface !== visible`, a mute in tab A silenced tab B's native player within one storage round-trip, and the same path carried an unmute the other way ('e vice versa'). A reload of one tab, or any saveState from it, also clobbered the stored row for everyone.",
    "falsifier": "Two tabs sharing the `ko.v2` record: a gesture in A must not change B's arbiter intent. tab-audio-scope-test.cjs fabricates two worlds from the real ko-audio.js; the pre-fix shape is the positive control (feeding a shared row into a tab DOES mute it) and two source mutations re-insert the shared row and the listener write, both caught by the fence.",
    "evidence": [
-    "kick-overlay/tab-audio-scope-test.cjs — checks=11 failed=0 (A's gesture invisible to B, reload restores only its own choice, fresh tab at defaults, mirror reads the arbiter, positive control, 2 fence mutations)",
+    "kick-overlay/tab-audio-scope-test.cjs \u2014 checks=11 failed=0 (A's gesture invisible to B, reload restores only its own choice, fresh tab at defaults, mirror reads the arbiter, positive control, 2 fence mutations)",
     "_tools/ko-verify.mjs RESULT PASS checks=20 failed=0 (tab-audio-scope wired into the gate)",
     "LIVE guest Chrome 0.8.53, twitch.tv/kaicenat (native player, two real tabs), `node _tools/ko-harness.mjs tabmute`: before A={intent false, vol 0.5, native false} B={false,0.5}; mute in A -> A={true,0} B unchanged {false,0.5}; unmute A -> A false; mute in B -> B={true,0} A unchanged {false,0.5}; unmute B -> false. Shared `ko.v2` record carried no `vols` in every sample. PASS"
    ],
@@ -484,7 +484,7 @@
    ],
    "owner_validation": "Both directions proven on a live channel in guest Chrome. Owed on HIS Chrome: swap players with the bar and confirm the sound follows the previous surface, both ways.",
    "next": "Owner: with 0.8.54 loaded (reload the tabs), unmute the live, switch player in the popup, confirm the new player is audible; mute it, switch back, confirm it is muted.",
-   "falsifier": "Falsify with `node kick-overlay/tab-audio-scope-test.cjs`: if 'swap to the kick player keeps an UNMUTED live unmuted' passes and 'a volumechange with NO user activation is policy, not intent' passes, the claim is refuted. Second instrument: guest Chrome, `node _tools/ko-harness.mjs watch` after `set --player=twitch` — a clean boot that reads intent twitch muted:true refutes it."
+   "falsifier": "Falsify with `node kick-overlay/tab-audio-scope-test.cjs`: if 'swap to the kick player keeps an UNMUTED live unmuted' passes and 'a volumechange with NO user activation is policy, not intent' passes, the claim is refuted. Second instrument: guest Chrome, `node _tools/ko-harness.mjs watch` after `set --player=twitch` \u2014 a clean boot that reads intent twitch muted:true refutes it."
   },
   {
    "id": "KO-20261109-02",
@@ -515,7 +515,7 @@
    ],
    "owner_validation": "Measured in the guest; owed on his screen.",
    "next": "Owner: one look at the bar - pause, then volume, then time.",
-   "falsifier": "Falsify in the guest: `node _tools/ko-harness.mjs eval \"[...document.querySelector('#ko-g1').children].map(c=>c.id)\" --world=main` — if ko-play comes before ko-volwrap the claim is refuted."
+   "falsifier": "Falsify in the guest: `node _tools/ko-harness.mjs eval \"[...document.querySelector('#ko-g1').children].map(c=>c.id)\" --world=main` \u2014 if ko-play comes before ko-volwrap the claim is refuted."
   },
   {
    "id": "KO-20261109-04",
@@ -542,9 +542,9 @@
    "fixed_in": "0.8.92",
    "verified": false,
    "evidence": [
-    "ko.adlog (owner tab, 0.8.84): `native-edge-recover {behind:2.5, gap:6.8, from:18.8, to:25.6}` with `buffered.end` 26.1 — the hand-back landed 0.5 s before the end of the downloaded data — then `native-resume {ct:25.6, rs:1}` and `video-pause {rs:1}`; 2 ms later `native-catchup {gap:2, from:25.6, to:27.6}` with 28.1, parked again. Twice in one second under a picture that had already stalled",
+    "ko.adlog (owner tab, 0.8.84): `native-edge-recover {behind:2.5, gap:6.8, from:18.8, to:25.6}` with `buffered.end` 26.1 \u2014 the hand-back landed 0.5 s before the end of the downloaded data \u2014 then `native-resume {ct:25.6, rs:1}` and `video-pause {rs:1}`; 2 ms later `native-catchup {gap:2, from:25.6, to:27.6}` with 28.1, parked again. Twice in one second under a picture that had already stalled",
     "seekCovered() accepted `want <= buffered.end + 0.5`, so a landing with NO runway was treated as covered; the element needs HAVE_FUTURE_DATA (rs>=3) of runway to recover after a seek",
-    "same episode: `overlay-reveal {pos:30.2}` at 11.5 s and `overlay-reveal {pos:30.2}` at 35.8 s — the clean player had not advanced in 24 s and the second reveal put that stale frame on screen"
+    "same episode: `overlay-reveal {pos:30.2}` at 11.5 s and `overlay-reveal {pos:30.2}` at 35.8 s \u2014 the clean player had not advanced in 24 s and the second reveal put that stale frame on screen"
    ],
    "falsifier": "Run `node kick-overlay/ad-time-continuity-test.cjs`: the arms \"a frozen native with an unusable edge is seeked forward by the time it missed\" and \"the hand-back seeks once and the retries never seek\" go RED if the landing rule or the recovery is reverted. Run `node kick-overlay/cold-cover-fixture-test.cjs`: its SPARSE arm goes RED if a repeated position on a sparse heartbeat is refused.",
    "owner_validation": "Gate only. Owed: the next pod on a live channel with 0.8.85 must show no `native-resume {rs:1}` pair and no second `native-catchup` within 1 s of a hand-back.",
@@ -625,7 +625,7 @@
     "`ensureKick()` returned early on `KO.activeUrl === url && kickState.state === 'Playing'`, so every reconnect re-attached the same dead element; nothing in the reconnect path forced a reload",
     "the reconnect budget also refilled on `Playing` alone, so a frozen element was counted as a stable 15 s run (`reconnect n:1` restarting after the third attempt)"
    ],
-   "falsifier": "`node kick-overlay/content-fix-test.cjs`: W1 (a forced attach reloads the same url, a healthy one stays a no-op) and W2 (the budget requires an ADVANCING clock) go red when either half is reverted — both proven red before landing.",
+   "falsifier": "`node kick-overlay/content-fix-test.cjs`: W1 (a forced attach reloads the same url, a healthy one stays a no-op) and W2 (the budget requires an ADVANCING clock) go red when either half is reverted \u2014 both proven red before landing.",
    "owner_validation": "Gate + guest. Owed: one pod on the owner's own Chrome with 0.8.87 where a frozen picture recovers on its own.",
    "next": "Owner: if the kick picture ever freezes again, run `node _tools/ko-adlog-window.mjs 9222 60` and look for `stall` followed by a `switch`/load rather than a repeated reconnect."
   },
@@ -637,7 +637,7 @@
    "fixed_in": "0.8.92",
    "verified": false,
    "evidence": [
-    "owner adlog 0.8.86: `stall {ct:10529}` x3 then `owner-regress {from:10529.4,to:46.2}` — a freeze on the replay url came back at the live edge",
+    "owner adlog 0.8.86: `stall {ct:10529}` x3 then `owner-regress {from:10529.4,to:46.2}` \u2014 a freeze on the replay url came back at the live edge",
     "`kickStallRecover` now reloads the source the dead element was on, at the offset it last reported; the live half reloads the fresh mint",
     "kickparity 0.8.89: `RESULT PASS rows=9 failed=0`, `go-live liveClock=true adv=2.00s`, zero `stall`/`reconnect` after the mint"
    ],
@@ -685,7 +685,7 @@
    "fixed_in": "0.8.92",
    "verified": false,
    "evidence": [
-    "owner report: 'ele da hide mesmo dando hover' — Twitch's floating preview is up for as long as the mouse points at the player, so any fixed grace hides it",
+    "owner report: 'ele da hide mesmo dando hover' \u2014 Twitch's floating preview is up for as long as the mouse points at the player, so any fixed grace hides it",
     "the rect branch now asks whether a player is still on the page (`isConnected`/`mainVideo`) and follows a swapped node; no clock",
     "`positionOverlay` hid nothing before the fix because `if (!v) return` swallowed the no-player case; it now hides there only",
     "`ad-time-continuity` 54 checks: a 6 s hover keeps the frame, a removed player hides it in one tick, both with a RED arm"
@@ -738,7 +738,7 @@
    "falsifier": "With a native 211.8 s into the pod and the element reloaded to 0 before the hand-back, `native-timeline-reset` must be logged once naming `holdCt 211.8`, and the element must receive ZERO writes to `currentTime`. If a `native-edge-recover` row appears, the reset was still read as a deficit.",
    "evidence": [
     "Guest measurement 2026-11-15 on a live Twitch element (twitch.tv/rodil): pausing for 22 s empties the element and it reloads at 0, i.e. the live edge; the sentinel edge (1073741824) means the wall clock was the only timeline the old code had",
-    "Owner report 2026-11-15: 'dei um seek e a live veio com delay MAIOR do que antes' — the recovery made the delay worse than the pod",
+    "Owner report 2026-11-15: 'dei um seek e a live veio com delay MAIOR do que antes' \u2014 the recovery made the delay worse than the pod",
     "Fix: `twitch-adblock.js` compares the native's `currentTime` at hand-back with the position captured at take-over; an element that went BACKWARDS by more than RESUME_GAP_SEC did not freeze, it reloaded, and is reported via `native-timeline-reset {holdCt, ct, elapsed}` with no seek",
     "Arm `ad-time-continuity`: 'a native that reloaded during the pod is reported and never seeked' (60 checks total)",
     "RED arm: the pre-reset guard is read as a pod-sized deficit (`behind > 200`), so the arm above measures the fix and not the harness"
@@ -758,7 +758,7 @@
    "hypothesis": "The catch-up ceiling was `pos + hold - 1`, so a seek could land with a single second of media in hand, and the guard `runway >= HEALTH_BUFFER_SEC || frontierGap >= 2` let a large frontier gap override exactly that starvation. The ceiling existed to prevent 2026-11-08's four-for-four `overlay-stall-stop`; the disjunct re-opened the same door for the case that actually fires.",
    "falsifier": "With a standby at `pos:160, hold:6, lat:18.8`, every catch-up seek must move the playhead at most `pos + hold - HEALTH_BUFFER_SEC = +3 s`. If any seek moves further, the landing starves the buffer.",
    "evidence": [
-    "Owner's own 0.8.91 ko.adlog 2026-11-15: `overlay-catchup {hold:6, lat:18.8, pos:160, source:\"standby\"}` — a 1 s landing with a 12.8 s frontier gap",
+    "Owner's own 0.8.91 ko.adlog 2026-11-15: `overlay-catchup {hold:6, lat:18.8, pos:160, source:\"standby\"}` \u2014 a 1 s landing with a 12.8 s frontier gap",
     "Fix: `ceiling = pos + hold - HEALTH_BUFFER_SEC`, and the `|| frontierGap >= 2` disjunct deleted (with the ceiling in place it could only ever admit a starving seek); the dead `runway` re-check was removed with it rather than left as a check that cannot fail",
     "Arm `ad-time-continuity`: 'a catch-up lands with the health gate\\'s runway, not on the buffer frontier' (`moved <= 3.05` and `>= 1.5`)",
     "RED arm: restoring `ceiling = pos + hold - 1` moves 5.00 s into a 6 s buffer"
@@ -783,7 +783,7 @@
     "A wrapper only counts when it covers >= 50% of the player, or when it is the countdown label: a squeezeback/banner must not cost the picture",
     "Arms: 'the ad wrapper appearing pauses the player before any ad-hold arrives', 'the page taking the pause back is re-asserted, not accepted', 'an ad with no clean source hands the player back on its own', 'a small squeezeback does not pause the stream'",
     "RED arms: a wrapper-only gate pauses the stream on a squeezeback; the pre-fix `if (false)` mutation emits no cold-cover at all",
-    "SUPERSEDED 2026-11-15: the arms for this row drove `adUiHold()` directly, which assumed the DOM detector could fire. It could not — see KO-20261115-10 (class-token blindness) and KO-20261115-11 (SharedWorker unpatched). The pause half is real; the detection half never ran."
+    "SUPERSEDED 2026-11-15: the arms for this row drove `adUiHold()` directly, which assumed the DOM detector could fire. It could not \u2014 see KO-20261115-10 (class-token blindness) and KO-20261115-11 (SharedWorker unpatched). The pause half is real; the detection half never ran."
    ],
    "owner_validation": "pending: on the next cold open the ad must be stopped within one 500 ms tick of the wrapper, logged as `ad-ui-hold {act:\"paused\"}`",
    "next": "Re-armed as KO-20261115-10/11/12: the detector and the worker hook are the load-bearing halves. This row stays in watch until a live pod shows `ad-ui-on` before `ad-hold`."
@@ -904,7 +904,7 @@
    "commit": null,
    "verified": false,
    "title": "The DOM ad detector could never fire on a real Twitch preroll: it tested a permanent `__wrapper-hidden` class token and never read the countdown/slate text",
-   "hypothesis": "`adUiDetail()` required `!/hidden/i.test(className)` on the sda wrapper. Twitch ships the squeezeback wrapper with `stream-display-ad__wrapper stream-display-ad__wrapper_squeezeback stream-display-ad__wrapper-hidden` as PERMANENT classes and reveals the ad by painting an inner container sized inline. Measured in his Chrome 2026-11-15: the only wrapper on the page was 0x0 itself with a 1236x695 inner container, so the class test refused it. With no wrapper at all, the countdown text in the player ('Anúncio (0:15)') and the slate he pasted ('Continue com FredTheFinch logo após esse anúncio comercial') were never read — that branch did not exist. Result: zero `ad-ui-on` in a 1200-row ring through a whole 15 s pod.",
+   "hypothesis": "`adUiDetail()` required `!/hidden/i.test(className)` on the sda wrapper. Twitch ships the squeezeback wrapper with `stream-display-ad__wrapper stream-display-ad__wrapper_squeezeback stream-display-ad__wrapper-hidden` as PERMANENT classes and reveals the ad by painting an inner container sized inline. Measured in his Chrome 2026-11-15: the only wrapper on the page was 0x0 itself with a 1236x695 inner container, so the class test refused it. With no wrapper at all, the countdown text in the player ('An\u00fancio (0:15)') and the slate he pasted ('Continue com FredTheFinch logo ap\u00f3s esse an\u00fancio comercial') were never read \u2014 that branch did not exist. Result: zero `ad-ui-on` in a 1200-row ring through a whole 15 s pod.",
    "falsifier": "With the measured wrapper shape on the page (0x0 wrapper, sized container, `__wrapper-hidden` present) the detector must return a detail. If it returns null, the instrument is blind to the ad Twitch actually paints.",
    "evidence": [
     "Owner report 2026-11-15: \"eu tomei anuncio INTEIRO\" + the slate pasted from his own screen",
@@ -914,7 +914,7 @@
     "Arms (kick-overlay/ad-detect-test.cjs, now gate check 23): 5 detector arms + 2 beat cases, incl. the slate he pasted and both non-ad controls (promo button, chat text)",
     "RED: restoring `!/hidden/i.test(className)` makes the measured real ad invisible",
     "LIVE 2026-11-16, guest Chrome, twitch.tv/jynxzi on 0.8.94: the permanent squeezeback shell measured 714x325 visibility:hidden opacity:0 with a 160x90 inner container; `adUiDetail()` returned null and the native video ran 0 -> 51.7 s with paused:false through three amazon-adsystem `ad-net` requests (no pod played). The detector correctly refused the shell instead of pausing the picture.",
-    "LIVE 2026-11-16, same build: injecting the measured painted shape (1236x695, display:block, visibility:visible, opacity:1) returned {kind:\"wrapper\",w:1236,h:695} and adHoldWorthy=true against the real video element; injecting the text \"Anúncio (0:15)\" into the player subtree returned {kind:\"countdown\",label:\"Anúncio (0:15)\"}.",
+    "LIVE 2026-11-16, same build: injecting the measured painted shape (1236x695, display:block, visibility:visible, opacity:1) returned {kind:\"wrapper\",w:1236,h:695} and adHoldWorthy=true against the real video element; injecting the text \"An\u00fancio (0:15)\" into the player subtree returned {kind:\"countdown\",label:\"An\u00fancio (0:15)\"}.",
     "Why this is arm-verified and not verified: no REAL preroll was painted in the measured windows (bypass.probe reported adExtinf:0 on every probe), so the two paths are proven against the exact shapes and against a shell that must be refused, not against a live pod."
    ],
    "owner_validation": "pending: a REAL preroll on his Chrome must show `ad-ui-on {match:{kind:\"wrapper\"|\"countdown\"|\"slate\"}}` before the first `ad-hold`.",
@@ -936,7 +936,7 @@
    "commit": null,
    "verified": false,
    "title": "The media worker was never patched: only `window.Worker` was wrapped, while the player that feeds `MediaSourceHandle` uses `SharedWorker`",
-   "hypothesis": "Twitch moved its player to a shared worker: the page video reports `srcObject` of type `MediaSourceHandle` and the playlists are fetched inside that worker. `twitch-adblock.js` wrapped only `window.Worker`, so that fetcher ran unpatched and no `worker-playlist` row could ever appear on such a page — the playlist swap was structurally unable to fire, leaving the DOM detector as the only defence.",
+   "hypothesis": "Twitch moved its player to a shared worker: the page video reports `srcObject` of type `MediaSourceHandle` and the playlists are fetched inside that worker. `twitch-adblock.js` wrapped only `window.Worker`, so that fetcher ran unpatched and no `worker-playlist` row could ever appear on such a page \u2014 the playlist swap was structurally unable to fire, leaving the DOM detector as the only defence.",
    "falsifier": "On a page whose video has a `MediaSourceHandle` srcObject, the ring must contain a `worker-hook {kind:\"shared\"}` row. If no such row appears, the shared worker is unpatched and the playlist hook is dead on that page.",
    "evidence": [
     "Measured in his Chrome 2026-11-15: page `<video>` srcObject = MediaSourceHandle; ring had zero `worker-playlist` rows for a whole load",
@@ -945,7 +945,7 @@
     "Arms: a SharedWorker blob is rewritten through the same prelude; the counter counts one of each; the log names which constructor it wrapped",
     "RED: without the SharedWorker hook the blob URL reaches the native constructor raw, with no prelude",
     "LIVE 2026-11-16, guest Chrome twitch.tv/jynxzi on 0.8.94, two page loads: stats read `hooks=2 shared=0 fails=0`, `workerPlaylistLog` grew 0 -> 35 digests, and the ring carries `worker-hook {\"kind\":\"worker\",\"ms\":1412}` + `{\"kind\":\"worker\",\"ms\":1432}` at ~1.4 s into each load. The playlist side of the defence is demonstrably attached to a live player.",
-    "Caveat measured, not inferred: `shared=0` on both loads — this channel's player used Workers, so the SharedWorker arm exists and is unit-proven but was not exercised by a live page yet.",
+    "Caveat measured, not inferred: `shared=0` on both loads \u2014 this channel's player used Workers, so the SharedWorker arm exists and is unit-proven but was not exercised by a live page yet.",
     "LIVE 2026-11-16 in the OWNER Chrome (background+muted tab, never activated, closed after): 26 samples read hooks=2 shared=1 fails=0, the playlist log grew 0 -> 3 digests, and the ring holds worker-hook {kind:\"worker\"} at ms 2412/2434 plus worker-hook {kind:\"shared\"} at ms 3099.",
     "The rewritten worker's digests carry a REAL all-ad media playlist on his machine: worker-playlist {adExtinf:1752, adOnly:true, extinf:1752, hasStitched:false} at ms 11701 and 12069 for .../360p30/index-muted-... and .../chunked/index-muted-.... So the prerecorded claim that the player was unpatched is closed by measurement, not by the constructor list.",
     "LIMIT: the measured tab was muted and in the background, so no frame decoded and no pod could be defended there. That belongs to the ad-path row (KO-20261115-10/12), not this one."
@@ -991,7 +991,7 @@
    "hypothesis": "`kick_probe {at:\"poll\"}` and `kick_offline` were emitted on every 20 s poll whether or not the outcome changed, and the mint-probe dedupe used ONE shared `kickMintSig` slot that a channel 404ing on both endpoints defeats (v2 and v1 alternate the value). A sample is not a transition: the rows pushed the ad/player chronology out of the ring, and the owner answered \"TUDO ISSO deveria estar nos logs\" with a log that could not hold it.",
    "falsifier": "Repeated identical polls must produce no new rows; a changed outcome must produce exactly one of each; and a channel that 404s on both endpoints must not re-log either probe.",
    "evidence": [
-    "Owner ring 2026-11-16 (0.8.94, 1200 entries): `kick_probe {at:\"poll\"}` 114 identical rows, `kick_offline` 114 identical rows, `kick_probe {api:\"v2/…\",404}` 20, `kick_probe {api:\"v1/…\",404}` 20 = 268 of 1200 entries",
+    "Owner ring 2026-11-16 (0.8.94, 1200 entries): `kick_probe {at:\"poll\"}` 114 identical rows, `kick_offline` 114 identical rows, `kick_probe {api:\"v2/\u2026\",404}` 20, `kick_probe {api:\"v1/\u2026\",404}` 20 = 268 of 1200 entries",
     "Fix: `kickProbeOnce(api, sig, payload)` keeps one signature per api; the poll computes `pollSig = slug|live|url|why` and gates BOTH rows on `pollChanged`",
     "Arm W6 drives the real `probeKickLayer` twice with an identical outcome (no rows), then a changed outcome (one of each), then the same new outcome (no rows)",
     "Mutations that go RED: the poll gate removed -> \"an identical poll logged 3 row(s)\"; the single shared slot restored -> \"an identical poll logged 2 row(s)\"",
@@ -1580,6 +1580,64 @@
     "`RESULT PASS ad-time-continuity checks=186 failed=0`, `ARMS 30/30 present` (2026-11-26)"
    ],
    "next": "OWED live half: a live that stalls into a pod on the owner's Chrome must show `handback-wait {rs<3}` at the pod end and then `handback-ready {why:'ready'|'cap'}`, instead of `native-resume {rs<3}` with no wait. Re-arm: `node _tools/ko-adlog-window.mjs 9222 1200 --keep handback-wait,handback-ready,native-handoff,native-resume,display-clock` after the next pod."
+  },
+  {
+   "id": "KO-20261126-17",
+   "title": "The hand-back wait had competing writers and an unreachable exit; one pod end now owns exactly one wait",
+   "state": "fixed",
+   "author": "HandbackWaitDoors",
+   "reported": "2026-11-26 read-only audit of the 0.8.126 ad path (eight items) and the dev-handback-wait replica",
+   "fixed_in": "0.8.127",
+   "commit": null,
+   "hypothesis": "A pod-end wait keeps the clean frame up until rs>=3 or 3000 ms, but the retries, ad-hold, ad-ui-release and a hold could pause or resume the element behind it; a repeated DOM pod-end cancelled and re-armed it; ad-hold could take the picture without ending it; a warm standby replacing its frame was torn down by the wait's own re-entry; cancel ran AFTER a new pod's hold, which `freezeNativeForPod()` refuses while a wait is live; and a report clock stuck at zero made cover-lost unreachable. Audit items 1 and 4 named the retry timers and the arming teardown as their mechanism; both are refuted by `return adLogState('handback-wait', ...)`: an arming `stopAdOverlay()` returns before teardown and before the retry timers, so `lastStAt` stays live and no retry is armed in that call. Their invariants are still enforced at the boundaries and armed.",
+   "falsifier": "Eight GREEN arms in `kick-overlay/ad-time-continuity-test.cjs`, each paired with a RED mutation of its fix line. RED quotes: `a retry resumes the native while the wait is armed  [\"300ms:1\",\"1200ms:1\"]`; `a second pod-end cancels and re-arms the wait  the mutant armed 2 waits for one hand-back`; `ad-hold leaves the wait armed over the replacement`; `the wait tears down the standby that replaced its frame`; `a report clock stuck at zero makes cover-lost unreachable  the mutant could only leave at the ceiling: undefined`; `a new pod is held while the wait still refuses its freeze  cancel=25 hold=23`; `a hold pauses the native behind the wait`; `a second writer resumes the native behind the wait  [\"ad-ui-release:1\"]`.",
+   "evidence": [
+    "one owning pause guard in `pauseNativeForHold()`, one owning resume guard in `resumeNative()` and `resumeNativeIfAllowed()`, a `hadWait` duplicate guard in `stopAdOverlay()`, cancel-before-hold, `ad-hold` cancellation, and a frame-identity `keepFrame` exit so the wait never removes a replacement it did not arm on; no timer was widened or added",
+    "arm seam `stats.testStandbySwap()` uses the real `startAdOverlay(url, 'test', true, true)` switch door; the standby guard now reads `if (standby && !switchSource) return;` so an explicit switch can warm-replace the protected frame while an ordinary standby cannot",
+    "suite: `RESULT PASS ad-time-continuity checks=193 failed=0`, `ARMS 37/37 present`; captured `G:/Temp/ko-scratch/ad-time-continuity-final.log`",
+    "replica: `node _tools/ko-replica/run.mjs --scenario _tools/ko-replica/scenarios/dev-handback-wait.json --replica-port 8443` with `KO_EXT_DIR=C:/Users/Administrador/.omp/wt/t77ae5a3ff/m/kick-overlay` -> `RESULT PASS scenario=dev-handback-wait checks=19 failed=0 cannot=0 build=0.8.127`; one `handback-wait {rs:2, capMs:3000}` at 24486 ms and one `handback-ready {capped:true, why:'cap', ms:3019}`. Without KO_EXT_DIR the runner loads the original tree's 0.8.126 and reports two waits, so a worktree measurement must set it",
+    "census: `RESULT PASS guardShaped=111 unexercisedState=31 (budget met)`; version bumped to 0.8.127 in `content.js` and `manifest.json`"
+   ],
+   "next": "OWED live half: on the owner's Chrome, one pod end at rs<3 must show exactly one `handback-wait` followed by `handback-ready {capped:...}` with no second `handback-wait-cancelled {why:'ad-end'}`, and a warm standby arriving during that wait must still be mounted after the hand-back."
+  },
+  {
+   "id": "KO-20261127-02",
+   "title": "Audio had three writers: the bar stored volume 0 on mute, a 1 Hz frame echo overwrote a newer unmute, and a stale autoplay refusal muted the clean frame",
+   "state": "fixed",
+   "author": "AudioAuthority",
+   "reported": "2026-11-26",
+   "fixed_in": "0.8.127",
+   "commit": null,
+   "hypothesis": "Nine local patches had the same shape: a decision was made outside ko-audio.js (bar setIntent with volume:0, frame status re-read as user:frame-slider with ownWrite:false hardcoded, `overlay.audioRefused || a.muted` ORed into the overlay command, direct overlaySend/ytSend mute posts, a `Number(null)` coercion, a substring-only volume-control selector and an unguarded `m` keydown). Each one survived as a competing predicate on the same mute/volume state, so a newer user decision lost to an older machine snapshot. The level a mute silenced was destroyed by the mute itself, so one unmute needed a second page event to recover sound.",
+   "falsifier": "Every machine write must either be the arbiter's own derived state or be an authored ask it can refuse with `audio-refused {why}`. `audio-authority-test.cjs` runs the real sources and carries 11 RED mutations: `the frame echo overwrote the newer bar decision with volume:0.32, ownWrite:false`, `overlay.audioRefused was ORed into the derived mute and commanded mute:true over a newer audible intent`, `a mute typed as \"m\" in a TEXTAREA was certified as user:pointer`, `Number(null) became a real volume:0 intent with no refusal row`, `unlabelled and stale-frame policies were applied, and the refusal survived the hand-back`. Each mutant turns its arm red while the shipped source passes.",
+   "evidence": [
+    "`RESULT PASS audio-authority checks=13 failed=0` (`node kick-overlay/audio-authority-test.cjs`, 2026-11-26); 11 RED lines printed in the same run",
+    "`RESULT PASS mute-decision checks=95 failed=0` (`node kick-overlay/mute-decision-test.cjs`, 2026-11-26, captured to G:/Temp/ko-scratch/audio-mute-decision.log)",
+    "`RESULT PASS  guardShaped=109  unexercisedState=32  (budget met)` (`node _tools/ko-census.mjs --gate`, budget 111/39 untouched)",
+    "fix: bar mute/slider preserve the audible level; ko-audio.js keeps a per-tab remembered level and refuses unlabelled/stale frame policies, dropping them on claim release; the frame's 1 Hz sample is now a named refusal, keyboard/word-shape gates require a real volume gesture, and the ad path asks for policy with an author and frame token instead of ORing a verdict into the command; version 0.8.127",
+    "coordination: ad-time-continuity-test.cjs PRE_FIX_INTENT must retarget its search string to the two shipped lines (const a = audioState(); / const muted = !!a.muted; // THE authority, never `|| overlay.audioRefused`) - the old line was removed by this fix"
+   ],
+   "next": "OWED live half: on the owner's Chrome with player=kick, run a pod whose clean frame reports `muted:true` while the authority publishes `ad:-1.00`, then unmute from the bar. `node _tools/ko-adlog-window.mjs 9222 1200 --keep overlay-audio,audio-refused,audio-policy,audio-claim,audio-state` must show `audio-policy {why:'frame-autoplay', frame:<token>}` bound to that frame and NO `overlay-audio {muted:true, refused:true}` after the newer unmute; a sticky refusal there is the next defect."
+  },
+  {
+   "id": "KO-20261127-01",
+   "title": "A stale playlist marker opened a cover with no ad on screen, and every other pod-end door leaked its flag, timer or freeze",
+   "state": "fixed",
+   "author": "PodBoundaryTruth",
+   "reported": "2026-11-27",
+   "fixed_in": "0.8.127",
+   "commit": null,
+   "hypothesis": "Eight observations of one pod boundary. (1) Both start doors (page route at :83-86, worker maybeStartBypass at :5687) gated only on a playlist ad marker; the only DOM check sat inside the 30 s reopen-cooldown branch, so the measured state '16 ad segments stayed listed after content returned' covered a page with no ad. (2) The clean-streak end needed two refreshes with adExtinf=0, which that stale listing never reaches, and AD_POD_MAX_MS was only a branch inside a successful fetch - a stopped fetch held the cover for the page's 180 s timeout. (3) adUiRelease(true) ran only on a DOM ad->no-ad transition, so a playlist-only pod never wrote ad-ui-release {act:'pod-end'}. (4) workerRoutePodAt was set by the playlist route and cleared only by its clean-streak end; every other end posted overlay-stop, which clears only worker-side flags, so a later real ad was refused. (5) A pod ending while the ad-UI detector was still truthy re-took the freeze with holdAfterReveal and never resumed that element. (6) SELF_PAUSE_TRUST_MS was 10 min for a 12 s hold, so an expired hold's pause read as ours. (7) adParkShown disagreed with four direct data-ko-adpark writers. (8) The rows AGENTS.md and harness/angles.tsv consume (ad-bypass-start, ad-pod-max) had no producer: the code wrote bypass-msg and ad-end {reason:'pod-max'}.",
+   "falsifier": "A pod may not start without a hold-worthy painted/labelled ad DOM shape or an all-ad playlist; a stale adExtinf > 0 alone must be refused with one row naming what was seen. Every pod end must be reachable without the page's 180 s timeout (own ceiling timer, DOM-leaves door), must clear workerRoutePodAt, release the freeze it took and write one row naming the reason. One pod per episode: a later real ad must not be refused because an earlier pod left a flag set.",
+   "evidence": [
+    "Fix: one owning podEvidence() predicate (adHoldWorthy(adUiDetail(), mainVideo()) || adOnly) at both start doors; podEvidenceRefuse() writes ad-skip {reason:'no-ad-evidence', adUi, adOnly, adExtinf, extinf, hasStitched, markerAgeMs}. Own ceiling timers on both sides (AD_POD_MAX_MS in the page and inside workerMain), a DOM-leaves end door, endPod() on every teardown, longer pod-scoped trust for the pod's own freeze, markAdPark() keeping adParkShown in step, and real producers for ad-bypass-start / ad-pod-max.",
+    "node kick-overlay/ad-detect-test.cjs -> `ARMS 111/111` and `RESULT PASS ad-detect: the DOM detector sees the ad Twitch paints, and the media worker is hooked (failed=0)` (G:/Temp/ko-scratch/ad-detect-pod-arm-lines.txt)",
+    "Each fix has a reverted (RED) arm: `- FAIL RED E1 RED: the pre-fix gate accepts a stale marker with no ad painted`; `- FAIL RED E2 RED: without the timer branch no pod end is reachable at the ceiling`; `- FAIL RED E2b RED: a stopped fetch left the worker pod open with no ad-end`; `- FAIL RED E3 RED: pre-fix ad-ui-release was unreachable for a playlist-only pod`; `- FAIL RED E3b RED: the marker kept the pod open after the ad left`",
+    "`- FAIL RED E4 RED: only the clean-streak end cleared the route flag`; `- FAIL RED E5 RED: a pod ending on a still-detected ad never resumed its element`; `- FAIL RED E6 RED: a 10-minute trust window reads an expired hold pause as ours`; `- FAIL RED E7 RED: the stale cache rewrites an attribute a direct writer set`; `- FAIL RED E8 RED: the pre-fix code wrote only bypass-msg and no promised row`",
+    "node kick-overlay/ad-time-continuity-test.cjs -> `ARMS 29/29 present` and `RESULT PASS ad-time-continuity checks=185 failed=0` (G:/Temp/ko-scratch/continuity-pod-final.txt); the earlier run failed one stale source-token arm, which now checks the shared predicate instead of the old inline expression",
+    "node _tools/ko-census.mjs --gate from the repo root -> `RESULT PASS  guardShaped=111  unexercisedState=31  (budget met)`; kick-overlay/content.js KO_VER and kick-overlay/manifest.json version bumped to 0.8.127"
+   ],
+   "next": "OWED live half: on the owner's Chrome, `node _tools/ko-adlog-window.mjs 9222 1200 --keep ad-bypass-start,ad-skip,ad-pod-max,ad-pod-end,ad-ui-release,native-handoff` after the next real pod must show (a) every ad-bypass-start carrying ad evidence, never a bare stale adExtinf; (b) one ad-pod-max at or under 60 s, or an earlier named pod end; (c) a later genuine ad opening a new pod after the previous ad-pod-end, not an ad-skip {reason:'cooldown'}."
   }
  ]
 }

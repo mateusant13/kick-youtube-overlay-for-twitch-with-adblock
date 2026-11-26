@@ -913,6 +913,7 @@ check(
      const overlayOwnsPlayback = () => false;
      const standbyStale = () => false;
      const stopAdOverlay = (why) => log.push('stop:' + why);
+     const endPod = () => {};
      const requestStandby = () => log.push('standby');
      const resumeNative = () => { video.paused = false; log.push('resume'); };
      const adUiDetail = () => ({ kind: 'slate' });
@@ -1337,6 +1338,7 @@ check(
         'const resumeNative = () => {};',
         'const adLayoutRelease = () => {};',
         'const adUiHoldTarget = () => null;',
+        'const endPod = () => {};',
         FINISH,
         RELEASE,
         'return { adUiRelease, finishAdOverlay };',
@@ -1378,6 +1380,7 @@ check(
         'const resumeNative = () => {};',
         'const adLayoutRelease = () => {};',
         'const adUiHoldTarget = () => null;',
+        'const endPod = () => {};',
         FINISH,
         RELEASE,
         'return { adUiRelease, finishAdOverlay };',
@@ -1532,6 +1535,265 @@ check(
 );
 
 // ---- anti-vacuity --------------------------------------------------------
+
+// ---- POD BOUNDARY: eight fixes, each with a pre-fix RED mutation ----------
+const podMutate = (from, to, src = SRC) => {
+  if (!src.includes(from)) throw new Error(`pod mutation target missing: ${from.slice(0, 70)}`);
+  return src.split(from).join(to);
+};
+
+// 1. The evidence predicate is the single owner of "is there an ad?".
+function evidenceArm(src) {
+  const E = grab('podEvidence', src);
+  const R = grab('podEvidenceRefuse', src);
+  const ctx = { kind: null, rows: [] };
+  const w = new Function('ctx', [
+    'const adLog = (ev, d) => ctx.rows.push({ ev, d });',
+    'const adUiDetail = () => ctx.kind ? { kind: ctx.kind, w: 1280, h: 720 } : null;',
+    'const mainVideo = () => ({ getBoundingClientRect: () => ({ width: 1280, height: 720 }) });',
+    'const adHoldWorthy = (d, v) => !!d && (d.kind === "aria" || d.kind === "slate" || d.w >= 0.5 * v.getBoundingClientRect().width);',
+    E, R,
+    'return { podEvidence, podEvidenceRefuse };',
+  ].join('\n'))(ctx);
+  const stale = w.podEvidence({ from: 'playlist', adExtinf: 16, extinf: 17, adOnly: false, hasStitched: true, at: Date.now() - 4000 });
+  w.podEvidenceRefuse('playlist', stale);
+  const allAd = w.podEvidence({ from: 'playlist', adExtinf: 3, extinf: 3, adOnly: true });
+  ctx.kind = 'slate';
+  const domAd = w.podEvidence({ from: 'playlist', adExtinf: 16, extinf: 17, adOnly: false });
+  return { ctx, stale, allAd, domAd };
+}
+check('E1: stale adExtinf alone is refused with a row; DOM and all-ad evidence pass', () => {
+  const { ctx, stale, allAd, domAd } = evidenceArm(SRC);
+  const row = ctx.rows.find((r) => r.ev === 'ad-skip');
+  return stale.worthy === false && allAd.worthy === true && domAd.worthy === true
+    && !!row && row.d.reason === 'no-ad-evidence' && row.d.adExtinf === 16
+    && row.d.adUi === null && Number.isFinite(row.d.markerAgeMs);
+});
+redArm('E1 RED: the pre-fix gate accepts a stale marker with no ad painted',
+  podMutate('worthy: !!(dom || adOnly),', 'worthy: Number(msg && msg.adExtinf) > 0,'),
+  (src) => { const { stale } = evidenceArm(src); return stale.worthy === false; });
+
+// 2. The page ceiling is a TIMER, and the worker has its own.
+function podTimerArm(src) {
+  const PM = grab('podMaxEnd', src);
+  const EM = grab('emitPodMax', src);
+  const ctx = { rows: [], ends: [], overlay: { playlistPodAt: Date.now() - 30000 }, ev: { adExtinf: 16, extinf: 17, adOnly: false, markerAgeMs: 4000 } };
+  new Function('ctx', [
+    'const overlay = ctx.overlay;',
+    'let podMaxLogged = false;',
+    'const lastPodEvidence = ctx.ev;',
+    'const adLog = (ev, d) => ctx.rows.push({ ev, d });',
+    'const endPlaylistPod = (reason, d) => ctx.ends.push({ reason, d });',
+    'const requestStandby = () => {};',
+    EM, PM,
+    'return { podMaxEnd };',
+  ].join('\n'))(ctx).podMaxEnd();
+  return ctx;
+}
+check('E2: an own AD_POD_MAX_MS timer ends the pod with a named ad-pod-max row', () => {
+  const c = podTimerArm(SRC);
+  const row = c.rows.find((r) => r.ev === 'ad-pod-max');
+  return c.ends.length === 1 && c.ends[0].reason === 'pod-max' && !!row
+    && row.d.podAgeMs >= 30000 && row.d.adExtinf === 16 && row.d.adOnly === false;
+});
+redArm('E2 RED: without the timer branch no pod end is reachable at the ceiling',
+  podMutate("    endPlaylistPod('pod-max', { podAgeMs });", '    void 0;'),
+  (src) => { const c = podTimerArm(src); return !(c.ends.length === 0); });
+
+function workerTimerArm(src) {
+  const WM = grab('workerPodMax', src);
+  const WE = grab('workerEndPod', src);
+  const ctx = { posts: [], active: true, streak: 0, startedAt: Date.now() - 61000, marker: { at: Date.now() - 1000, adExtinf: 16, extinf: 17, adOnly: false } };
+  const w = new Function('ctx', [
+    'let adBypassActive = ctx.active;',
+    'let cleanPlaylistStreak = ctx.streak;',
+    'let bypassStartedAt = ctx.startedAt;',
+    'let podMaxTimer = 123;',
+    'const AD_POD_MAX_MS = 60000;',
+    'const lastAdMarker = ctx.marker;',
+    'const lastChannel = "rodil";',
+    'const clearTimeout = () => {};',
+    'const postBypass = (m) => ctx.posts.push(m);',
+    WE, WM,
+    'return { workerPodMax, state: () => ({ active: adBypassActive, startedAt: bypassStartedAt, timer: podMaxTimer }) };',
+  ].join('\n'))(ctx);
+  w.workerPodMax();
+  return { ctx, state: w.state() };
+}
+check('E2b: the worker ceiling clears its own flags and posts an ad-end with evidence', () => {
+  const { ctx, state } = workerTimerArm(SRC);
+  const p = ctx.posts[0];
+  return ctx.posts.length === 1 && p.type === 'ad-end' && p.reason === 'pod-max'
+    && p.podAgeMs > 60000 && p.adExtinf === 16 && Number.isFinite(p.markerAgeMs)
+    && state.active === false && state.startedAt === 0 && state.timer === 0;
+});
+redArm('E2b RED: a stopped fetch left the worker pod open with no ad-end',
+  podMutate('if (!adBypassActive || !bypassStartedAt || Date.now() - bypassStartedAt <= AD_POD_MAX_MS) return;', 'if (true) return;'),
+  (src) => { const { ctx } = workerTimerArm(src); return !(ctx.posts.length === 0); });
+
+// 3. A playlist pod reaches ad-ui-release pod-end without a DOM ad signal.
+function playlistEndArm(src) {
+  const EP = grab('endPlaylistPod', src);
+  const ctx = { releases: [], ends: [] };
+  new Function('ctx', [
+    'const adUiRelease = (from, reason) => ctx.releases.push({ from, reason });',
+    'const endPod = (reason, d) => ctx.ends.push({ reason, d });',
+    EP, 'return { endPlaylistPod };',
+  ].join('\n'))(ctx).endPlaylistPod('pod-max', { podAgeMs: 59000 });
+  return ctx;
+}
+check('E3: a playlist pod reaches ad-ui-release pod-end at its ceiling', () => {
+  const c = playlistEndArm(SRC);
+  return c.releases.length === 1 && c.releases[0].from === true && c.releases[0].reason === 'pod-max'
+    && c.ends.length === 1 && c.ends[0].reason === 'pod-max';
+});
+redArm('E3 RED: pre-fix ad-ui-release was unreachable for a playlist-only pod',
+  podMutate('    adUiRelease(true, reason);', '    void 0;'),
+  (src) => { const c = playlistEndArm(src); return !(c.releases.length === 0); });
+
+function domLeaveArm(src) {
+  const PL = grab('playlistPodDomLeave', src);
+  const ctx = { calls: [], overlay: { playlistPodAt: Date.now() - 5000, adActive: true, revealed: false, handbackWait: null } };
+  new Function('ctx', [
+    'const overlay = ctx.overlay;',
+    'let playlistSawDomAd = true;',
+    'const adUiHeldAt = 0;',
+    'const endPlaylistPod = (reason, d) => ctx.calls.push({ reason, d });',
+    PL, 'return { playlistPodDomLeave };',
+  ].join('\n'))(ctx).playlistPodDomLeave();
+  return ctx;
+}
+check('E3b: a DOM ad leaving during a playlist pod is an independent end door', () => {
+  const c = domLeaveArm(SRC);
+  return c.calls.length === 1 && c.calls[0].reason === 'dom-ad-left';
+});
+redArm('E3b RED: the marker kept the pod open after the ad left',
+  podMutate('    if (!open || !playlistSawDomAd || adUiHeldAt || overlay.handbackWait) return;', '    if (true) return;'),
+  (src) => { const c = domLeaveArm(src); return !(c.calls.length === 0); });
+
+// 4. Every end clears workerRoutePodAt, not just the clean-streak one.
+function endPodArm(src) {
+  const EP = grab('endPod', src);
+  const ctx = { rows: [], releases: [], route: 12345, overlay: { playlistPodAt: 1, adActive: true, podMaxTimer: {} } };
+  const w = new Function('ctx', [
+    'let workerRoutePodAt = ctx.route;',
+    'let workerRouteClean = 2;',
+    'let playlistSawDomAd = true;',
+    'let podEnded = false;',
+    'let lastPodEvidence = null;',
+    'const overlay = ctx.overlay;',
+    'const adUiHeldAt = 0;',
+    'const adLog = (ev, d) => ctx.rows.push({ ev, d });',
+    'const clearTimeout = () => {};',
+    'const releasePodFreeze = (r) => ctx.releases.push(r);',
+    EP,
+    'return { endPod, route: () => workerRoutePodAt };',
+  ].join('\n'))(ctx);
+  w.endPod('timeout', { from: 'test' }, false);
+  return { ctx, route: w.route() };
+}
+check('E4: any pod end clears the route flag and writes one named row', () => {
+  const { ctx, route } = endPodArm(SRC);
+  const row = ctx.rows.find((r) => r.ev === 'ad-pod-end');
+  return route === 0 && ctx.rows.length === 1 && !!row && row.d.reason === 'timeout';
+});
+redArm('E4 RED: only the clean-streak end cleared the route flag',
+  podMutate('    workerRoutePodAt = 0;', '    void 0;'),
+  (src) => { const { route } = endPodArm(src); return !(route !== 0); });
+
+// 5. A playlist pod ending on a still-truthy detector releases its own freeze.
+function freezeReleaseArm(src) {
+  const R = grab('releasePodFreeze', src);
+  const ctx = { rows: [], resumes: [], video: { paused: true, isConnected: true, currentTime: 42 } };
+  new Function('ctx', [
+    'const mainVideo = () => ctx.video;',
+    'const userResumedHeld = () => false;',
+    'const resumeRefusedByUser = () => false;',
+    'const selfPausedRecently = () => true;',
+    'const AD_POD_MAX_MS = 60000;',
+    'const adLog = (ev, d) => ctx.rows.push({ ev, d });',
+    'const resumeNative = (v, tag) => ctx.resumes.push(tag);',
+    R, 'return { releasePodFreeze };',
+  ].join('\n'))(ctx).releasePodFreeze('pod-max');
+  return ctx;
+}
+check('E5: the pod releases the element it froze and names the reason', () => {
+  const c = freezeReleaseArm(SRC);
+  const row = c.rows.find((r) => r.ev === 'pod-freeze-release');
+  return c.resumes.length === 1 && c.resumes[0] === 'pod-freeze-release' && !!row
+    && row.d.released === true && row.d.reason === 'pod-max';
+});
+redArm('E5 RED: a pod ending on a still-detected ad never resumed its element',
+  podMutate("    resumeNative(v, 'pod-freeze-release');", '    void 0;'),
+  (src) => { const c = freezeReleaseArm(src); return !(c.resumes.length === 0); });
+
+// 6. A pause stamp is trusted for the hold's budget, not ten minutes.
+function pauseTrustArm(src) {
+  const fn = grab('selfPausedRecently', src);
+  const m = /const SELF_PAUSE_TRUST_MS = ([^;]+);/.exec(src);
+  if (!m) throw new Error('missing SELF_PAUSE_TRUST_MS');
+  return new Function(`const SELF_PAUSE_TRUST_MS = ${m[1]}; ${fn}; return selfPausedRecently;`)(
+    { selfPausedAt: Date.now() - 20000 }
+  );
+}
+check('E6: a pause older than the 12 s hold is not called ours', () => pauseTrustArm(SRC) === false);
+redArm('E6 RED: a 10-minute trust window reads an expired hold pause as ours',
+  podMutate('const SELF_PAUSE_TRUST_MS = 12 * 1000;', 'const SELF_PAUSE_TRUST_MS = 10 * 60 * 1000;'),
+  (src) => pauseTrustArm(src) === false);
+
+// 7. Every direct adpark writer keeps the derived cache in step.
+function adParkArm(src) {
+  const M = grab('markAdPark', src);
+  const P = grab('publishAdPark', src);
+  const ctx = { writes: [], root: { setAttribute: (k, v) => ctx.writes.push(v) } };
+  const w = new Function('ctx', [
+    'let adParkShown = false;',
+    'const document = { documentElement: ctx.root };',
+    'const overlay = { adActive: false, revealed: false };',
+    'const adUiHeldAt = 1;',
+    M, P,
+    'return { markAdPark, publishAdPark, shown: () => adParkShown };',
+  ].join('\n'))(ctx);
+  w.markAdPark(true);
+  w.publishAdPark();
+  return { ctx, shown: w.shown() };
+}
+check('E7: a direct adpark writer and the derivation never disagree', () => {
+  const { ctx, shown } = adParkArm(SRC);
+  return ctx.writes.length === 1 && ctx.writes[0] === '1' && shown === true;
+});
+redArm('E7 RED: the stale cache rewrites an attribute a direct writer set',
+  podMutate('      adParkShown = !!on;', '      void 0;'),
+  (src) => { const { ctx } = adParkArm(src); return !(ctx.writes.length === 2); });
+
+// 8. The rows the docs promise have a producer with the promised fields.
+function promisedRowsArm(src) {
+  const S = grab('emitPodStart', src);
+  const M = grab('emitPodMax', src);
+  const ctx = { rows: [] };
+  const ev = { adExtinf: 16, extinf: 17, adOnly: false, hasStitched: true, changed: true };
+  const w = new Function('ctx', [
+    'const adLog = (ev, d) => ctx.rows.push({ ev, d });',
+    'const pageChannel = () => "rodil";',
+    'let podMaxLogged = false;',
+    S, M,
+    'return { emitPodStart, emitPodMax };',
+  ].join('\n'))(ctx);
+  w.emitPodStart({ channel: 'rodil', from: 'playlist', ...ev }, ev);
+  w.emitPodMax({ podAgeMs: 59000, adExtinf: 16, extinf: 17, adOnly: false, markerAgeMs: 4000 });
+  return ctx.rows;
+}
+check('E8: ad-bypass-start and ad-pod-max carry the fields the verdict reads', () => {
+  const rows = promisedRowsArm(SRC);
+  const s = rows.find((r) => r.ev === 'ad-bypass-start');
+  const m = rows.find((r) => r.ev === 'ad-pod-max');
+  return !!s && ['channel', 'from', 'adExtinf', 'extinf', 'adOnly', 'hasStitched', 'changed']
+    .every((k) => k in s.d)
+    && !!m && ['podAgeMs', 'adExtinf', 'extinf', 'adOnly', 'markerAgeMs'].every((k) => k in m.d);
+});
+redArm('E8 RED: the pre-fix code wrote only bypass-msg and no promised row',
+  podMutate("adLog('ad-bypass-start', {", "adLog('bypass-msg', {"),
+  (src) => promisedRowsArm(src).some((r) => r.ev === 'ad-bypass-start'));
 const expected = [
   'a wrapper that is 0x0 with a permanent __wrapper-hidden class is still an ad when its container paints',
   'the measured real ad is hold-worthy (it covers the player)',
@@ -1624,6 +1886,26 @@ const expected = [
   'a mid-pod node swap is released onto the connected wrapper',
   'layout save/restore covers height, width and max-height on all three elements',
   'a missing persistent player is named and never throws',
+  'E1: stale adExtinf alone is refused with a row; DOM and all-ad evidence pass',
+  'E1 RED: the pre-fix gate accepts a stale marker with no ad painted',
+  'E2: an own AD_POD_MAX_MS timer ends the pod with a named ad-pod-max row',
+  'E2 RED: without the timer branch no pod end is reachable at the ceiling',
+  'E2b: the worker ceiling clears its own flags and posts an ad-end with evidence',
+  'E2b RED: a stopped fetch left the worker pod open with no ad-end',
+  'E3: a playlist pod reaches ad-ui-release pod-end at its ceiling',
+  'E3 RED: pre-fix ad-ui-release was unreachable for a playlist-only pod',
+  'E3b: a DOM ad leaving during a playlist pod is an independent end door',
+  'E3b RED: the marker kept the pod open after the ad left',
+  'E4: any pod end clears the route flag and writes one named row',
+  'E4 RED: only the clean-streak end cleared the route flag',
+  'E5: the pod releases the element it froze and names the reason',
+  'E5 RED: a pod ending on a still-detected ad never resumed its element',
+  'E6: a pause older than the 12 s hold is not called ours',
+  'E6 RED: a 10-minute trust window reads an expired hold pause as ours',
+  'E7: a direct adpark writer and the derivation never disagree',
+  'E7 RED: the stale cache rewrites an attribute a direct writer set',
+  'E8: ad-bypass-start and ad-pod-max carry the fields the verdict reads',
+  'E8 RED: the pre-fix code wrote only bypass-msg and no promised row',
 ];
 const missing = expected.filter((l) => !arms.includes(l));
 if (missing.length) {
