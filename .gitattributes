@@ -9,4 +9,5 @@ kick-overlay/*.json text eol=lf
 kick-overlay/*.html text eol=lf
 kick-overlay/*.css text eol=lf
 _tools/*.mjs text eol=lf
+_tools/*.json text eol=lf
 *.md text eol=lf
