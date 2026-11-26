@@ -1403,9 +1403,10 @@
     "After, same capture: `AD-MEDIA non-live-titles=0 ad-playlists=0 ad-segments=0 ad-markers=0`; the earlier capture 20261126-011724 re-analysed to the same zeros.",
     "`node _tools/ko-real-capture.mjs --selftest` -> `SELFTEST PASS 3/3` (steady, stitched, trigger-only).",
     "The marker test is now the CLASS/ID fields only, so a chance substring in a URL can never open a pod; `ad-markers` reports what the marker actually said.",
-    "compare.mjs verdict unchanged on the same pair (`RESULT CANNOT-MEASURE 4/12`, zero DIVERGE), so the false positive never reached a fidelity claim - it was caught before it did."
+    "compare.mjs verdict unchanged on the same pair (`RESULT CANNOT-MEASURE 4/12`, zero DIVERGE), so the false positive never reached a fidelity claim - it was caught before it did.",
+    "FIFTH real window, and the reason the row below stays unmeasured: `--navigate` 100 s on twitch.tv/xqc 2026-11-26 (live, 20 640 viewers, sae11 host) captured 120 playlists / 100 samples and summarised `AD-MEDIA non-live-titles=0 ad-playlists=0 ad-segments=0 ad-markers=0`. The DATERANGE CLASS census of those 120 bodies is `timestamp` 118, `twitch-session` 118, `twitch-stream-source` 118, `twitch-trigger` 118 - no ad class exists on a clean playlist, so a marker count of 0 cannot distinguish 'no ad' from 'ad markers live elsewhere' without a pod."
    ],
-   "next": "A window that really serves a pod must still print ad-media from its titles; `--navigate` on a channel with a preroll is the run that closes it."
+   "next": "Five windows (rodil, shygo twice, preroll-20261126, xqc) and 0 pods: ad SSSAI delivery is not under this lane's control, so the stitched-ad `#EXTINF` title, the ad DATERANGE class and `ad-markers` stay CANNOT-MEASURE on real capture. The replica's ad shape is a reconstruction from the extension's own worker digests, and the README says so. Re-arm: any capture whose titles carry a non-`live` value."
   },
   {
    "id": "KO-20261126-08",
@@ -1421,9 +1422,10 @@
     "Before, replica run 1795670018437: `native-seek-skipped inside-pod` then `native-catchup {from:0,to:7}` then `native-edge-recover {basis:'wall', to:11}` - the refusal named a region and the next decision entered it.",
     "After (`node ad-time-continuity-test.cjs`): `RESULT PASS ad-time-continuity checks=163 failed=0`, `ARMS 16/16 present`.",
     "The landing is `podExtent - HEALTH_BUFFER_SEC`, so the picture resumes on the last 3 s of held media instead of 7 s of it, and the wall recovery still follows once the buffer grows (its `behind` moves 27.9 -> 25 because it now measures from 11).",
-    "NOT taken in the next replica run: `dev-preroll-hold` 1795672342763 measured `elapsed 13.67` against `se 14`, so `podExtentEdge` was false by 0.08 s and the hand-back used the ordinary edge catch-up. The branch is arm-verified, not run-verified."
+    "NOT taken in the next replica run: `dev-preroll-hold` 1795672342763 measured `elapsed 13.67` against `se 14`, so `podExtentEdge` was false by 0.08 s and the hand-back used the ordinary edge catch-up. The branch is arm-verified, not run-verified.",
+    "replica run 1795677250450 on 0.8.120 measures the branch's structural limit instead of reaching it: the pod ended at `native-handoff {ms:14568, ct:0, se:42, podAgeMs:14297}` and the hand-back took the wall clock (`native-edge-recover {basis:'wall', behind:5.8, from:36.2}`). The replica's `se` advances with the element's own clock, so `se <= ct0 + elapsed` needs a pod SHORTER than the viewer's live offset - the harness cannot produce that shape, and the arm (podEndLandingArm) is the only proof the row has."
    ],
-   "next": "A run whose hand-back measures `se <= ct0 + elapsed + 0.25` must show the `basis:'pod-end'` row once and no `basis:'edge'` catch-up on the same hand-back."
+   "next": "The branch needs a real pod shorter than the time the viewer had been watching: a hand-back whose `se` is behind the wall clock by a pod's length. The replica cannot fabricate it (its `se` follows the element), so the row stays arm-verified until a live pod produces `basis:'pod-end'`."
   },
   {
    "id": "KO-20261126-09",

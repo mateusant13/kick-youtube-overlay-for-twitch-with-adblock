@@ -8,6 +8,21 @@ what it sees on Twitch: an HTTPS GQL endpoint returning a playback access token,
 media playlist with an ad block inside a live window, and a page whose player runs in a blob worker
 with `MediaSourceHandle`.
 
+## What the replica cannot measure, stated instead of faked
+
+- **A real stitched-ad playlist.** Five 100 s captures with `--navigate` on live channels (rodil,
+  shygo twice, xqc 2026-11-26 at 20 640 viewers) produced **0 pods**. The DATERANGE class census of the
+  120 clean bodies from xqc is `timestamp` / `twitch-session` / `twitch-stream-source` /
+  `twitch-trigger` and nothing else, so a clean playlist carries no ad class at all: the ad shape here
+  is a reconstruction from the extension's own worker digests, not a sample.
+- **A hand-back whose `se` is behind the wall clock by a pod's length** (`basis:'pod-end'`). The
+  replica's `se` advances with the element's own clock, so the pod-extent branch can only be proven by
+  its unit arm, never by a scenario.
+- **A viewer who watched longer than the pod lasted**, which is the real condition for the same branch.
+
+Both are named divergences: a capture that prints `ad-segments=0` is a measurement of the window, not a
+`false`, and a scenario that cannot reach a branch reports it as unreached.
+
 ## What is impersonated
 
 | surface | how |
