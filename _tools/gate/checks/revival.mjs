@@ -9,7 +9,7 @@
 // The scripts live in the shared skills root, so the path is overridable and
 // a missing interpreter is a FAIL, never a skip: an unread gate that reports
 // nothing is the silent-green class this file exists to refuse.
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 
@@ -59,11 +59,28 @@ export const revivalChecks = [
   {
     name: 'revival-friction',
     run(ctx) {
-      const { rc, out } = runRevival(ctx, 'loop_friction_audit.py', ['measure', '--repo', ctx.ROOT, '--gate']);
+      // `measure` re-runs every row's verify_cmd and WRITES the new timings into
+      // revival/FRICTION.json. A gate that edits a tracked file leaves the tree
+      // dirty and, worse, can resurrect a row set older than HEAD (measured
+      // 2026-11-26: a gate started before five lane landings rewrote the file
+      // back to the pre-landing rows). The measurement is kept, the write is not:
+      // the bytes are restored and the restore itself is asserted.
+      const rel = 'revival/FRICTION.json';
+      const abs = path.join(ctx.ROOT, rel);
+      const before = readFileSync(abs, 'utf8');
+      let rc;
+      let out;
+      try {
+        ({ rc, out } = runRevival(ctx, 'loop_friction_audit.py', ['measure', '--repo', ctx.ROOT, '--gate']));
+      } finally {
+        if (readFileSync(abs, 'utf8') !== before) writeFileSync(abs, before);
+      }
+      ctx.assert(readFileSync(abs, 'utf8') === before,
+        `${rel} was rewritten by the measure and the restore did not take`);
       ctx.assert(rc === 0, `inner-loop friction is open or over budget:\n${out.trim().slice(-700)}`);
       const m = /"verdict":\s*"PASS"/.exec(out);
       ctx.assert(m, `friction audit printed no verdict:\n${out.trim().slice(-400)}`);
-      return 'every friction row has a verify_cmd that runs inside its target';
+      return 'every friction row has a verify_cmd that runs inside its target (tree left byte-identical)';
     },
   },
 ];

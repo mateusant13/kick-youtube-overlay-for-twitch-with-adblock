@@ -77,6 +77,7 @@
       "solution_plan": "Virtual clock (`kick-overlay/_clock.cjs`, landed 1e9f8c7) makes the two behavioural suites advance an injected clock instead of sleeping, so the per-edit loop is the real suites again: measured 10 323 ms cold and 6 980 ms warm, `RESULT PASS mute-decision checks=95 failed=0` and `RESULT PASS ad-time-continuity checks=193 failed=0`, rc 0. `before_s` is that same pair of suites on the real-timer path at e66f551, 18.03 s and 15.875 s in a quiet window, which is the loop this replaces; `KO_REAL_CLOCK=1` replays the old path. A narrower `node _tools/ko-census.mjs --gate && node kick-overlay/bridge-handshake-test.cjs && node --check kick-overlay/twitch-adblock.js` smoke (605 ms) is available for a single-file edit that cannot reach the behaviour.",
       "twin_or_script": "kick-overlay/_clock.cjs",
       "verify_cmd": "node kick-overlay/mute-decision-test.cjs && node kick-overlay/ad-time-continuity-test.cjs",
+      "samples": 2,
       "after_s": 6.715,
       "status": "VERIFIED",
       "notes": "The 0.6 s smoke is a pre-edit convenience, not the gate: it never exercises the ad path's ordering, so the two suites above stay the loop of record."

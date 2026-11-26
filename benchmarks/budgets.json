@@ -32,6 +32,7 @@
       "ceiling": 2000.0,
       "command": "node _tools/ko-census.mjs --gate",
       "parse_mode": "wall_ms",
+      "samples": 3,
       "parse_pattern": "",
       "owner_paths": [
         "_tools/ko-census.mjs"
