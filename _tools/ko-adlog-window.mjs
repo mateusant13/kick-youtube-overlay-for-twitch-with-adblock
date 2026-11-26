@@ -40,7 +40,11 @@ for (const e of win) {
   const d = JSON.stringify(e.d || {});
   const dt = prev ? `+${e.t - prev}` : '';
   prev = e.t;
-  console.log(String(e.t).slice(-6), dt.padStart(6), e.ev.padEnd(20), d.length > 240 ? d.slice(0, 240) + '…' : d);
+  // KO_FULL=1 prints the whole record: a truncated row hides the fields a
+  // report actually turns on (measured 2026-11-25: `st.clean` was cut exactly
+  // where the reveal's source and quality live).
+  const LIMIT = process.env.KO_FULL === '1' ? Infinity : 240;
+  console.log(String(e.t).slice(-6), dt.padStart(6), e.ev.padEnd(20), d.length > LIMIT ? d.slice(0, LIMIT) + '…' : d);
 }
 await cdp.send('Target.closeTarget', { targetId: created.targetId }).catch(() => {});
 cdp.close();
