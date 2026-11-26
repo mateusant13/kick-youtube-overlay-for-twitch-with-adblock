@@ -9,5 +9,11 @@
     { "at": 2000, "kind": "midroll", "ms": 24000, "ui": "countdown" }
   ],
   "samples": [],
-  "expect": []
+  "expect": [
+    { "type": "reloadCounter", "field": "reloads", "op": "min", "value": 2 },
+    { "type": "reloadCounter", "field": "liveSec", "op": "max", "value": 2 },
+    { "type": "reloadCounter", "field": "adSec", "op": "min", "value": 18 },
+    { "type": "reloadCounter", "field": "loadSec", "op": "min", "value": 15 },
+    { "type": "row", "ev": "ad-ui-hold", "min": 1 }
+  ]
 }

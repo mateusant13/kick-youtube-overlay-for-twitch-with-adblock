@@ -300,3 +300,24 @@ python I:/!watcher/tools/artifact-census.py --project I:/kicktwitchyoutube_insta
   cross-platform swap.
 - Nothing here proves the product on the owner's machine, and it is not a substitute for that: the
   extension's own gate plus a live run stay the reference.
+
+## Vacuous-arm repairs (2026-11-26)
+
+- `expect: []` is `CANNOT-MEASURE expectations-present`; a green with no checks is never printed.
+- `reloadCounter` grades actual reload boots (`reloads`, `liveSec`, `adSec`, `loadSec`), so a
+  reload scenario with zero expectations can no longer pass on zero checks.
+- `noReload` requires exactly one page load: zero boot rows means the instrument was lost.
+- `coverDuring` requires a decoded, structured picture inside the hold window (`blue < 0.2`,
+  `lum >= minLum`, `sd >= minSd`), not merely the absence of ad-blue; a missing screenshot is
+  `CANNOT-MEASURE`, never a false fail from a late Chrome attach.
+- Nominal `at` labels are graded against the sample's actual `wallMs`; late samples are reported
+  as unmeasurable, with the measured wall time printed next to the verdict.
+- Segment URIs carry the monotonic media sequence; only the disk filename wraps. `KO_REPLICA_MODULO_URI=1`
+  restores the old repeating-URI defect as a negative arm. A pod longer than the disk program keeps
+  advancing; `KO_REPLICA_AD_CLAMP=1` restores the old clamp.
+- Slate and countdown strings are pinned by the fixture (`events[].label` overrides the defaults),
+  so an old or shortened sentence fails.
+- Teardown kills only Chrome whose own `--user-data-dir` is a profile this run created, with
+  `taskkill /PID <listener> /T /F`; a foreign listener on the guest port is named by pid and
+  refused (`CANNOT-MEASURE ... refusing to kill`). The leak found on 2026-11-26 was children
+  outliving a bare browser-pid kill: the tree flag is required, not optional.

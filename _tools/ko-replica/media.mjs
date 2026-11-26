@@ -45,7 +45,7 @@ export const RUNGS = [
 // already (media became 60 s while the server still assumed 120 s, so the clean
 // frame requested content_*_030.. and got 404 for every one, measured
 // 2026-11-26 in run 1795662048928: `Buffering rs=0 hold=0`, no reveal).
-export const PROGRAM_SECONDS = { content: 60, ad: 30 };
+export const PROGRAM_SECONDS = { content: 60, ad: 60 };
 
 const PROGRAMS = [
   {

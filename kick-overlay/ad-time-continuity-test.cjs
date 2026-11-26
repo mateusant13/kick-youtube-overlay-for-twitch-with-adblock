@@ -799,7 +799,50 @@ async function main() {
     assert(page.logsOf('native-resume').filter((l) => l.d.tag === 'ad-end').length === 0,
       'the starved element was resumed before it could play forward');
   });
-  // RED: the park limb restored in the wait's refusal -> no wait at all.
+  // EVERY POD-END DOOR OWNS THE PICTURE, NOT JUST `ad-end`. Measured 2026-11-26
+  // (validation A3, re-measured at 0.8.128): a pod ended by the worker's
+  // `ad-fail` door removed a revealed, healthy frame and resumed a native at
+  // rs:1 with no `handback-wait` row at all - the 0.8.121 defect entering from a
+  // door the owner's own ring already showed (`native-handoff {podAgeMs:180008}`).
+  // `timeout` shares the arming sites (:3688, :4095, :4740) but is masked today:
+  // `AD_POD_MAX_MS = 60000` ends a tracked pod first (`ad-pod-max` ->
+  // `finishAdOverlay()` -> the `ad-end` door), so no arm can reach it without
+  // mutating a product constant; the set carries it as the net for a pod whose
+  // ad evidence never arrives, and the RED below keeps the scoping honest.
+  await greenArm('a pod ended by the ad-fail door keeps the picture while the native is starved', async () => {
+    const page = makeWorld();
+    setNative(page, { ct: 30, edge: 40, bufferedEnd: 40, rs: 1 });
+    await pod(page);
+    await liveFrame(page, 2);
+    page.bypass({ type: 'ad-fail' });
+    await settle(60);
+    const wait = page.logsOf('handback-wait').pop();
+    const resumes = page.logsOf('native-resume').map((l) => l.d.tag + ':' + l.d.rs);
+    const waity = page.logsOf('handback-wait').map((l) => `${l.d.reason}@rs${l.d.rs}`);
+    assert(wait, `the ad-fail door handed a starved native back with no wait (resumes=${JSON.stringify(resumes)})`);
+    assert(wait.d.reason === 'ad-fail', `the wait names the wrong door: ${JSON.stringify(waity)}`);
+    assert(page.stats().frameMounted() === true, 'the frame was torn down before the native could decode');
+    assert(page.logsOf('native-resume').filter((l) => l.d.tag === 'ad-fail').length === 0,
+      `the starved native was resumed by the ad-fail door the wait exists for (resumes=${JSON.stringify(resumes)})`);
+  });
+  // RED: the scoped door set restored -> the other doors reveal a frozen native.
+  const RED_AD_END_ONLY = mutate([[
+    'POD_END_REASONS.has(reason)',
+    "reason === 'ad-end'",
+  ]]);
+  await redArm('RED: scoping the hand-back wait to the ad-end door reveals a frozen native at the other doors', RED_AD_END_ONLY, async (src) => {
+    const page = makeWorld({ adSource: src });
+    setNative(page, { ct: 30, edge: 40, bufferedEnd: 40, rs: 1 });
+    await pod(page);
+    await liveFrame(page, 2);
+    page.bypass({ type: 'ad-fail' });
+    await settle(60);
+    // The CONTRACT, not the mutant: an `ad-fail` pod end with a revealed picture
+    // must arm the wait, so the mutant is the one that fails this assertion.
+    assert(page.logsOf('handback-wait').pop(),
+      'the mutant put a frozen element on screen at the ad-fail door with no wait');
+  });
+
   const RED_PARK_SKIPS_WAIT = mutate([[
     "      const waitRefused = (document.visibilityState && document.visibilityState !== 'visible') || !!userPausedInPod;",
     "      const waitRefused = (document.visibilityState && document.visibilityState !== 'visible') || !!userPausedInPod || (!!overlay.pauseBeforeAd && !overlay.coldPreroll);",
@@ -1063,7 +1106,7 @@ async function main() {
     assert(retries.length === 0, `a retry resumed the native behind the wait: ${JSON.stringify(retries.map((l) => l.d.tag + ':' + l.d.rs))}`);
   });
   const RED_RETRY_BEHIND_WAIT = mutate([
-    ["        return adLogState('handback-wait', { rs: wrs,", "        adLogState('handback-wait', { rs: wrs,"],
+    ["        return adLogState('handback-wait', { reason: wait.reason, rs: wrs,", "        adLogState('handback-wait', { reason: wait.reason, rs: wrs,"],
     ['    if (!v || !v.isConnected || overlay.handbackWait) return;', '    if (!v || !v.isConnected) return;'],
   ]);
   await redArm('RED: a retry resumes the native while the wait is armed', RED_RETRY_BEHIND_WAIT, async (src) => {
@@ -1083,8 +1126,8 @@ async function main() {
     assert(page.stats().handbackWait() !== null, 'the wait did not survive the duplicate pod-end');
   });
   const RED_DUPLICATE_WAIT = mutate([
-    ["    if (hadWait && reason === 'ad-end' && !opts.noWait) {\n      adLog('handback-wait-kept', { ms: Date.now() - overlay.handbackWait.at });\n      return;\n    }\n", ''],
-    ['!opts.noWait && !hadWait && reason ===', '!opts.noWait && !overlay.handbackWait && reason ==='],
+    ["    if (hadWait && POD_END_REASONS.has(reason) && !opts.noWait) {\n      adLog('handback-wait-kept', { ms: Date.now() - overlay.handbackWait.at });\n      return;\n    }\n", ''],
+    ['!opts.noWait && !hadWait && POD_END_REASONS.has(reason)', '!opts.noWait && !overlay.handbackWait && POD_END_REASONS.has(reason)'],
   ]);
   await redArm('RED: a second pod-end cancels and re-arms the wait', RED_DUPLICATE_WAIT, async (src) => {
     const page = await waitArmPage(src);
@@ -3878,6 +3921,7 @@ async function main() {
     'a new pod is held before the wait that would refuse its freeze is released',
     'a hold cannot pause the native while the hand-back wait owns it',
     'a second resume cannot hand the native back while the wait is live',
+    'a pod ended by the ad-fail door keeps the picture while the native is starved',
   ];
   const printed = armLog.map((l) => String(l).trim());
   const missing = ARMS.filter((a) => !printed.includes(a));

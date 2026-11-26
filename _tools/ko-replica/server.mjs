@@ -153,7 +153,8 @@ const iso = (ms) => new Date(ms).toISOString();
 // Clean URIs serve the same bytes under a `clean_` prefix, so a scenario can
 // starve the native surface alone and still leave a picture on screen.
 function segLine(kind, k, query, dur, v = 720, pdMs = null, clean = false) {
-  const idx = k % (kind === 'content' ? CONTENT_SEGS : AD_SEGS);
+  const diskCount = kind === 'content' ? CONTENT_SEGS : AD_SEGS;
+  const idx = process.env.KO_REPLICA_MODULO_URI ? k % diskCount : k;
   const tag = kind === 'content' ? ',live' : ',';
   const d = Number.isFinite(dur) ? Number(dur).toFixed(3) : `${SEG}.000`;
   const pd = Number.isFinite(pdMs) ? `#EXT-X-PROGRAM-DATE-TIME:${iso(pdMs)}\n` : '';
@@ -184,7 +185,9 @@ function adBase(t, ev) {
   return Math.max(0, Math.floor(Math.max(0, t - ev.at) / (SEG * 1000)));
 }
 function adLines(pod, base, v = 720, clean = false) {
-  const last = Math.min(base, AD_SEGS - 1);
+  // A pod longer than the disk program keeps advancing its media sequence;
+  // only the negative arm clamps to the 30 s file set.
+  const last = process.env.KO_REPLICA_AD_CLAMP ? Math.min(base, AD_SEGS - 1) : base;
   const from = Math.max(0, last - AD_WINDOW_BACK);
   const count = last - from + 1;
   const pre = clean ? 'clean_' : '';
@@ -314,8 +317,11 @@ function pageStatus() {
   const ev = activeEvent(t) || {};
   const ui = ev.ui || 'none';
   let label = '';
-  if (ui === 'countdown') label = `Anúncio (0:${String(Math.max(0, Math.ceil((ev.at + (ev.ms || 0) - t) / 1000))).padStart(2, '0')})`;
-  if (ui === 'slate') label = `${CHANNEL} está fazendo um intervalo comercial…`;
+  // A scenario can pin the exact sentence the page must show; the defaults
+  // below are the real strings. No test scenario may depend on an ellipsis.
+  if (ev.label) label = ev.label;
+  else if (ui === 'countdown') label = `Anúncio (0:${String(Math.max(0, Math.ceil((ev.at + (ev.ms || 0) - t) / 1000))).padStart(2, '0')})`;
+  else if (ui === 'slate') label = `${CHANNEL} está fazendo um intervalo comercial…`;
   return {
     name: scenario.name,
     channel: CHANNEL,
@@ -513,8 +519,13 @@ const server = https.createServer({ key: readFileSync(key), cert: readFileSync(c
     if (seg) {
       const name = seg[1];
       const cleanSurface = name.startsWith('clean_');
-      const file = join(MEDIA_DIR, cleanSurface ? name.slice('clean_'.length) : name);
-      if (!existsSync(file)) return send(res, 404, 'text/plain', 'no segment');
+      // Logical URI carries the media sequence; the DISK file wraps. Repeated
+      // 2 s filenames make hls.js dedupe refreshes and freeze the playhead.
+      const m = /^(?:(clean_))?(content|ad)_(\d+)_(\d+)\.m4s$/.exec(name);
+      const diskName = m
+        ? `${m[2]}_${m[3]}_${pad(Number(m[4]) % (m[2] === 'content' ? CONTENT_SEGS : AD_SEGS))}.m4s`
+        : (cleanSurface ? name.slice('clean_'.length) : name);
+      const file = join(MEDIA_DIR, diskName);
       const body = readFileSync(file);
       const serve = () => {
         cors(res);

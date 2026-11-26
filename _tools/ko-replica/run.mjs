@@ -146,7 +146,12 @@ async function waitClosed(ms) {
 // is a blocker, never a process this run is allowed to kill.
 if (!ATTACH_GUEST && (await portOpen('127.0.0.1') || await portOpen('::1'))) {
   if (!(await waitClosed(10000))) {
-    console.log(`CANNOT-MEASURE port ${GUEST_PORT} still listening after a stop: a previous guest browser survived its launcher`);
+    const { execSync: nsExec } = await import('node:child_process');
+    const pids = String(nsExec('netstat -ano -p tcp', { encoding: 'utf8' }))
+      .split(/\r?\n/)
+      .filter((l) => new RegExp(`:${GUEST_PORT}\\s+.*LISTENING`).test(l))
+      .map((l) => l.trim().split(/\s+/).pop());
+    console.log(`CANNOT-MEASURE port ${GUEST_PORT} held by pid ${pids.join(',') || 'unknown'} (${pids.length ? 'foreign listener' : 'unknown process'}) — refusing to kill`);
     process.exit(2);
   }
 }
@@ -275,16 +280,38 @@ if (!ATTACH_GUEST) launchGuest();
 // profile lock and its CDP port (measured 2026-11-25). Idempotent: `process.on
 // ('exit')` calls this again after the explicit stop at the end of the run.
 let stoppedAll = false;
-function ourChromePid() {
+function ourMarker() {
   try {
     const j = JSON.parse(readFileSync(GUEST_MARKER, 'utf8'));
-    return j && Number(j.port) === GUEST_PORT && j.pid ? Number(j.pid) : null;
+    return j && Number(j.port) === GUEST_PORT ? j : null;
   } catch { return null; }
 }
+// OWNERSHIP IS THE PROCESS'S OWN `--user-data-dir`, NEVER THE MARKER FILE
+// (AGENTS.md, measured 2026-11-18: a marker named a guest that was not there).
+// The marker supplies the pid and the profile this run created; the command
+// line has to confirm both before anything is killed. A foreign browser that
+// happens to listen on this port is named and refused, never killed.
+function ownsProfile(pid, udd) {
+  if (!pid || !udd) return false;
+  let cmd = '';
+  try {
+    const res = spawnSync('powershell', ['-NoProfile', '-Command',
+      `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`],
+    { encoding: 'utf8', windowsHide: true, timeout: 5000 });
+    cmd = String(res.stdout || '');
+  } catch { return false; }
+  const norm = (v) => String(v).replace(/\//g, '\\').toLowerCase();
+  return cmd.trim() !== '' && norm(cmd).includes(norm(udd));
+}
 function killOurGuest() {
-  const pid = ourChromePid();
+  const m = ourMarker();
+  const pid = m && m.pid ? Number(m.pid) : null;
   if (pid) {
-    try { spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); } catch { /* gone */ }
+    if (ownsProfile(pid, m.udd)) {
+      try { spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); } catch { /* gone */ }
+    } else {
+      evidence.notes.push(`refused to kill pid ${pid}: its own command line does not carry this run's profile ${m.udd}`);
+    }
   }
   try { if (guest) guest.kill(); } catch { /* ignore */ }
   try { rmSync(GUEST_MARKER, { force: true }); } catch { /* ignore */ }
@@ -382,9 +409,14 @@ if (!page) {
   } catch { /* best effort */ }
   finishEarly('replica-page-never-loaded');
 }
-const { sessionId } = await cdp.send('Target.attachToTarget', { targetId: page.targetId, flatten: true });
-await cdp.send('Runtime.enable', {}, sessionId);
-await cdp.send('Page.enable', {}, sessionId);
+let sessionId;
+try {
+  ({ sessionId } = await cdp.send('Target.attachToTarget', { targetId: page.targetId, flatten: true }));
+  await cdp.send('Runtime.enable', {}, sessionId);
+  await cdp.send('Page.enable', {}, sessionId);
+} catch (e) {
+  finishEarly(`cdp-session-setup-timeout: ${String(e)}`);
+}
 
 // CLEAN-FRAME PROBE. The bridge posts one {__koKick:{t:'st',st}} per second;
 // collecting them on the page is the only cross-origin-safe way to see the
@@ -539,17 +571,22 @@ async function centerRgb() {
     const img = decodePng(Buffer.from(shot.data, 'base64'));
     const b = img.pixels;
     if (!img.n || b.length < 300) return null;
-    let r = 0, g = 0, bl = 0, blue = 0, dark = 0, n = 0;
+    let r = 0, g = 0, bl = 0, blue = 0, dark = 0, n = 0, sumL = 0, sumL2 = 0;
     for (let i = 0; i < b.length; i += img.bpp) {
       const R = b[i], G = b[i + 1], B = b[i + 2];
-      r += R; g += G; bl += B; n++;
+      const lum = 0.2126 * R + 0.7152 * G + 0.0722 * B;
+      r += R; g += G; bl += B; n++; sumL += lum; sumL2 += lum * lum;
       if (B > 150 && B - Math.max(R, G) > 80) blue++;
       if (R + G + B < 60) dark++;
     }
+    const meanL = sumL / n;
+    const sd = Math.sqrt(Math.max(0, sumL2 / n - meanL * meanL));
     return {
       mean: [Math.round(r / n), Math.round(g / n), Math.round(bl / n)],
       blue: +(blue / n).toFixed(3),
       dark: +(dark / n).toFixed(3),
+      lum: +meanL.toFixed(1),
+      sd: +sd.toFixed(1),
       n,
     };
   } catch (e) {
@@ -732,10 +769,24 @@ if (!NO_EXT) {
 }
 
 // ---- expectations ---------------------------------------------------------
+// Nominal `at` labels lie when Chrome attaches late: grade by the wall clock
+// the sample was actually taken. A missing sample is CANNOT-MEASURE, not FAIL.
+function sampleAt(ms) {
+  const tol = Math.max(750, Math.round(ms * 0.1));
+  let best = null;
+  for (const s of evidence.samples) {
+    const d = Math.abs((Number.isFinite(s.wallMs) ? s.wallMs : s.at) - ms);
+    if (d <= tol && (!best || d < best.d)) best = { s, d };
+  }
+  return best ? best.s : null;
+}
 const probeAt = (ms) => {
-  const near = evidence.samples.filter((s) => s.at <= ms).pop();
-  return near ? near.probe : null;
+  const s = sampleAt(ms || 0);
+  return s ? s.probe : null;
 };
+// A scenario with zero expectations cannot fail, which is how dev-timeline-
+// probe printed PASS with the extension loaded. Say so instead of grading air.
+if (!(scenario.expect || []).length) unmeasurable('expectations-present', 'scenario has no expectations; a green would be vacuous');
 // The ad program is a solid blue frame, so it fills the player with ad-blue.
 // Content (a moving test pattern) never does. Thresholds are fractions of the
 // captured player rect, printed with every verdict. 0.35 rather than 0.9
@@ -750,7 +801,7 @@ function rgbBlue(px) {
 
 const known = new Set([
   'row', 'absent', 'within', 'noReload', 'probe', 'pixelNotBlue', 'pixelBlue', 'pixelDark', 'rowsAtMost',
-  'rowField', 'coverDuring',
+  'rowField', 'coverDuring', 'reloadCounter',
 ]);
 for (const exp of scenario.expect || []) {
   if (!known.has(exp.type)) {
@@ -787,44 +838,56 @@ for (const exp of scenario.expect || []) {
     const a = first(exp.from);
     const b = a ? firstAfter(exp.to, a.t) : null;
     const ats = Array.isArray(exp.at) ? exp.at : [exp.at];
-    const samples = evidence.samples.filter((x) => ats.includes(x.at));
-    // adlog times are wall-clock epochs; sample wallMs is relative to nav.
-    const hit = samples.find((s) => {
-      const abs = evidence.navEpoch + s.wallMs;
-      return a && b && abs >= a.t && abs <= b.t && s.px && s.px.blue != null && s.px.blue < 0.2;
-    });
-    check(`cover ${exp.from}->${exp.to} at ${JSON.stringify(ats)}`, !!hit, {
-      from: a && a.t, to: b && b.t,
-      samples: samples.map((s) => ({ at: s.at, blue: s.px ? s.px.blue : null })),
-    });
+    const minLum = exp.minLum == null ? 20 : exp.minLum;
+    const minSd = exp.minSd == null ? 8 : exp.minSd;
+    const samples = ats.map((at) => sampleAt(at)).filter(Boolean);
+    if (!a || !b || samples.length !== ats.length) {
+      unmeasurable(`cover ${exp.from}->${exp.to} at ${JSON.stringify(ats)}`, 'missing from/to row or screenshot within tolerance; a late sample is not a failed cover');
+    } else {
+      const ok = samples.every((s) => {
+        const abs = evidence.navEpoch + s.wallMs;
+        const px = s.px;
+        return px && px.blue < 0.2 && Number.isFinite(px.lum) && px.lum >= minLum
+          && Number.isFinite(px.sd) && px.sd >= minSd && abs >= a.t && abs <= b.t;
+      });
+      check(`cover ${exp.from}->${exp.to} at ${JSON.stringify(ats)} decoded lum>=${minLum} sd>=${minSd}`, ok, {
+        from: a.t, to: b.t,
+        samples: samples.map((s) => ({ at: s.at, wall: s.wallMs, blue: s.px && s.px.blue, lum: s.px && s.px.lum, sd: s.px && s.px.sd })),
+      });
+    }
+  } else if (exp.type === 'reloadCounter') {
+    const arm = evidence.reloadArm;
+    const v = arm && Number.isFinite(Number(arm[exp.field])) ? Number(arm[exp.field]) : null;
+    const ok = v != null && (exp.op === 'min' ? v >= exp.value : exp.op === 'max' ? v <= exp.value : false);
+    check(`reload ${exp.field} ${exp.op} ${exp.value}`, ok, { got: v, reloads: arm ? arm.reloads : null });
   } else if (exp.type === 'noReload') {
-    // The extension writes two boot rows per page load (provenance + state).
     const boots = E('boot').filter((e) => e.d && e.d.href).map((e) => Math.round(e.t / 1000));
     const loads = [...new Set(boots)].length;
-    check('no reload (one page load)', loads <= 1, { loads });
+    // Zero boot rows means the instrument was lost, not that nobody reloaded.
+    // The control arm has no extension at all, so it has no boot rows: grading
+    // it here would be a check with zero subject. That arm answers the reload
+    // question with the page-side counter (expectation `reloadCounter`).
+    if (NO_EXT) console.log('SKIP no reload (one page load)  control arm: no extension, no boot rows; grade with reloadCounter');
+    else check('no reload (one page load)', loads === 1, { loads });
   } else if (exp.type === 'probe') {
     const p = probeAt(exp.at || 0);
     const v = exp.path.split('.').reduce((o, k) => (o == null ? o : o[k]), p);
-    check(`probe ${exp.path} ${exp.op} ${JSON.stringify(exp.value)}`, exp.op === 'eq' ? v === exp.value : exp.op === 'lt' ? Number(v) < exp.value : v, { got: v });
+    const ok = exp.op === 'eq' ? v === exp.value
+      : exp.op === 'lt' ? Number(v) < exp.value
+        : exp.op === 'gt' ? Number(v) > exp.value : !!v;
+    check(`probe ${exp.path} ${exp.op} ${JSON.stringify(exp.value)}`, ok, { got: v });
   } else if (exp.type === 'pixelNotBlue' || exp.type === 'pixelDark' || exp.type === 'pixelBlue') {
-    const s = evidence.samples.find((x) => x.at === exp.at);
+    const s = sampleAt(exp.at);
     const px = s ? s.px : null;
     const sum = px && px.mean ? px.mean[0] + px.mean[1] + px.mean[2] : null;
     let verdict = null;
     let label = '';
-    if (exp.type === 'pixelNotBlue') { verdict = rgbNotBlue(px); label = `pixel at ${exp.at} is not the ad`; }
+    if (exp.type === 'pixelNotBlue') { verdict = px ? rgbNotBlue(px) : null; label = `pixel at ${exp.at} is not the ad`; }
     if (exp.type === 'pixelDark') { verdict = sum == null ? null : sum <= 90; label = `pixel at ${exp.at} is dark (hold cover)`; }
-    if (exp.type === 'pixelBlue') { verdict = px ? rgbBlue(px) : false; label = `pixel at ${exp.at} is the ad (known-bad arm)`; }
-    if (verdict == null) {
-      unmeasurable(`pixel at ${exp.at}`, 'no screenshot for this sample');
-    } else if (NO_EXT) {
-      // The control arm: with no extension loaded the ad MUST be visible and
-      // nothing may cover it. The same scenario is re-read inverted, so one
-      // file proves both directions instead of a second copy drifting.
-      check(label, !verdict, { px, inverted: 'control-no-extension' });
-    } else {
-      check(label, verdict, { px });
-    }
+    if (exp.type === 'pixelBlue') { verdict = px ? rgbBlue(px) : null; label = `pixel at ${exp.at} is the ad (known-bad arm)`; }
+    if (verdict == null) unmeasurable(`pixel at ${exp.at}`, `no screenshot within tolerance of ${exp.at}ms (a late sample is not a verdict)`);
+    else if (NO_EXT) check(label, !verdict, { px, inverted: 'control-no-extension' });
+    else check(label, verdict, { px });
   }
 }
 // Print the clean frame once per second. Duplicates from the coalesced
@@ -870,12 +933,15 @@ evidence.cannotMeasure = cannot;
 // Its verdict is read only from the inverted pixel checks, which is the arm
 // that proves the product checks can fail at all.
 const pixelChecks = evidence.checks.filter((c) => /^pixel at /.test(c.name));
-const controlOk = NO_EXT ? pixelChecks.every((c) => c.ok) : false;
+const controlOk = NO_EXT ? pixelChecks.length > 0 && pixelChecks.every((c) => c.ok) : false;
 if (NO_EXT) {
   failures = evidence.checks.filter((c) => !c.ok && /^pixel at /.test(c.name)).length;
   evidence.arm = 'control-no-extension';
 }
-evidence.verdict = cannot > 0 ? 'CANNOT-MEASURE' : NO_EXT ? (controlOk ? 'CONTROL-PASS' : CONTROL_FAIL_VERDICT) : failures > 0 ? 'FAIL' : 'PASS';
+evidence.verdict = cannot > 0 ? 'CANNOT-MEASURE'
+  : NO_EXT && scenario.controlVerdict === 'FAIL' ? 'FAIL'
+  : NO_EXT ? (controlOk ? 'CONTROL-PASS' : 'CONTROL-FAIL')
+  : failures > 0 ? 'FAIL' : 'PASS';
 const report = JSON.stringify(evidence, null, 2);
 writeFileSync(join(runDir, 'report.json'), report);
 if (OUT) writeFileSync(OUT, report);

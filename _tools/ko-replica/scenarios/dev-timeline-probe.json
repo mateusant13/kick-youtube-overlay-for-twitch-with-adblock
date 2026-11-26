@@ -4,80 +4,30 @@
   "channel": "replicach",
   "durationMs": 32000,
   "tailMs": 5000,
-  "note": "No expectations: one measurement of what the fixture's own timeline looks like (ad program vs content) at 2 s steps, with no extension loaded.",
   "events": [
-    {
-      "at": 0,
-      "kind": "preroll",
-      "ms": 14000,
-      "ui": "wrapper"
-    }
+    { "at": 0, "kind": "preroll", "ms": 14000, "ui": "wrapper" }
   ],
   "samples": [
-    {
-      "at": 2000,
-      "pixel": true
-    },
-    {
-      "at": 4000,
-      "pixel": true
-    },
-    {
-      "at": 6000,
-      "pixel": true
-    },
-    {
-      "at": 8000,
-      "pixel": true
-    },
-    {
-      "at": 10000,
-      "pixel": true
-    },
-    {
-      "at": 12000,
-      "pixel": true
-    },
-    {
-      "at": 14000,
-      "pixel": true
-    },
-    {
-      "at": 16000,
-      "pixel": true
-    },
-    {
-      "at": 18000,
-      "pixel": true
-    },
-    {
-      "at": 20000,
-      "pixel": true
-    },
-    {
-      "at": 22000,
-      "pixel": true
-    },
-    {
-      "at": 24000,
-      "pixel": true
-    },
-    {
-      "at": 26000,
-      "pixel": true
-    },
-    {
-      "at": 28000,
-      "pixel": true
-    },
-    {
-      "at": 30000,
-      "pixel": true
-    },
-    {
-      "at": 32000,
-      "pixel": true
-    }
+    { "at": 2000, "pixel": true },
+    { "at": 4000, "pixel": true },
+    { "at": 6000, "pixel": true },
+    { "at": 8000, "pixel": true },
+    { "at": 10000, "pixel": true },
+    { "at": 12000, "pixel": true },
+    { "at": 14000, "pixel": true },
+    { "at": 16000, "pixel": true },
+    { "at": 18000, "pixel": true },
+    { "at": 20000, "pixel": true },
+    { "at": 22000, "pixel": true },
+    { "at": 24000, "pixel": true },
+    { "at": 26000, "pixel": true },
+    { "at": 28000, "pixel": true },
+    { "at": 30000, "pixel": true },
+    { "at": 32000, "pixel": true }
   ],
-  "expect": []
+  "expect": [
+    { "type": "row", "ev": "worker-playlist", "min": 1 },
+    { "type": "pixelNotBlue", "at": 20000 },
+    { "type": "probe", "at": 20000, "path": "video.vf", "op": "gt", "value": 0 }
+  ]
 }

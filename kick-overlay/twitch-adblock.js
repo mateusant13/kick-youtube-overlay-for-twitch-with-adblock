@@ -277,6 +277,17 @@
   // heartbeat cannot reveal the frozen native this wait exists to hide.
   const HANDBACK_BLIND_MS = 1000;
   const HANDBACK_WAIT_MS = 3000;
+  // Which teardown doors end a POD while OUR picture is on screen. The wait that
+  // keeps that picture up until the native can decode belongs to every one of
+  // them, not to `ad-end` alone: measured 2026-11-26 (validation A3), a pod ended
+  // by `ad-fail` removed a revealed, healthy frame and resumed a native at rs:1
+  // with no `handback-wait` row at all - the 0.8.121 defect from the other door.
+  // `timeout` is the 180 s net at :3688/:4095/:4740; `AD_POD_MAX_MS` (60 s) ends a
+  // tracked pod before it, so it is the net for a pod whose ad evidence never
+  // arrives. Not a pod end: `clean-stall`/`ad-only`/`source-switch` (no picture of
+  // ours to hold), `pod-max` (that door routes through `finishAdOverlay()` and
+  // arrives as `ad-end`), and `ad-start` (the start door).
+  const POD_END_REASONS = new Set(['ad-end', 'timeout', 'ad-fail']);
   // A cold cover holds the picture while the clean source is still minting, so
   // it needs a hard deadline INSIDE the 12 s contract, not equal to it. Equal
   // was unpassable: the timer fired at 12000 ms and the reachability arm
@@ -3314,7 +3325,7 @@
     // ONE WAIT PER HAND-BACK. A repeated DOM pod-end while a wait is live must
     // not cancel it and arm a second one over the same picture.
     const hadWait = !!overlay.handbackWait;
-    if (hadWait && reason === 'ad-end' && !opts.noWait) {
+    if (hadWait && POD_END_REASONS.has(reason) && !opts.noWait) {
       adLog('handback-wait-kept', { ms: Date.now() - overlay.handbackWait.at });
       return;
     }
@@ -3342,7 +3353,7 @@
     // Only a pod end qualifies; a clean-stall/ad-only teardown has no picture to
     // wait on. Bounded by HANDBACK_WAIT_MS so a native that never recovers still
     // gets the hand-back it would have had.
-    if (!opts.noWait && !hadWait && reason === 'ad-end' && overlay.frame && overlay.revealed && cleanFrameCanCover()) {
+    if (!opts.noWait && !hadWait && POD_END_REASONS.has(reason) && overlay.frame && overlay.revealed && cleanFrameCanCover()) {
       const wv = overlay.video && overlay.video.isConnected ? overlay.video : mainVideo();
       const wrs = wv ? Number(wv.readyState) || 0 : 0;
       // A PARKED PLAYER IS NOT A STARVED ONE. `resumeRefusedByUser()` says no for
@@ -3410,7 +3421,7 @@
           }
         };
         wait.timer = setTimeout(finish, 150);
-        return adLogState('handback-wait', { rs: wrs, cleanLat: overlay.lastSt ? +Number(overlay.lastSt.lat || 0).toFixed(1) : null, capMs: HANDBACK_WAIT_MS, ct: +Number(wv.currentTime || 0).toFixed(1) });
+        return adLogState('handback-wait', { reason: wait.reason, rs: wrs, cleanLat: overlay.lastSt ? +Number(overlay.lastSt.lat || 0).toFixed(1) : null, capMs: HANDBACK_WAIT_MS, ct: +Number(wv.currentTime || 0).toFixed(1) });
       }
     }
     if (wasStandby) {
