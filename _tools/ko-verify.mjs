@@ -24,9 +24,14 @@ const STARTED = Date.now();
 // cites. The gate writes one _evidence/<bug>-arms.md per key, so a bug marked
 // verified has a machine artifact next to the receipt, not a prose claim.
 const CAPTURED_ARMS = {};
+// One read per path per run: several checks hash or re-scan the same product
+// files, and a later check must see the same bytes the first one did.
+const READ_CACHE = new Map();
 
 function read(rel) {
-  return readFileSync(path.join(ROOT, rel), 'utf8');
+  const abs = path.join(ROOT, rel);
+  if (!READ_CACHE.has(abs)) READ_CACHE.set(abs, readFileSync(abs, 'utf8'));
+  return READ_CACHE.get(abs);
 }
 function sha256(text) {
   return createHash('sha256').update(text).digest('hex');
@@ -59,10 +64,12 @@ const PRODUCT_JS = [
   'kick-overlay/player-bridge.js',
   'kick-overlay/adblock-bridge.js',
   'kick-overlay/popup.js',
-].filter((rel) => existsSync(path.join(ROOT, rel)));
+];
 
 check('syntax', () => {
+  assert(PRODUCT_JS.length > 0, 'syntax has no product files to check');
   for (const rel of PRODUCT_JS) {
+    assert(existsSync(path.join(ROOT, rel)), `missing product file: ${rel}`);
     const r = spawnSync(process.execPath, ['--check', path.join(ROOT, rel)], {
       encoding: 'utf8',
     });
@@ -82,7 +89,7 @@ check('line-endings', () => {
   const files = ['kick-overlay/twitch-adblock.js', 'kick-overlay/content.js', 'kick-overlay/player-bridge.js',
     'kick-overlay/adblock-bridge.js', 'kick-overlay/background.js', 'kick-overlay/popup.js'];
   const bad = files.filter((rel) => {
-    const d = readFileSync(path.join(ROOT, rel));
+    const d = read(rel);
     return d.includes('\r\n');
   });
   assert(bad.length === 0, `CRLF in ${bad.join(', ')} — an editing tool rewrote these; suites mutate them by exact LF text`);
@@ -343,8 +350,8 @@ check('youtube-resume', () => {
     cwd: path.join(ROOT, 'kick-overlay'),
     encoding: 'utf8',
   });
-  CAPTURED_ARMS['KO-20261026-04'] = { check: 'youtube-resume', rel, r };
   assert(r.status === 0, `${rel}: ${String(r.stderr || r.stdout || '').trim().slice(-320)}`);
+  CAPTURED_ARMS['KO-20261026-04'] = { check: 'youtube-resume', rel, r };
   return 'user-paused YouTube stays paused across probe(); a video we paused is still handed back (pre-fix arm goes RED)';
 });
 
@@ -363,8 +370,8 @@ check('cold-cover-fixture', () => {
     cwd: path.join(ROOT, 'kick-overlay'),
     encoding: 'utf8',
   });
-  CAPTURED_ARMS['KO-20261023-01'] = { check: 'cold-cover-fixture', rel, r };
   assert(r.status === 0, `${rel}: ${String(r.stderr || r.stdout || '').trim().slice(-320)}`);
+  CAPTURED_ARMS['KO-20261023-01'] = { check: 'cold-cover-fixture', rel, r };
   return 'served ad-only m3u8 -> real worker digest -> ad-hold -> cold-cover on the tick, reveal inside 12 s; pre-fix arm goes RED';
 });
 
@@ -386,8 +393,8 @@ check('channel-switch', () => {
     cwd: path.join(ROOT, 'kick-overlay'),
     encoding: 'utf8',
   });
-  CAPTURED_ARMS['KO-20261027-01'] = { check: 'channel-switch', rel, r };
   assert(r.status === 0, `${rel}: ${String(r.stderr || r.stdout || '').trim().slice(-320)}`);
+  CAPTURED_ARMS['KO-20261027-01'] = { check: 'channel-switch', rel, r };
   return 'revealed + standby overlays dropped on an SPA channel switch, native handed back, same-channel sub-route keeps it; pre-fix arm goes RED';
 });
 
@@ -481,8 +488,8 @@ check('silent-census', () => {
 // element sat frozen for 70 s with no row). `ko-snapshot` reads what the page
 // publishes, so THIS check can only prove its CONTRACT: every attribute it
 // reads is still written somewhere, and every verdict it can print still has
-// its branch. A check that needed a live Twitch tab would be red on every run
-// without one, which is the vacuous-arm defect this file already pays for.
+// its branch. The probe is deliberately NOT spawned here: a live reading needs
+// the owner Chrome and belongs to the project-harness job, not this static gate.
 check('live-state-probe', () => {
   const tool = path.join(ROOT, '_tools/ko-snapshot.mjs');
   assert(existsSync(tool), 'missing _tools/ko-snapshot.mjs');
@@ -504,22 +511,13 @@ check('live-state-probe', () => {
   for (const cls of ['FROZEN', 'PAUSED', 'REPEAT', 'PLAYING']) {
     assert(src.includes(cls), `probe lost the ${cls} verdict branch`);
   }
-  const r = spawnSync(process.execPath, [tool, '9446'], { cwd: ROOT, encoding: 'utf8', timeout: 40000 });
-  const out = String(r.stdout || '') + String(r.stderr || '');
-  assert(r.status === 2 || r.status === 0 || r.status === 1,
-    `probe crashed: rc=${r.status}\n${out.trim().slice(-300)}`);
-  assert(/no Twitch\/YouTube tab|NOT measurable from the DOM/.test(out),
-    `probe printed neither a no-tab verdict nor its limits:\n${out.trim().slice(-300)}`);
   // A LAYER THAT OWNS THE PICTURE IS THE SURFACE. The probe once read the
   // page's own <video> — paused BY DESIGN under `player=kick` — and printed
-  // `-> PAUSED` while the kick frame reported Playing at lat 1.65. The
-  // assertion is conditional on what the run actually observed, so it can
-  // never pass vacuously on a guest with no layer mounted.
-  const ownsLayer = /owner=(kick|youtube)/.test(out) && /frame=true/.test(out);
-  if (ownsLayer) {
-    assert(out.includes('SURFACE=FRAME'), 'a page with a mounted owning layer printed a native verdict instead of naming the frame as the surface');
-  }
-  return `${uniq.length} published attribute(s) each with a writer, ${r.status === 2 ? 'no guest tab (contract only)' : 'ran against a guest'}${ownsLayer ? ', layer-surface branch exercised' : ''}`;
+  // `-> PAUSED` while the kick frame reported Playing at lat 1.65. The branch
+  // must still exist in the source; whether it fires needs the owner Chrome.
+  assert(src.includes('SURFACE=FRAME'), 'probe lost the SURFACE=FRAME branch for an owning layer');
+  assert(/no Twitch\/YouTube tab|NOT measurable from the DOM/.test(src), 'probe lost its no-tab / DOM-limits verdict branch');
+  return `${uniq.length} published attribute(s) each with a writer, SURFACE=FRAME branch present; probe NOT spawned (static contract only)`;
 });
 
 // ---- 7. bug ledger -------------------------------------------------------
@@ -540,6 +538,7 @@ const LEDGER_STATES = new Set([
   'recurrence-watch',
 ]);
 let ledger = { schema: 1, bugs: [] };
+let ledgerLoaded = false;
 check('bug-ledger', () => {
   const raw = JSON.parse(read('_tools/ko-bug-ledger.json'));
   assert(raw && Array.isArray(raw.bugs), 'bug ledger needs a bugs array');
@@ -573,7 +572,118 @@ check('bug-ledger', () => {
     }
   }
   ledger = raw;
+  ledgerLoaded = true;
   return `${raw.bugs.length} bug(s)`;
+});
+// ---- 6b. ledger evidence and version honesty -----------------------------
+// A `verified` claim is a receipt, not a mood: it must name an artifact that
+// exists on disk, and that artifact must not be a fetch failure or a stub.
+// A fixed_in must name a version the manifest actually shipped; invented
+// versions let a row point at a build nobody can install. History is parsed
+// once, keeping at most 400 version lines (the full -p output is ~2800 lines).
+const LEDGER_FAILURE_MARKERS = ['Failed to fetch', 'Uncaught', 'TypeError'];
+function ledgerEvidenceArtifacts(bug) {
+  const paths = [];
+  for (const entry of Array.isArray(bug.evidence) ? bug.evidence : []) {
+    const re = /_evidence[\\/][^\s"'`,]+/g;
+    let m;
+    while ((m = re.exec(String(entry)))) paths.push(m[0].replace(/\\/g, '/'));
+  }
+  for (const key of ['arms_artifact', 'reachability_artifact']) {
+    if (typeof bug[key] === 'string' && bug[key].startsWith('_evidence/')) paths.push(bug[key]);
+  }
+  return [...new Set(paths)];
+}
+check('ledger-evidence', () => {
+  const raw = JSON.parse(read('_tools/ko-bug-ledger.json'));
+  const bugs = Array.isArray(raw.bugs) ? raw.bugs : [];
+  const claimed = bugs.filter((b) => b.verified === true || /^\d{4}-\d\d-\d\d$/.test(String(b.verified || '')));
+  for (const bug of claimed) {
+    const paths = ledgerEvidenceArtifacts(bug);
+    assert(paths.length, `${bug.id}: verified without an _evidence artifact path`);
+    const found = paths.filter((rel) => existsSync(path.join(ROOT, rel)));
+    assert(found.length, `${bug.id}: verified artifact missing: ${paths.join(', ')}`);
+    for (const rel of found) {
+      const body = readFileSync(path.join(ROOT, rel), 'utf8');
+      const marker = LEDGER_FAILURE_MARKERS.find((m) => body.includes(m));
+      assert(!marker, `${bug.id}: ${rel} contains failure marker "${marker}"`);
+      assert(body.trim().toLowerCase() !== 'missing', `${bug.id}: ${rel} contains only "missing"`);
+    }
+  }
+  const history = spawnSync('git', ['-C', ROOT, 'log', '-p', '--', 'kick-overlay/manifest.json'], {
+    encoding: 'utf8',
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  assert(history.status === 0, `manifest history unavailable: ${String(history.stderr || '').trim().slice(0, 160)}`);
+  const versions = new Set(history.stdout.split('\n')
+    .filter((line) => /^[+-]\s*"version":\s*"\d+\.\d+\.\d+"/.test(line))
+    .slice(0, 400)
+    .map((line) => String(line.match(/(\d+\.\d+\.\d+)/)[1])));
+  assert(versions.size > 0, 'no manifest versions parsed');
+  for (const bug of bugs) {
+    if (bug.fixed_in == null || bug.fixed_in === 'unreleased') continue;
+    const named = [...String(bug.fixed_in).matchAll(/\d+\.\d+\.\d+/g)].map((m) => m[0]);
+    // Descriptive pointers (a tool path, not a build) are not version claims.
+    if (!named.length) continue;
+    const invented = named.filter((v) => !versions.has(v));
+    assert(!invented.length, `${bug.id}: fixed_in names version(s) never shipped: ${invented.join(', ')}`);
+  }
+  return `${claimed.length} verified row(s) with artifact evidence; ${versions.size} manifest version(s)`;
+});
+
+// ---- 6c. revival gates ---------------------------------------------------
+// The project-revival artifacts (features/, benchmarks/, revival/) are gates,
+// not paperwork: a feature map that drifted from the tree and a budget row
+// whose command is empty are both silent unless a check reads them. All three
+// are cheap (0.35 s, 0.37 s, 0.09 s measured 2026-11-26) because the heavy
+// metric (the full gate wall) is a LANDING measurement, never a self-measure:
+// `benchmark_history run --tier basic` runs the parser and the census only.
+//
+// The scripts live in the shared skills root, so the path is overridable and
+// a missing interpreter is a FAIL, never a skip: an unread gate that reports
+// nothing is the silent-green class this file exists to refuse.
+const REVIVAL_SCRIPTS = process.env.REVIVAL_SCRIPTS
+  || 'C:/Users/Administrador/.agents/skills/project-revival/scripts';
+function revivalScript(name) {
+  const p = path.join(REVIVAL_SCRIPTS, name);
+  assert(existsSync(p), `missing ${p} (set REVIVAL_SCRIPTS)`);
+  return p;
+}
+function runRevival(name, args) {
+  const r = spawnSync('python', [revivalScript(name), ...args], { cwd: ROOT, encoding: 'utf8' });
+  const out = String(r.stdout || '') + String(r.stderr || '');
+  return { rc: r.status, out };
+}
+
+check('revival-features', () => {
+  const { rc, out } = runRevival('feature_map_sync.py', ['--repo', ROOT, '--gate']);
+  assert(rc === 0, `feature map drifted from the tree:\n${out.trim().slice(-600)}`);
+  assert(/"verdict":\s*"PASS"/.test(out), `feature gate printed no verdict:\n${out.trim().slice(-400)}`);
+  const problems = /"problems":\s*\[(.*?)\]/s.exec(out);
+  assert(problems && problems[1].trim() === '', `feature gate listed problems: ${problems && problems[1].trim().slice(0, 400)}`);
+  const map = JSON.parse(read('features/features.json'));
+  const features = Array.isArray(map.features) ? map.features : [];
+  const empty = features.filter((f) => !f.how_it_works || !f.inputs || !f.outputs);
+  assert(empty.length === 0, `feature(s) missing how_it_works/inputs/outputs: ${empty.map((f) => f.id || f.name).join(', ')}`);
+  return `${features.length} feature(s) match the tree, each with inputs/outputs/how_it_works`;
+});
+
+check('revival-budgets', () => {
+  const { rc, out } = runRevival('benchmark_history.py', [
+    'run', '--repo', ROOT, '--tier', 'basic', '--gate', '--no-record', '--label', 'gate-basic',
+  ]);
+  assert(rc === 0, `a basic metric is over its ceiling or unmeasured:\n${out.trim().slice(-700)}`);
+  const ids = [...out.matchAll(/"id":\s*"([^"]+)"/g)].map((m) => m[1]);
+  assert(ids.length > 0, `benchmark gate printed no metric row:\n${out.trim().slice(-400)}`);
+  return `${ids.length} basic metric(s) inside budget (${ids.join(', ')})`;
+});
+
+check('revival-friction', () => {
+  const { rc, out } = runRevival('loop_friction_audit.py', ['measure', '--repo', ROOT, '--gate']);
+  assert(rc === 0, `inner-loop friction is open or over budget:\n${out.trim().slice(-700)}`);
+  const m = /"verdict":\s*"PASS"/.exec(out);
+  assert(m, `friction audit printed no verdict:\n${out.trim().slice(-400)}`);
+  return 'every friction row has a verify_cmd that runs inside its target';
 });
 
 // ---- 7. receipt ----------------------------------------------------------
@@ -689,6 +799,10 @@ payload.arm_artifacts = armArtifacts;
 // wrote, and that artifact must carry a RED/mutation line. Deleting a harness's
 // negative arm, or pointing the ledger at a stale file, turns this check RED.
 check('verified-artifacts', () => {
+  assert(ledgerLoaded, 'bug-ledger did not load; refusing to verify artifacts against an empty ledger');
+  const badArms = armArtifacts.filter((a) => a.check !== 'reachability' && a.status !== 'PASS');
+  assert(badArms.length === 0, `captured arm(s) from a failed run: ${badArms.map((a) => a.check + '=' + a.status).join(', ')}`);
+  const commitCache = new Map();
   const claimed = ledger.bugs.filter((b) => b.state === 'verified' || b.state === 'arm-verified');
   for (const bug of claimed) {
     assert(bug.arms_artifact, `${bug.id}: no arms_artifact`);
@@ -722,8 +836,12 @@ check('verified-artifacts', () => {
     assert(srcLines.length > 0, `${bug.id}: ${bug.arms_artifact} names no source file`);
     const reachMtime = statSync(rAbs).mtimeMs / 1000;
     for (const rel of srcLines) {
-      const log = spawnSync('git', ['-C', ROOT, 'log', '-1', '--format=%ct', '--', rel], { encoding: 'utf8' });
-      const committed = Number(String(log.stdout || '').trim());
+      let committed = commitCache.get(rel);
+      if (committed === undefined) {
+        const log = spawnSync('git', ['-C', ROOT, 'log', '-1', '--format=%ct', '--', rel], { encoding: 'utf8' });
+        committed = Number(String(log.stdout || '').trim());
+        commitCache.set(rel, committed);
+      }
       if (!Number.isFinite(committed) || !committed) continue; // untracked source: nothing to compare
       assert(
         reachMtime >= committed,

@@ -187,7 +187,10 @@ fazer hover pra mostrar o player tambem e inconsistente"*, *"tira completamente 
 - **Proxy feature removed** by owner order: the code, the popup rows, the storage keys and the
   `twitch-proxy/` tree are gone; `ADBLOCK-FINDINGS.md` keeps a REMOVED banner over the historical text.
   Sweep receipt: `grep -rnI -E "chrome\.proxy|webRequest|onAuthRequired|8899|twitch-proxy"` over
-  `kick-overlay/` → no hits; `node --check` clean on `background.js` and `popup.js`.
+  `kick-overlay/` → hits exist ONLY inside `ADBLOCK-FINDINGS.md` (the historical record under the REMOVED
+  banner), ZERO hits in any shipped `.js`, `.json`, `.html` or `_metadata` file — measured 2026-11-26 by
+  the inert-surface audit lane, which is why the claim is scoped to shipped files here instead of the
+  whole directory; `node --check` clean on `background.js` and `popup.js`.
 
 Status, per the live-proof rule at the top of this file: the units are green (`mute-decision` 26,
 `ad-time-continuity` 43, `cold-cover-fixture` 18, `content-fix` all checks incl. P1b2 and P2e, gate
@@ -2756,8 +2759,8 @@ Follow this exact decision tree on **every** user message before touching code:
 
 | Feature | Files | Inputs -> Outputs | Interlinks |
 |---|---:|---|---|
-| `_tools` | 38 | CLI args / stdin, Environment variables / config -> IPC / UI state updates, Persisted files / DB state | kick-overlay |
-| `kick-overlay` | 23 | CLI args / stdin, HTTP / API requests -> HTTP / JSON responses, IPC / UI state updates | - |
+| `_tools` | 38 | the repository working tree and its git history, the extension's ring dump (`chrome.storage.local['ko.adlog']`) read over CDP -> a gate verdict + receipt (`_evidence/ko-verify-latest.md`), machine artifacts per verified bug (`_evidence/<bug>-arms.md`) and reachability records | kick-overlay |
+| `kick-overlay` | 23 | the Twitch watch page DOM: `[data-a-target="video-player"]`, the squeezeback/slate ad text, the page's own `HTMLVideoElement`, Twitch's HLS playlists as fetched by the page's own player worker (token, `adExtinf`, `#EXT-X-DATERANGE`) and the GQL usher (`playbackAccessToken`) -> the overlay iframe + bar (`#ko-wrap`, `#ko-g1`, seek bar) with the kick/YouTube picture, published attributes the instruments read: `data-ko-owner`, `data-ko-audio-m/-v/-vis/-wt/-it`, `data-ko-adpark`, `data-ko-adblock` | _tools |
 
 Full macro contracts, verify commands, and file ownership live in `features/INDEX.md` and `features/features.json` (enforced on every gate by `feature_map_sync.py --gate`).
 <!-- REVIVAL:FEATURES:END -->

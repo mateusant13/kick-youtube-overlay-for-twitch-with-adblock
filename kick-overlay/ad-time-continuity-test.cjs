@@ -28,6 +28,7 @@
 const fs = require('fs');
 const path = require('path');
 const { makeWorld, makePage, settle, healthySt } = require('./mute-decision-test.cjs');
+const clock = require('../_tools/test-clock.cjs');
 
 // The checkout is CRLF; every mutation below is written LF-only, so the source
 // is normalised once here and handed to the stub DOM already normalised.
@@ -549,7 +550,7 @@ async function main() {
     check('a silent frame is revealed at the bound, and the delay is stated', () => {
       assert(page.frame.style.opacity !== '1', 'the reveal did not wait at all');
     });
-    await new Promise((r) => setTimeout(r, 1750));
+    await settle(1750);
     check('...and the bound fires: reveal-behind is logged with the measured delay', () => {
       assert(page.frame.style.opacity === '1', 'the bound never revealed: the pod has no picture at all');
       const rec = page.logsOf('reveal-behind').pop();
@@ -573,7 +574,7 @@ async function main() {
     setNative(page, { ct: 100, edge: 1073741824, bufferedEnd: 101 });
     await pod(page);
     // the native is frozen for the pod: real time passes, currentTime does not
-    await new Promise((r) => setTimeout(r, 12200));
+    await settle(12200);
     page.bypass({ type: 'ad-end' });
     await settle(30);
     // THE CONTRACT THIS ARM NOW HOLDS IS THE OPPOSITE OF WHAT IT HELD BEFORE, and
@@ -609,7 +610,7 @@ async function main() {
     const page = makeWorld(mutated);
     setNative(page, { ct: 100, edge: 1073741824, bufferedEnd: 101 });
     await pod(page);
-    await new Promise((r) => setTimeout(r, 12200));
+    await settle(12200);
     page.bypass({ type: 'ad-end' });
     await settle(30);
     check('RED: without the runway clamp the hand-back seeks past the downloaded data', () => {
@@ -621,7 +622,7 @@ async function main() {
     const page = makeWorld();
     setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 }); // a REAL edge
     await pod(page);
-    await new Promise((r) => setTimeout(r, 2100));
+    await settle(2100);
     page.bypass({ type: 'ad-end' });
     await settle(30);
     check('a usable edge suppresses the wall-clock recovery (no double seek)', () => {
@@ -1130,9 +1131,9 @@ async function main() {
     page.bypass({ type: 'ad-hold' });
     await settle(40);
     const covered = page.logsOf('cold-cover').length > 0;
-    const started = Date.now();
+    const started = clock.now();
     await settle(boundMutated ? 12600 : 9600); // past 9 s, or past 12 s for the mutant
-    return { page, covered, elapsed: Date.now() - started };
+    return { page, covered, elapsed: clock.now() - started };
   }
   {
     const { page, covered } = await coldCoverArm(SOURCE, false);
@@ -1459,7 +1460,7 @@ async function main() {
     // here is long enough that the WATCHED-OFFSET landing (`behind - cleanLat`)
     // is still a forward seek, and short enough that the pod-sized escape
     // (`POD_RECOVER_MIN`) does not apply: only the readiness guard can save it.
-    await new Promise((r) => setTimeout(r, 5200));
+    await settle(5200);
     const writes = [];
     let clock = page.video.currentTime;
     Object.defineProperty(page.video, 'currentTime', {
@@ -1495,7 +1496,7 @@ async function main() {
     setNative(page, { ct: 468, edge: 1073741824, bufferedEnd: 468 });
     page.video.readyState = 1;
     await pod(page);
-    await new Promise((r) => setTimeout(r, 5200));
+    await settle(5200);
     const writes = [];
     let clock = page.video.currentTime;
     Object.defineProperty(page.video, 'currentTime', {
@@ -1534,7 +1535,7 @@ async function main() {
     await pod(page);
     // A pod long enough that the escape hatch WOULD fire: `behind` grows with
     // the wall clock, so the whole wait is the defect's own precondition.
-    await new Promise((r) => setTimeout(r, 16000));
+    await settle(16000);
     const writes = [];
     let clock = page.video.currentTime;
     Object.defineProperty(page.video, 'currentTime', {
@@ -1576,7 +1577,7 @@ async function main() {
     setNative(page, { ct: 30.1, edge: 1073741824, bufferedEnd: 42.4 });
     page.video.readyState = 2;
     await pod(page);
-    await new Promise((r) => setTimeout(r, 16000));
+    await settle(16000);
     const writes = [];
     let clock = page.video.currentTime;
     Object.defineProperty(page.video, 'currentTime', {
@@ -1614,7 +1615,7 @@ async function main() {
     // needs a target the element can actually reach.
     setNative(page, { ct: 100, edge: 1073741824, bufferedEnd: 130 });
     await pod(page);
-    await new Promise((r) => setTimeout(r, 12200));
+    await settle(12200);
     // Count every write to the native clock from here on.
     const writes = [];
     let clock = page.video.currentTime;
@@ -1657,7 +1658,7 @@ async function main() {
     // not be what produces the second write.
     setNative(page, { ct: 100, edge: 1073741824, bufferedEnd: 130 });
     await pod(page);
-    await new Promise((r) => setTimeout(r, 12200));
+    await settle(12200);
     let writes = 0;
     let clock = page.video.currentTime;
     Object.defineProperty(page.video, 'currentTime', {
@@ -2232,7 +2233,7 @@ async function main() {
       assert(page.video.paused === true, 'the hold never paused the element: this arm measures nothing');
     });
     // Past COLD_COVER_BOUND_MS with no clean picture available.
-    await new Promise((r) => setTimeout(r, 3200));
+    await settle(3200);
     check('a hold whose pod never arrived hands the player back playing', () => {
       assert(page.video.paused === false,
         'the native was left paused with no ad and no clean player: "a live pausou e tive q despausar"');
@@ -2248,7 +2249,7 @@ async function main() {
     const page = makeWorld({ adSource: blind });
     setNative(page, { ct: 300, edge: 400, bufferedEnd: 400 });
     page.bypass({ type: 'ad-hold', channel: 'rodil' });
-    await new Promise((r) => setTimeout(r, 3200));
+    await settle(3200);
     check('RED: without the frame-less resume the held native stays paused', () => {
       assert(page.video.paused === true, 'the mutant resumed the element: this arm is not measuring the exit');
     });
@@ -2488,9 +2489,7 @@ async function main() {
   // start a pod the moment the overlay stopped reporting a picture for one tick.
   // Once the overlay has owned the page, a pod needs OWNER_CLEAR_MS of silence.
   {
-    const realNow = Date.now;
-    let skew = 0;
-    Date.now = () => realNow() + skew;
+    clock.setSkew(0);
     try {
       const page = makePage(SOURCE);
       setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
@@ -2507,14 +2506,14 @@ async function main() {
         assert(!page.frame, 'the ad path built a clean player one tick after the owner attribute blinked');
         assert(page.logsOf('ad-skip').length === 2, `after the blink: ad-skip was logged ${page.logsOf('ad-skip').length} time(s)`);
       });
-      skew += 4100; // past OWNER_CLEAR_MS: the overlay really did let go
+      clock.setSkew(4100); // past OWNER_CLEAR_MS: the overlay really did let go
       page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
       await settle(30);
       check('after the clear window the ad path protects the page again', () => {
         assert(!!page.frame, 'the ad path never resumed after the owner went away for good');
       });
     } finally {
-      Date.now = realNow;
+      clock.setSkew(0);
     }
   }
 
@@ -2606,7 +2605,7 @@ async function main() {
     // guard BEFORE the reset test, and both arms would measure nothing.
     page.video.buffered = { length: 1, start: () => 0, end: () => 12 };
     page.video.readyState = 4;
-    await new Promise((r) => setTimeout(r, 3200));
+    await settle(3200);
     const writes = [];
     let clock = page.video.currentTime;
     Object.defineProperty(page.video, 'currentTime', {
@@ -2644,7 +2643,7 @@ async function main() {
     // guard BEFORE the reset test, and both arms would measure nothing.
     page.video.buffered = { length: 1, start: () => 0, end: () => 12 };
     page.video.readyState = 4;
-    await new Promise((r) => setTimeout(r, 3200));
+    await settle(3200);
     page.bypass({ type: 'ad-end' });
     await settle(150);
     check('RED: without the reset guard the reload is read as a pod-sized deficit', () => {

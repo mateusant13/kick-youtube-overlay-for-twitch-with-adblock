@@ -1,1 +1,26 @@
 # feature	angle	cmd	expect	neg	note
+ad-path	pod start with no ad on screen	node kick-overlay/ad-detect-test.cjs	RESULT PASS ad-detect	plant a wrapper with visibility:hidden and assert no hold	the permanent squeezeback shell must never pause a 1296x705 player (0.8.94)
+ad-path	pod end where the native is starved	node _tools/ko-replica/run.mjs --scenario _tools/ko-replica/scenarios/dev-handback-wait.json --replica-port 8443	RESULT PASS scenario=dev-handback-wait failed=0 cannot=0	drop the wait precondition and assert the frozen element is revealed	KO-20261126-16: a starved element is not a parked one
+ad-path	pod end where the native is healthy	node _tools/ko-replica/run.mjs --scenario _tools/ko-replica/scenarios/dev-preroll-hold.json --replica-port 8443	RESULT PASS scenario=dev-preroll-hold failed=0 cannot=0	force the wait on rs=4 and assert zero handback-wait rows	the wait must not fire on a readable element
+ad-path	two pods inside one second	node kick-overlay/ad-time-continuity-test.cjs	a new pod cancels the wait (handback-wait-cancelled)	remove cancelHandbackWait from the ad-start branch	0.8.123: a wait belongs to ONE hand-back
+ad-path	the page element plays under our picture	node kick-overlay/ad-time-continuity-test.cjs	a revealed pod freezes the native and names it	remove freezeNativeForPod from the reveal	0.8.112 POD FREEZE class
+ad-path	no ad for a whole page load	_tools/ko-adlog-verdict.mjs on a clean episode	ad-ui-on=0 ad-hold=0 NOTHING SAW AN AD	none (absence claim)	absence must be scoped to the read window
+ad-path	ad UI leaves while the playlist still lists adExtinf	node kick-overlay/ad-detect-test.cjs	end the pod on the DOM signal, refuse a reopen inside 30 s	restore the 180 s ceiling	0.8.111 end on ad-ui, AD_REOPEN_COOLDOWN_MS
+ad-path	pod longer than its ceiling	node kick-overlay/ad-detect-test.cjs	ad-pod-max at or under 60 s, then ad-end	remove AD_POD_MAX_MS	`AGENTS.md` records a 180 s pod over a 3 s ad
+audio	user mutes the page during a pod	node kick-overlay/mute-decision-test.cjs	audio-intent origin user:pointer, level kept	record volume 0 as intent	0.8.96 mute remembers the level it silenced
+audio	machine mutes the page during a pod	node kick-overlay/mute-decision-test.cjs	audio-refused why covered/stale-input	accept a mute with no fresh input	0.8.83 pod silence recorded as his choice
+audio	two tabs, one muted	node kick-overlay/tab-audio-scope-test.cjs	RESULT PASS tab-audio-scope	reintroduce a shared `vols` row	0.8.53 per-tab audio scope
+audio	volume drop from a keystroke	node kick-overlay/mute-decision-test.cjs	hides a volume drop autorizada por m/Arrow only	accept any keydown as a volume gesture	0.8.96 volumeCapableTarget
+audio	YouTube's own mute button	node kick-overlay/mute-decision-test.cjs	user:ui:yt accepted, level preserved	drop .ytp-mute-button from VOLUME_CONTROL_SEL	0.8.114
+overlay	seek inside the live window	node _tools/ko-harness.mjs kickparity	rewind-60s got=<target> onDvr=true	convert an in-window seek into a live mint	0.8.56/0.8.114 kickSeekTo
+overlay	seek from the bar's edge chip	node _tools/ko-harness.mjs kickparity	go-live liveClock=true	translate a drag release at the edge into kickBackToLive	0.8.114 drag-edge
+overlay	a rect of zero at mount	node kick-overlay/bridge-handshake-test.cjs	top rung chosen, rungs[] printed	restore the 50% area gate	0.8.125 MIN_LAYOUT_H
+overlay	the frame goes silent for 30 s	node kick-overlay/content-fix-test.cjs	P2n: a stale report is not a picture	remove the STALE_REPORT_MS test	0.8.81
+overlay	a hidden tab pauses the element	node kick-overlay/content-fix-test.cjs	N1/N3: no resume in a hidden tab, ad-park budget	native resume ignores visibility	0.8.104
+overlay	a stale tab after an update	node kick-overlay/content-fix-test.cjs	P2p/P2q: one reload per version, hidden only, never under a pod	reload on a visible page	0.8.82/0.8.107
+overlay	the native's edge is the 2^30 sentinel	node kick-overlay/ad-time-continuity-test.cjs	no seek derived from the sentinel	trust seekable.end as a position	0.8.92 native-timeline-reset
+overlay	the page reloads itself	node _tools/ko-adlog-window.mjs 9222 1200 --keep pagehide,boot	boot-nav {nav, heal} names who navigated	none (absence)	0.8.113
+replica	a pixel expectation with the extension off	node _tools/ko-replica/run.mjs --scenario _tools/ko-replica/scenarios/dev-fast.json --no-ext	RESULT FAIL (the product is what makes it pass)	none (this IS the negative arm)	the twin must be able to fail
+replica	native-only starvation during a pod	node _tools/ko-replica/run.mjs --scenario _tools/ko-replica/scenarios/dev-handback-wait.json	STALL withheld native=N clean=0	serve the clean surface from the native's segment namespace	2026-11-26: sharing URIs starves the cover
+reef	the gate itself	node _tools/ko-verify.mjs	RESULT PASS checks>=28 failed=0	plant a silent guard (census) or a CRLF byte (line-endings)	every check has a planted defect that turns it red
+replica	replica vs a real capture	node _tools/ko-replica/compare.mjs <capture> <run>	verdict SAME or the named DIVERGE	none (observer divergences are refused in report mode)	one population, one window

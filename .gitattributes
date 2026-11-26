@@ -22,3 +22,17 @@ _tools/**/*.json text eol=lf
 # already rewritten it once in this repo; pin it so a checkout cannot split the
 # diff of a one-line rule into every line of the file.
 .gitattributes text eol=lf
+# The revival artifacts are written by Python (`json.dumps` + `\n`) and read
+# back by their own gates (`feature_map_sync --gate`, `benchmark_history --gate`,
+# `loop_friction_audit measure --gate`). Measured 2026-11-26: without this pin,
+# `git add features/features.json` warned "LF will be replaced by CRLF", so the
+# next checkout would hand the gate a CRLF document while the writer assumes LF.
+features/*.json text eol=lf
+features/*.md text eol=lf
+benchmarks/*.json text eol=lf
+benchmarks/*.jsonl text eol=lf
+revival/*.json text eol=lf
+revival/*.md text eol=lf
+revival/*.jsonl text eol=lf
+harness/*.json text eol=lf
+harness/*.tsv text eol=lf

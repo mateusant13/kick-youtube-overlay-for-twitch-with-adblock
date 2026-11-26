@@ -1,5 +1,35 @@
 {
- "features": [],
- "candidates": 0,
+ "features": [
+  {
+   "id": "kick-overlay",
+   "paths": ["kick-overlay/"],
+   "verify_cmd": "node _tools/ko-verify.mjs",
+   "angles": ["audio", "overlay", "ad-path"],
+   "metric_ids": ["basic.syntax_check_ms", "subsystem.bridge_handshake_ms", "subsystem.mute_decision_ms", "subsystem.ad_time_continuity_ms"],
+   "sites": {
+    "ad path": ["kick-overlay/twitch-adblock.js"],
+    "owner of the screen": ["kick-overlay/content.js"],
+    "audio authority": ["kick-overlay/ko-audio.js"],
+    "world bridge": ["kick-overlay/adblock-bridge.js"],
+    "player frame": ["kick-overlay/player-bridge.js", "kick-overlay/player.html"]
+   }
+  },
+  {
+   "id": "_tools",
+   "paths": ["_tools/"],
+   "verify_cmd": "node _tools/ko-census.mjs --gate",
+   "angles": ["reef", "replica"],
+   "metric_ids": ["basic.census_ms", "e2e.gate_wall_ms"],
+   "sites": {
+    "gate": ["_tools/ko-verify.mjs"],
+    "silent-decision census": ["_tools/ko-census.mjs"],
+    "ring readers": ["_tools/ko-adlog-verdict.mjs", "_tools/ko-adlog-window.mjs"],
+    "offline replica": ["_tools/ko-replica/"],
+    "guest/browser harness": ["_tools/ko-harness.mjs", "_tools/ko-guest.mjs"],
+    "ceiling reading": ["_tools/ko-load-check.mjs"]
+   }
+  }
+ ],
+ "candidates": 24,
  "sites": {}
 }

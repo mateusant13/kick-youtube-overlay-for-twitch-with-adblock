@@ -3,21 +3,118 @@
   "regression_tolerance_pct": 10.0,
   "metrics": [
     {
-      "id": "basic.import_or_boot_ms",
+      "id": "basic.syntax_check_ms",
       "tier": "basic",
-      "input_desc": "cold process startup / primary module import",
-      "output_desc": "ready exit 0",
+      "input_desc": "the product's largest entry file (twitch-adblock.js, ~5.2k lines)",
+      "output_desc": "node --check exit 0",
       "metric_name": "wall_ms",
       "unit": "ms",
       "direction": "lower_is_better",
-      "ceiling": 3000.0,
-      "command": "",
+      "ceiling": 600.0,
+      "command": "node --check kick-overlay/twitch-adblock.js",
       "parse_mode": "wall_ms",
       "parse_pattern": "",
-      "owner_paths": [],
+      "owner_paths": [
+        "kick-overlay/twitch-adblock.js"
+      ],
+      "blast_radius_callers": [],
+      "red_arm_cmd": "printf 'function (' >> /tmp/bad.js && node --check /tmp/bad.js",
+      "note": "MEASURED 155 ms on this box 2026-11-26 (I: is an SMR spindle at ~120 ms/file). Ceiling is 4x the measurement: a parser check that needs more than half a second is a cold-store problem, not a file-size problem."
+    },
+    {
+      "id": "basic.census_ms",
+      "tier": "basic",
+      "input_desc": "content.js + twitch-adblock.js + player-bridge.js parsed by the silent-exit census",
+      "output_desc": "census verdict + budget comparison",
+      "metric_name": "wall_ms",
+      "unit": "ms",
+      "direction": "lower_is_better",
+      "ceiling": 2000.0,
+      "command": "node _tools/ko-census.mjs --gate",
+      "parse_mode": "wall_ms",
+      "parse_pattern": "",
+      "owner_paths": [
+        "_tools/ko-census.mjs"
+      ],
       "blast_radius_callers": [],
       "red_arm_cmd": "",
-      "note": "Replace empty command with project's real startup/basic I/O probe."
+      "note": "MEASURED 353 ms (2026-11-26). This is the per-edit instrument for silent decisions, so it must stay interactive."
+    },
+    {
+      "id": "subsystem.bridge_handshake_ms",
+      "tier": "subsystem",
+      "input_desc": "player-bridge start-level + handshake contract (fixture HLS ladder)",
+      "output_desc": "RESULT PASS bridge-handshake",
+      "metric_name": "wall_ms",
+      "unit": "ms",
+      "direction": "lower_is_better",
+      "ceiling": 2000.0,
+      "command": "node kick-overlay/bridge-handshake-test.cjs",
+      "parse_mode": "wall_ms",
+      "parse_pattern": "",
+      "owner_paths": [
+        "kick-overlay/bridge-handshake-test.cjs"
+      ],
+      "blast_radius_callers": [],
+      "red_arm_cmd": "node kick-overlay/bridge-handshake-test.cjs | grep -q 'RESULT PASS'",
+      "note": "MEASURED 83 ms. The 360p start-level defect lived here; the suite must stay inside the inner loop."
+    },
+    {
+      "id": "subsystem.mute_decision_ms",
+      "tier": "subsystem",
+      "input_desc": "ko-audio.js + adblock-bridge.js + twitch-adblock.js in one world (mute/volume contract)",
+      "output_desc": "RESULT PASS mute-decision",
+      "metric_name": "wall_ms",
+      "unit": "ms",
+      "direction": "lower_is_better",
+      "ceiling": 15000.0,
+      "command": "node kick-overlay/mute-decision-test.cjs",
+      "parse_mode": "wall_ms",
+      "parse_pattern": "",
+      "owner_paths": [
+        "kick-overlay/mute-decision-test.cjs"
+      ],
+      "blast_radius_callers": [],
+      "red_arm_cmd": "node kick-overlay/mute-decision-test.cjs | grep -q 'RESULT PASS'",
+      "note": "MEASURED 70 783 ms before the virtual clock and 887 ms after it (2026-11-26, identical checks=95). The ceiling is 15 s: a behavioural suite that once paid 70 s of real sleeps must not creep back above the interactive bound."
+    },
+    {
+      "id": "subsystem.ad_time_continuity_ms",
+      "tier": "subsystem",
+      "input_desc": "the ad path's whole contract (184 checks: wait, hand-back, catch-up, audio, pod boundaries)",
+      "output_desc": "RESULT PASS ad-time-continuity",
+      "metric_name": "wall_ms",
+      "unit": "ms",
+      "direction": "lower_is_better",
+      "ceiling": 60000.0,
+      "command": "node kick-overlay/ad-time-continuity-test.cjs",
+      "parse_mode": "wall_ms",
+      "parse_pattern": "",
+      "owner_paths": [
+        "kick-overlay/ad-time-continuity-test.cjs"
+      ],
+      "blast_radius_callers": [],
+      "red_arm_cmd": "node kick-overlay/ad-time-continuity-test.cjs | grep -q 'RESULT PASS'",
+      "note": "MEASURED 268 250 ms before the virtual clock and 5 133 ms after it (2026-11-26, identical checks=185, ARMS 29/29). Ceiling 60 s: it is the suite every ad-path change must pass, so it has to stay runnable inside a lane."
+    },
+    {
+      "id": "e2e.gate_wall_ms",
+      "tier": "e2e",
+      "input_desc": "the whole project gate (25 checks, every suite, census, ledger, artifacts)",
+      "output_desc": "RESULT PASS checks=25 failed=0",
+      "metric_name": "wall_ms",
+      "unit": "ms",
+      "direction": "lower_is_better",
+      "ceiling": 600000.0,
+      "command": "node _tools/ko-verify.mjs",
+      "parse_mode": "wall_ms",
+      "parse_pattern": "",
+      "owner_paths": [
+        "_tools/ko-verify.mjs"
+      ],
+      "blast_radius_callers": [],
+      "red_arm_cmd": "node _tools/ko-verify.mjs | grep -q 'RESULT PASS'",
+      "note": "MEASURED 365 290 ms at 0.8.126, BEFORE the virtual clock; the suites it runs are now 0.9 s and 4.7 s instead of 70.8 s and 268.3 s, so the gate must drop by roughly five minutes on the next landing. Ceiling 600 s keeps the pre-clock number honest until the AFTER benchmark replaces it."
     }
   ]
 }

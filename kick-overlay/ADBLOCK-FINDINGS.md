@@ -688,7 +688,7 @@ Deep DOM ad snapshot essentials: `video.src`, `currentSrc`, `aria-label`,
   proxies are worse: they see SNI/IP, are unreliable, and can change the
   account's apparent country. **Own VPS in an ad-free region is the only safe
   proxy route** (Russia/South Korea were capped at 720p as of 2025).
-- No public proxy was used. The proxy mode remains opt-in and untouched.
+- No public proxy was used. (The proxy mode itself was REMOVED on 2026-11-11 by owner order; see §1.3.)
 
 ### Implemented
 

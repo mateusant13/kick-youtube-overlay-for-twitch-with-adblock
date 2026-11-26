@@ -1,0 +1,1 @@
+{"ts": "2026-11-26T19:57:54Z", "label": "baseline", "git_head": "35c8d8f", "tier_filter": "all", "passed": false, "failure_count": 1, "failures": ["basic.import_or_boot_ms: UNMEASURED (empty command)"], "results": [{"id": "basic.import_or_boot_ms", "tier": "basic", "verdict": "UNMEASURED", "value": null, "ceiling": 3000.0}]}

@@ -24,6 +24,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const clock = require('../_tools/test-clock.cjs');
 
 const AD = fs.readFileSync(path.join(__dirname, 'twitch-adblock.js'), 'utf8');
 const AUDIO = fs.readFileSync(path.join(__dirname, 'ko-audio.js'), 'utf8');
@@ -217,7 +218,7 @@ function makeWorld(opts, extra) {
         createdFrame = n;
         // Chrome: an extension frame's document loads a tick after creation.
         if (!autoLoad) return n;
-        setTimeout(() => {
+        clock.setTimeout(() => {
           for (const f of (n.listeners.load || []).slice()) {
             try {
               f();
@@ -329,13 +330,14 @@ function makeWorld(opts, extra) {
     const factory = new Function(
       'window', 'document', 'location', 'navigator', 'performance', 'BroadcastChannel',
       'CustomEvent', 'MutationObserver', 'XMLHttpRequest', 'Blob', 'URL', 'btoa', 'chrome',
-      'console', 'setTimeout', 'clearTimeout',
+      'console', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date',
       `${source}\n//# sourceURL=${name}`,
     );
     factory(
-      window, document, location, { userAgent: 'node' }, { now: () => Date.now() },
+      window, document, location, { userAgent: 'node' }, clock.performance,
       BroadcastChannel, CustomEvent, MutationObserver, XMLHttpRequest, class Blob {}, URLStub,
-      (s) => Buffer.from(String(s)).toString('base64'), chromeStub, console, setTimeout, clearTimeout,
+      (s) => Buffer.from(String(s)).toString('base64'), chromeStub, console,
+      clock.setTimeout, clock.clearTimeout, clock.setInterval, clock.clearInterval, clock.Date,
     );
   };
 
@@ -508,7 +510,16 @@ function makeWorld(opts, extra) {
   return api;
 }
 
-const settle = (ms) => new Promise((r) => setTimeout(r, ms));
+const settle = async (ms) => {
+  await clock.advance(ms);
+  if (clock.real) return; // the real sleep already let pending work run
+  // Product callbacks schedule follow-up work in microtasks; give those tasks
+  // their turns and fire any zero-delay timer they arm before asserting.
+  for (let i = 0; i < 8; i += 1) {
+    await Promise.resolve();
+    clock.advance(0);
+  }
+};
 
 function healthySt(overrides) {
   return {
@@ -623,7 +634,7 @@ async function main() {
     // Past the arbiter's 700 ms own-write TTL: the claim's write is ours, and a
     // mute inside that window is discarded by the echo guard instead of being
     // measured. In the owner's own log the pod had been up for 38 s.
-    await new Promise((r) => setTimeout(r, 900));
+    await settle(900);
     page.clickDocument(); // a real click makes the event look fresh
     page.machineMutesNative(); // the page element muted by the swap itself
     check('a mute arriving while a claim covers the page is never the user choice', () => {
@@ -648,7 +659,7 @@ async function main() {
     });
     const page = makeWorld({ audioSource: blind });
     await runPod(page, { mutedBeforeAd: false });
-    await new Promise((r) => setTimeout(r, 900)); // past the own-write TTL
+    await settle(900); // past the own-write TTL
     page.clickDocument();
     page.machineMutesNative();
     check('RED: the shares-blind guard records the pod mute as intent', () => {
@@ -682,7 +693,7 @@ async function main() {
     });
     // A refused mute must SAY so. An accepted intent beside an unlogged refusal
     // is exactly what made his own log look like the extension muting him.
-    await new Promise((r) => setTimeout(r, 900)); // past the arbiter's own-write TTL
+    await settle(900); // past the arbiter's own-write TTL
     page.clickDocument();
     page.machineMutesNative();
     const refused = page.logs().filter((l) => l.ev === 'audio-refused').pop();
@@ -712,7 +723,7 @@ async function main() {
     // Past BOTH windows: the machine one (CLAIM_RELEASE_MS after the release) and
     // the gesture one (INPUT_FRESH_MS). A write inside either is correctly not
     // his, and an arm that writes there measures the guard, not the label.
-    await new Promise((r) => setTimeout(r, 2800));
+    await settle(2800);
     // (a) his pointer. The write must FLIP the state, or the arbiter correctly
     //     logs nothing and the arm measures its own no-op.
     page.clickDocument();
@@ -728,7 +739,7 @@ async function main() {
         `ev.inputAgeMs=${JSON.stringify(userLine.d.ev && userLine.d.ev.inputAgeMs)} is outside INPUT_FRESH_MS`);
     });
     // (b) the machine: refused, and the refusal carries its reason.
-    await new Promise((r) => setTimeout(r, 1600));
+    await settle(1600);
     const before = page.audio.intent('twitch').muted;
     page.machineMutesNative();
     const refused = page.logs().filter((l) => l.ev === 'audio-refused').pop();
@@ -745,7 +756,7 @@ async function main() {
     const page = makeWorld();
     await runPod(page, { mutedBeforeAd: false });
     page.bypass({ type: 'ad-end' });
-    await new Promise((r) => setTimeout(r, 2800));
+    await settle(2800);
     page.clickDocument();
     page.machineMutesNative();
     check('a mute 3 s after the hand-back is recorded as intent', () => {
@@ -765,7 +776,7 @@ async function main() {
     const page = makeWorld();
     await runPod(page, { mutedBeforeAd: false });
     page.bypass({ type: 'ad-end' });
-    await new Promise((r) => setTimeout(r, 2800));
+    await settle(2800);
     // A real click on the PICTURE: a target no volume control lives in.
     page.clickDocumentTarget({ tagName: 'VIDEO' });
     page.machineMutesNative();
@@ -799,7 +810,7 @@ async function main() {
     const page = makeWorld({});
     await runPod(page, { mutedBeforeAd: false });
     page.bypass({ type: 'ad-end' });
-    await new Promise((r) => setTimeout(r, 2800));
+    await settle(2800);
     const ytMute = { tagName: 'BUTTON', closest: (sel) => (String(sel).includes('.ytp-mute-button') ? {} : null) };
     page.clickDocumentTarget(ytMute);
     page.machineMutesNative();
@@ -814,7 +825,7 @@ async function main() {
     const page = makeWorld({ audioSource: blind });
     await runPod(page, { mutedBeforeAd: false });
     page.bypass({ type: 'ad-end' });
-    await new Promise((r) => setTimeout(r, 2800));
+    await settle(2800);
     const ytMute = { tagName: 'BUTTON', closest: (sel) => (String(sel).includes('.ytp-mute-button') ? {} : null) };
     page.clickDocumentTarget(ytMute);
     page.machineMutesNative();
@@ -834,7 +845,7 @@ async function main() {
     await runPod(page, { mutedBeforeAd: false });
     assert(page.audio.visible() === 'ad', 'precondition: the ad claim covers the page');
     assert(page.attrMuted() === '0', 'precondition: the heard surface is audible');
-    await new Promise((r) => setTimeout(r, 900)); // past the claim's own-write TTL
+    await settle(900); // past the claim's own-write TTL
     const muteBtn = {
       tagName: 'BUTTON',
       closest: (sel) => (String(sel).includes('[data-a-target="player-mute-unmute-button"]') ? {} : null),
@@ -863,7 +874,7 @@ async function main() {
     });
     const page = makeWorld({ audioSource: blind });
     await runPod(page, { mutedBeforeAd: false });
-    await new Promise((r) => setTimeout(r, 900));
+    await settle(900);
     const muteBtn = {
       tagName: 'BUTTON',
       closest: (sel) => (String(sel).includes('[data-a-target="player-mute-unmute-button"]') ? {} : null),
@@ -881,7 +892,7 @@ async function main() {
     // refused, exactly as in the measured 2026-11-11 defect.
     const page = makeWorld();
     await runPod(page, { mutedBeforeAd: false });
-    await new Promise((r) => setTimeout(r, 900));
+    await settle(900);
     page.clickDocumentTarget({ tagName: 'VIDEO' }); // fresh, but not a volume control
     page.machineMutesNative();
     const refused = page.logs().filter((l) => l.ev === 'audio-refused').pop();
@@ -903,7 +914,7 @@ async function main() {
     });
     const page = makeWorld({ audioSource: blind });
     await runPod(page, { mutedBeforeAd: false });
-    await new Promise((r) => setTimeout(r, 900));
+    await settle(900);
     page.clickDocumentTarget({ tagName: 'VIDEO' });
     page.machineMutesNative();
     check('RED: without both guards the picture click mutes the tab', () => {
@@ -919,7 +930,7 @@ async function main() {
     const page = makeWorld();
     await runPod(page, { mutedBeforeAd: false });
     page.bypass({ type: 'ad-end' });
-    await new Promise((r) => setTimeout(r, 2800));
+    await settle(2800);
     const ctl = { tagName: 'DIV', closest: (s) => (String(s).includes(sel) ? {} : null) };
     page.clickDocumentTarget(ctl);
     page.machineMutesNative();
@@ -935,7 +946,7 @@ async function main() {
     const page = makeWorld();
     await runPod(page, { mutedBeforeAd: false });
     page.bypass({ type: 'ad-end' });
-    await new Promise((r) => setTimeout(r, 2800));
+    await settle(2800);
     const seekBar = {
       tagName: 'DIV',
       matches: (s) => String(s).includes('[role="slider"]'),
@@ -960,7 +971,7 @@ async function main() {
     const page = makeWorld({ audioSource: blind });
     await runPod(page, { mutedBeforeAd: false });
     page.bypass({ type: 'ad-end' });
-    await new Promise((r) => setTimeout(r, 2800));
+    await settle(2800);
     const ctl = { tagName: 'DIV', closest: (s) => (String(s).includes('[class*="ad-volume"]') ? {} : null) };
     page.clickDocumentTarget(ctl);
     page.machineMutesNative();
@@ -978,10 +989,10 @@ async function main() {
     const page = makeWorld();
     await runPod(page, { mutedBeforeAd: false });
     page.bypass({ type: 'ad-end' });
-    await new Promise((r) => setTimeout(r, 2800));
+    await settle(2800);
     const slider = { tagName: 'DIV', closest: (sel) => (String(sel).includes('[role="slider"]') ? {} : null) };
     page.clickDocumentTarget(slider);
-    await new Promise((r) => setTimeout(r, 1400)); // past INPUT_FRESH_MS
+    await settle(1400); // past INPUT_FRESH_MS
     page.machineMutesNative();
     check('a slider drag keeps its volumechange fresh and volume-capable', () => {
       assert(page.audio.intent('twitch').muted === true,
@@ -994,7 +1005,7 @@ async function main() {
     });
     page.clickDocumentTarget(slider);
     page.releasePointer('pointercancel');
-    await new Promise((r) => setTimeout(r, 1400));
+    await settle(1400);
     page.machineSetsNative(false, 1);
     check('after pointercancel the drag window is closed too', () => {
       assert(page.audio.intent('twitch').muted === true, 'the drag window stayed open after pointercancel');
@@ -1010,10 +1021,10 @@ async function main() {
     const page = makeWorld({ audioSource: blind });
     await runPod(page, { mutedBeforeAd: false });
     page.bypass({ type: 'ad-end' });
-    await new Promise((r) => setTimeout(r, 2800));
+    await settle(2800);
     const slider = { tagName: 'DIV', closest: (sel) => (String(sel).includes('[role="slider"]') ? {} : null) };
     page.clickDocumentTarget(slider);
-    await new Promise((r) => setTimeout(r, 1400));
+    await settle(1400);
     page.machineMutesNative();
     check('RED: without the drag window the drag mute is stale', () => {
       assert(page.audio.intent('twitch').muted === false, 'the mutant accepted it: the arm measures nothing');
@@ -1031,7 +1042,7 @@ async function main() {
     assert(page.audio.visible() === 'ad', 'precondition: the ad claim covers the page');
     assert(page.attrMuted() === '1', 'precondition: the heard surface is muted');
     assert(page.video.muted === true, 'precondition: the covered page element is silent');
-    await new Promise((r) => setTimeout(r, 900)); // past the claim's own-write TTL
+    await settle(900); // past the claim's own-write TTL
     const muteBtn = {
       tagName: 'BUTTON',
       closest: (sel) => (String(sel).includes('[data-a-target="player-mute-unmute-button"]') ? {} : null),
@@ -1053,7 +1064,7 @@ async function main() {
       assert(row.d.visible === 'ad' && row.d.claimed === 'ad', `visible=${row.d.visible}, claimed=${row.d.claimed}`);
     });
     page.audio.enforceSilence();
-    await new Promise((r) => setTimeout(r, 450)); // and the real 400 ms tick
+    await settle(450); // and the real 400 ms tick
     check('the claim frame stays unmuted across enforceSilence', () => {
       assert(page.video.muted === true, `the covered page element opened: muted=${page.video.muted}`);
       assert(page.attrMuted() === '0', `the one voice was closed: muted=${page.attrMuted()}`);
@@ -1071,7 +1082,7 @@ async function main() {
     });
     const page = makeWorld({ audioSource: blind });
     await runPod(page, { mutedBeforeAd: true });
-    await new Promise((r) => setTimeout(r, 900));
+    await settle(900);
     const muteBtn = { tagName: 'BUTTON', closest: (sel) => (String(sel).includes('[data-a-target="player-mute-unmute-button"]') ? {} : null) };
     page.clickDocumentTarget(muteBtn);
     page.machineSetsNative(false, 1);
@@ -1090,7 +1101,7 @@ async function main() {
     });
     const page = makeWorld({ audioSource: blind });
     await runPod(page, { mutedBeforeAd: true });
-    await new Promise((r) => setTimeout(r, 900));
+    await settle(900);
     const muteBtn = { tagName: 'BUTTON', closest: (sel) => (String(sel).includes('[data-a-target="player-mute-unmute-button"]') ? {} : null) };
     page.clickDocumentTarget(muteBtn);
     page.machineSetsNative(false, 1);
@@ -1115,7 +1126,7 @@ async function main() {
     const page = makeWorld({ audioSource: blind });
     await runPod(page, { mutedBeforeAd: true });
     page.audio.setIntent('ad', { muted: true, volume: 1 }, { persist: false, origin: 'code:test' });
-    await new Promise((r) => setTimeout(r, 900));
+    await settle(900);
     const muteBtn = { tagName: 'BUTTON', closest: (sel) => (String(sel).includes('[data-a-target="player-mute-unmute-button"]') ? {} : null) };
     page.clickDocumentTarget(muteBtn);
     page.machineSetsNative(false, 1);
@@ -1130,7 +1141,7 @@ async function main() {
     const page = makeWorld();
     await runPod(page, { mutedBeforeAd: true });
     assert(page.attrMuted() === '1', 'precondition: the heard surface is muted');
-    await new Promise((r) => setTimeout(r, 1600)); // past TTL and INPUT_FRESH_MS
+    await settle(1600); // past TTL and INPUT_FRESH_MS
     const before = page.logsOf('audio-intent').length;
     page.machineSetsNative(false, 1);
     const refused = page.logsOf('audio-refused').pop();
@@ -1151,7 +1162,7 @@ async function main() {
     });
     const page = makeWorld({ audioSource: blind });
     await runPod(page, { mutedBeforeAd: true });
-    await new Promise((r) => setTimeout(r, 1600));
+    await settle(1600);
     page.machineSetsNative(false, 1);
     check('RED: without freshness the machine unmute becomes intent', () => {
       assert(page.audio.intent('twitch').muted === false, 'the mutant refused it too: the arm measures nothing');
@@ -1227,7 +1238,7 @@ async function main() {
     const page = makeWorld({});
     await runPod(page, { mutedBeforeAd: false });
     page.bypass({ type: 'ad-end' });
-    await new Promise((r) => setTimeout(r, 2800));
+    await settle(2800);
     const ctl = { tagName: 'BUTTON', closest: (sel) => (/ko-mute|ko-vol|volume|mute/i.test(String(sel)) ? {} : null) };
     page.clickDocumentTarget(ctl);
     page.machineSetsNative(true, 0); // Twitch's button: muted AND volume 0
@@ -1251,7 +1262,7 @@ async function main() {
     const page = makeWorld({ audioSource: blind });
     await runPod(page, { mutedBeforeAd: false });
     page.bypass({ type: 'ad-end' });
-    await new Promise((r) => setTimeout(r, 2800));
+    await settle(2800);
     const ctl = { tagName: 'BUTTON', closest: (sel) => (/ko-mute|ko-vol|volume|mute/i.test(String(sel)) ? {} : null) };
     page.clickDocumentTarget(ctl);
     page.machineSetsNative(true, 0);
@@ -1274,7 +1285,7 @@ async function main() {
     const page = makeWorld({});
     await runPod(page, { mutedBeforeAd: false });
     page.bypass({ type: 'ad-end' });
-    await new Promise((r) => setTimeout(r, 2800));
+    await settle(2800);
     page.pressKey(' '); // space: pauses Twitch's player, cannot carry a volume
     page.machineDropsVolume(0.32); // the player's own ad volume
     check('a volume drop after a key that cannot change a volume is refused', () => {
@@ -1287,7 +1298,7 @@ async function main() {
     const page = makeWorld({});
     await runPod(page, { mutedBeforeAd: false });
     page.bypass({ type: 'ad-end' });
-    await new Promise((r) => setTimeout(r, 2800));
+    await settle(2800);
     page.pressKey('ArrowDown'); // Twitch's own volume-down key
     page.machineDropsVolume(0.5);
     check('ArrowDown IS a volume key: the drop after it is the user choice', () => {
@@ -1303,7 +1314,7 @@ async function main() {
     const page = makeWorld({ audioSource: blind });
     await runPod(page, { mutedBeforeAd: false });
     page.bypass({ type: 'ad-end' });
-    await new Promise((r) => setTimeout(r, 2800));
+    await settle(2800);
     page.pressKey(' ');
     page.machineDropsVolume(0.32);
     check('RED: without the drop guard a space bar records the ad volume as his', () => {
@@ -1319,7 +1330,7 @@ async function main() {
     const page = makeWorld({ audioSource: blind });
     await runPod(page, { mutedBeforeAd: false });
     page.bypass({ type: 'ad-end' });
-    await new Promise((r) => setTimeout(r, 2800));
+    await settle(2800);
     page.clickDocumentTarget({ tagName: 'VIDEO' });
     page.machineMutesNative();
     check('mutation: the control test exists to be disarmed', () => {

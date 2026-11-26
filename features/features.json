@@ -1,9 +1,9 @@
 {
   "schema": "revival.features/v1",
   "repo": "kicktwitchyoutube_instagram",
-  "git_head": "b05576f",
-  "generated_at": "2026-11-26T19:53:04Z",
-  "total_tracked_files": 102,
+  "git_head": "35c8d8f",
+  "generated_at": "2026-11-26T20:03:54Z",
+  "total_tracked_files": 116,
   "feature_count": 2,
   "features": [
     {
@@ -51,7 +51,7 @@
         "_tools/relay.mjs"
       ],
       "file_count": 38,
-      "recent_commit_touches": 116,
+      "recent_commit_touches": 118,
       "recent_commit_subjects": [
         "fix(ad): end a playlist pod when the ad UI leaves, and stop starting the standby at 360p (0.8.111)",
         "fix(overlay): native stall watchdog, arrow seek parity, ad standby silence (0.8.110)",
@@ -61,23 +61,28 @@
         "Add the offline Twitch ad-delivery replica and a control arm",
         "one look instrument, and never a tab on his screen"
       ],
-      "how_it_works": "Macro subsystem owning 38 tracked code file(s) under `_tools`; recent evolution: fix(ad): end a playlist pod when the ad UI leaves, and stop starting the standby at 360p (0.8.111)",
+      "how_it_works": "Instruments, never product: (1) `ko-verify.mjs` runs every static suite plus the ledger, census, artifact and revival gates and writes `_evidence/ko-verify-latest.md`; (2) `ko-census.mjs` parses the three product scripts and refuses growth of decisions that return with no log row; (3) `ko-adlog-verdict.mjs` / `ko-adlog-window.mjs` read the extension's own ring (`ko.adlog`) and print per-page-load verdicts (ON SCREEN, FROZEN, JUMPS, SOUND, POD FREEZE, DISPLAY, REPEATS, HOLD EXPIRY, RELOADS, BUILDS IN THIS RING); (4) `ko-snapshot.mjs` reads the attributes the page publishes without touching the tab; (5) `ko-harness.mjs` drives a guest Chrome (port 9446, marker `G:/Temp/ko-harness/guest.json`) for kickparity/muteauthor/parity; (6) `ko-replica/` is an offline, deterministic Twitch watch page + ad delivery (HTTPS with a self-signed cert, HLS playlists served with a sliding ad window, a player worker, the real ad DOM shapes) so a pod can be replayed without a live stream; (7) `ko-load-check.mjs` is the pre-flight ceiling reading; (8) `ko-real-capture.mjs` + `ko-replica/compare.mjs` diff a real capture against the replica.",
       "inputs": [
-        "CLI args / stdin",
-        "Environment variables / config",
-        "IPC / WebSocket events"
+        "the repository working tree and its git history",
+        "the extension's ring dump (`chrome.storage.local['ko.adlog']`) read over CDP",
+        "a guest Chrome on port 9446 with the unpacked extension loaded, or the owner's Chrome on 9222 for read-only probes",
+        "replica scenarios (`_tools/ko-replica/scenarios/*.json`) plus generated media under `G:/Temp/ko-replica/media`"
       ],
       "outputs": [
-        "IPC / UI state updates",
-        "Persisted files / DB state",
-        "Structured stdout / logs"
+        "a gate verdict + receipt (`_evidence/ko-verify-latest.md`)",
+        "machine artifacts per verified bug (`_evidence/<bug>-arms.md`) and reachability records",
+        "verdict lines on stdout (`RESULT PASS|FAIL ... checks=N failed=0`) that a lane quotes as evidence",
+        "replica run directories under `G:/Temp/ko-replica/runs/<scenario>-<ms>/`"
       ],
       "interlinks": [
         "kick-overlay"
       ],
-      "verify_cmd": "",
-      "metric_ids": [],
-      "curated": false
+      "verify_cmd": "node _tools/ko-census.mjs --gate",
+      "metric_ids": [
+        "basic.census_ms",
+        "e2e.gate_wall_ms"
+      ],
+      "curated": true
     },
     {
       "id": "kick-overlay",
@@ -109,30 +114,38 @@
         "kick-overlay/yt-route-test.cjs"
       ],
       "file_count": 23,
-      "recent_commit_touches": 304,
+      "recent_commit_touches": 309,
       "recent_commit_subjects": [
+        "0.8.126: a starved live gets the hand-back wait, and the level row prints the ladder",
         "0.8.125: a rect of zero is not a small player, so the clean picture no longer opens at 360p",
         "0.8.124: the hand-back wait counts reports, not polls, and a play needs a gesture in the player",
         "0.8.123: a new pod cancels the hand-back wait instead of losing its own frame",
-        "0.8.122: keep the clean frame on screen until the handed-back native can play forward",
-        "ad-time-continuity: the replacement pod must hand back too, and the stale-warm arm names its own precondition",
         "fix(harness): poll the reload arms instead of racing the 800 ms delay; 0.8.118"
       ],
-      "how_it_works": "Macro subsystem owning 23 tracked code file(s) under `kick-overlay`; recent evolution: 0.8.125: a rect of zero is not a small player, so the clean picture no longer opens at 360p",
+      "how_it_works": "Three worlds, one page. The ISOLATED content script (`content.js`) mounts the kick/YouTube layer in an iframe (`player.html`), arbitrates ownership of the screen (`data-ko-owner`, `overlayOwnsPicture`, `OWNER_GRACE_MS`), pauses/resumes the page's own `<video>` through the stall watchdog (`nativeStallWatch`, which refuses with a named row), publishes the display clock verdicts (LIVE/BEHIND/REPEAT/FROZEN/PAUSED), sets the toolbar badge (`setBadge` -> `chrome.action`) and heals a stale tab only while it is hidden. `ko-audio.js` is the single writer of mute/volume (intent x policy x visible surface), persisted per tab in sessionStorage. The MAIN-world ad path (`twitch-adblock.js`) detects an ad by paint + slate text + the worker-hooked playlist, opens a pod, mints a clean source over Twitch's GQL usher, covers the native with the clean picture only once it is decoding at the sync target (`cleanLatTarget`, reveal waits for the caught-up report), freezes the page element for the pod's duration, and hands back exactly once (timeline-reset detection, buffered-edge or wall-clock target, `handback-wait` until `rs >= 3` or 3 s). `adblock-bridge.js` crosses the world boundary in both directions; `background.js` installs the DNR rules and the packaged resources (it holds no storage record and no badge).",
       "inputs": [
-        "CLI args / stdin",
-        "HTTP / API requests",
-        "IPC / WebSocket events"
+        "the Twitch watch page DOM: `[data-a-target=\"video-player\"]`, the squeezeback/slate ad text, the page's own `HTMLVideoElement`",
+        "Twitch's HLS playlists as fetched by the page's own player worker (token, `adExtinf`, `#EXT-X-DATERANGE`) and the GQL usher (`playbackAccessToken`)",
+        "real user gestures: pointer/key input on the page, the overlay bar, the popup (each carries an author stamp)",
+        "`chrome.storage.local` records (`ko.v2`), per-tab `sessionStorage` (`ko.audio.v2`), and the server-space preference"
       ],
       "outputs": [
-        "HTTP / JSON responses",
-        "IPC / UI state updates",
-        "Structured stdout / logs"
+        "the overlay iframe + bar (`#ko-wrap`, `#ko-g1`, seek bar) with the kick/YouTube picture",
+        "published attributes the instruments read: `data-ko-owner`, `data-ko-audio-m/-v/-vis/-wt/-it`, `data-ko-adpark`, `data-ko-adblock`",
+        "media-element writes: pause/resume, `currentTime` seeks, `muted`/`volume`, `playbackRate`",
+        "the ring: transition-only rows in `chrome.storage.local['ko.adlog']` (`overlay-reveal`, `native-handoff`, `handback-wait`, `ad-ui-hold`, `standby-level`, `audio-intent`, `display-*`, ...)"
       ],
-      "interlinks": [],
-      "verify_cmd": "",
-      "metric_ids": [],
-      "curated": false
+      "interlinks": [
+        "_tools"
+      ],
+      "verify_cmd": "node _tools/ko-verify.mjs",
+      "metric_ids": [
+        "basic.syntax_check_ms",
+        "subsystem.bridge_handshake_ms",
+        "subsystem.mute_decision_ms",
+        "subsystem.ad_time_continuity_ms"
+      ],
+      "curated": true
     }
   ]
 }

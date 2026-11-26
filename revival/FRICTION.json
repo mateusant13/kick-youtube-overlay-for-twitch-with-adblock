@@ -1,6 +1,6 @@
 {
   "schema": "revival.friction/v1",
-  "updated_at": "2026-11-26T19:53:06Z",
+  "updated_at": "2026-11-26T20:18:09Z",
   "default_inner_loop_target_s": 15.0,
   "frictions": [
     {
@@ -68,14 +68,14 @@
       "category": "test",
       "description": "Primary edit -> test -> verify inner loop must run incrementally/cached in <= 15s with zero owner dependency.",
       "evidence_files": [],
-      "before_s": null,
+      "before_s": 4.728,
       "target_s": 15.0,
       "solution_type": "incremental_cache",
-      "solution_plan": "Provide a single cached/filtered fast-loop command in revival/COMMANDS.md and pin its wall time here.",
-      "twin_or_script": "revival/COMMANDS.md",
-      "verify_cmd": "",
-      "after_s": null,
-      "status": "OPEN"
+      "solution_plan": "Virtual clock landed 2026-11-26 (kick-overlay/_clock.cjs): the two behavioural suites advance an injected clock instead of sleeping, so the real edit->test loop is 887 ms + 4 724 ms with identical check counts (95 and 185). KO_REAL_CLOCK=1 replays the old real-timer path.",
+      "twin_or_script": "kick-overlay/_clock.cjs",
+      "verify_cmd": "node kick-overlay/mute-decision-test.cjs && node kick-overlay/ad-time-continuity-test.cjs",
+      "after_s": 4.986,
+      "status": "VERIFIED"
     }
   ]
 }

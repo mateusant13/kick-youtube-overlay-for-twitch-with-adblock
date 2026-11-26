@@ -109,7 +109,7 @@
     "Live arm, guest Chrome (port 9333), real module driven through its own BroadcastChannel protocol with a real minted clean master for twitch.tv/necros: standby-start -> Standby 0.01 / native visible, ad-hold -> overlay-reveal reason standby, adfix opacity 1, native visibility:hidden muted:true. Real click on the sidebar link to /aggeo (SPA): at the first 500 ms sample the A player was removed (adfix null), native visibility restored to visible and playing (ct 0 -> 3.6 s), and the new channel standby started at T+1s",
     "Version 0.8.43; gate check `channel-switch` added to _tools/ko-verify.mjs"
    ],
-   "verified": true,
+   "verified": false,
    "verified_by": "lane, pre-fix RED + post-fix PASS through the real module (unit), plus a guest-Chrome SPA switch on live twitch.tv/necros -> /aggeo with a synthetic ad trigger through the shipped message protocol",
    "owner_validation": "pending: installed build 0.8.43 in his Chrome. Watch a channel during a pod, switch channels, confirm the new channel image appears instead of the previous streamer",
    "next": "Owner: with 0.8.43 installed, switch channels while an ad/clean overlay is up and confirm the picture changes. Live limb not yet measured on a real pod (no ad painted in the guest during this run)."
@@ -137,7 +137,7 @@
     "Why the trigger is synthetic: 150 s on live Caedrel with the native player playing, 141 samples -> 5 `ad-net` requests, 0 samples with a visible ad (visibility checked with getBoundingClientRect + computed style, ad label text matched), 0 native pauses, 0 `cold-cover`, 0 `overlay-reveal`; the worker rewrote the playlist to `index-muted-*.m3u8`. There was no ad on screen to cover, so a Twitch-served pod could not be the trigger",
     "Sound: HTMLMediaElement.volume is pinned to 0 in the measurement tab (no browser-level mute exists in this CDP build: Browser.setMuted / Target.setMuted / Page.setAudioMuted all return \"wasn't found\"), and `muted` is left truthful, so the arm results are not artefacts of silencing"
    ],
-   "verified": true,
+   "verified": false,
    "verified_by": "lane, owner Chrome 0.8.42, live twitch.tv/Caedrel, two arms (muted / unmuted) through the real startAdOverlay -> healthy gate -> revealOverlay path",
    "owner_validation": "pending",
    "next": "Owner: when an ad actually paints (it did on 2026-10-25 srdogg), mute first and confirm the clean player stays silent and the badge offers som. The decision path itself is measured."
@@ -167,7 +167,7 @@
     "Owner Chrome 0.8.42, youtube.com/watch?v=0sfDth4lMLc with ko.v2 player=kick mapped to a LIVE Kick channel (n3on): wrap `ko-kick ko-placed`, firstWrapMs 25, firstPlayingMs 8,856, states null -> Buffering -> Playing, everPlayed true, frameSeq 1. Player region read from two screenshots 4 s apart: run A mean luminance 35.3 / sd 52.1 / 54.6 % dark, run B mean 34.8 / sd 50.5 / 53.6 % dark, picture moved. A black box would be mean ~0, sd ~0",
     "Owner Chrome 0.8.42, same layer, 20-minute run: 120 samples, states {Playing: 120}, remounts 0, single player URL, errors 0, hls events 0, heap 208 -> 76 MB, no page exceptions"
    ],
-   "verified": true,
+   "verified": false,
    "verified_by": "lane, owner Chrome 0.8.42, youtube.com watch page with player=kick mapped to live Kick n3on; luminance sampled from real screenshots",
    "owner_validation": "not requested: the live-mapped case was measured in the owner Chrome",
    "next": "Measured in the owner Chrome (see evidence). Owner may still eyeball the layer on his own mapped YouTube page."
@@ -190,10 +190,10 @@
     "kick-overlay/route-gate-test.cjs PASS: route contract, immediate hide on route change, no mount on a non-player route, no paint from an unplaced wrap",
     "Owner Chrome 0.8.42, live twitch.tv/n3on, real clicks (250 ms frame sampling): /n3on/clips coveredFrames 0 of 22, /n3on/videos 0 of 22, back on /n3on 32 of 32; kick state null -> Ready. The overlay leaves both sub-routes and returns on the root channel in the owner's own browser."
    ],
-   "verified": true,
+   "verified": false,
    "verified_by": "lane, owner Chrome 0.8.42, live twitch.tv/n3on, real Clips/Videos/back clicks (250 ms frames)",
    "owner_validation": "pending",
-   "next": "Measured in the owner Chrome (see evidence): 0 covered frames on clips and videos, 32 of 32 on the channel root."
+   "next": "Owner: on his own Twitch tab, open /<channel>/clips and /videos while the overlay is active and confirm it stays off, then returns on the channel root. The recorded owner-Chrome counts remain in evidence; no artifact file was kept."
   },
   {
    "id": "KO-20261023-01",
@@ -446,11 +446,11 @@
    "hypothesis": "catchUpClean() computed its ceiling as pos+buffered-1 only when buffered>0 and otherwise seeked straight to the wanted edge. A standby at pos=27 with lat=30 and buffered=0 was seeked to 54 - a position it had no segment for - so the element sat at readyState 2 while hls.js fetched. Measured in the headless guest on kaicenat: overlay-catchup {hold:0,lat:30,pos:27,to:54}, then 2s later playing-not-healthy {buffered:0.019,rs:2}; the clean source was dead for the pod.",
    "falsifier": "A guest run on a live channel where catchUpClean is reached with buffered=0 must log no overlay-catchup with a target above pos, and must reach clean state=Playing with buf>0. Arm: remove the guard.",
    "evidence": [
-    "_evidence/ko-look-2026-11-08T20-28-46-445Z.md"
+    "Recorded note: guest reached clean {state:Playing,lat:5.33,latSrc:hls,buf:2.31} with no empty-buffer seek; the cited _evidence/ko-look-2026-11-08T20-28-46-445Z.md holds only `Uncaught (in promise) TypeError: Failed to fetch`, so it is not a verdict artifact."
    ],
-   "verified": "2026-11-08",
+   "verified": false,
    "owner_validation": null,
-   "next": "Guest on kaicenat reached clean {state:Playing,lat:5.33,latSrc:hls,buf:2.31} with no empty-buffer seek. A real pod on the owner's channel is the confirmation that matters."
+   "next": "Owner: on a real pod on his channel, confirm no empty-buffer catch-up seek and clean state=Playing with buffered data. The guest trace is a note, not a live verdict; no artifact file was kept."
   },
   {
    "id": "KO-20261108-08",
@@ -458,7 +458,7 @@
    "state": "fixed",
    "author": "lane",
    "reported": "2026-11-08",
-   "fixed_in": "0.8.53",
+   "fixed_in": "0.8.57",
    "commit": null,
    "hypothesis": "The mute/volume intent was one shared row (`ko.v2.vols`) written by whichever tab the user touched and fed back into EVERY tab by `chrome.storage.onChanged` -> `applyVols(s.vols)` -> `KOAudio.setIntent(...)` -> `apply()`. Since ko-audio derives `muted = intent || policy || surface !== visible`, a mute in tab A silenced tab B's native player within one storage round-trip, and the same path carried an unmute the other way ('e vice versa'). A reload of one tab, or any saveState from it, also clobbered the stored row for everyone.",
    "falsifier": "Two tabs sharing the `ko.v2` record: a gesture in A must not change B's arbiter intent. tab-audio-scope-test.cjs fabricates two worlds from the real ko-audio.js; the pre-fix shape is the positive control (feeding a shared row into a tab DOES mute it) and two source mutations re-insert the shared row and the listener write, both caught by the fence.",
@@ -476,7 +476,7 @@
    "date": "2026-11-09",
    "title": "swapping the player muted the new player by itself",
    "state": "fixed",
-   "fixed_in": "0.8.54",
+   "fixed_in": "0.8.57",
    "verified": false,
    "evidence": [
     "tab-audio-scope-test.cjs checks=16 (+3 swap arms, +1 machine-mute arm, +1 mutation): unmuted live stays unmuted through twitch->kick->yt and back; a muted live stays muted; a machine mute (volumechange with navigator.userActivation.hasBeenActive=false) is NOT recorded as intent and the element is re-asserted audible",
@@ -491,7 +491,7 @@
    "date": "2026-11-09",
    "title": "'sem anuncio - carregando a live' panel stayed on the normal stream for the whole session",
    "state": "fixed",
-   "fixed_in": "0.8.54",
+   "fixed_in": "0.8.57",
    "verified": false,
    "evidence": [
     "cold-cover-fixture-test.cjs checks=18: the paint is derived by syncCover() (shipped function driven directly: hold paints, cleared hold un-paints, revealed wins over a stale hold, ended pod un-paints, a fresh hold re-paints); the enforcement is on the 500 ms position tick with a mutation that removes it; a pod that ends leaves nothing painted",
@@ -506,7 +506,7 @@
    "date": "2026-11-09",
    "title": "the kick bar's control order: pause belongs at the far left, the volume-first order belongs to the ad player",
    "state": "fixed",
-   "fixed_in": "0.8.55",
+   "fixed_in": "0.8.57",
    "verified": false,
    "evidence": [
     "0.8.54 put the volume control first on the KICK bar; the owner corrected the order on 2026-11-09 (\"bota o botao de pause a esquerda de tudo do player da kick ... o botao de volume na esquerda era pra ser do player que troca quando acontece ad\"), so 0.8.55 puts #ko-play first and #ko-volwrap second",
@@ -522,7 +522,7 @@
    "date": "2026-11-09",
    "title": "the page muted itself at random while he was talking in chat",
    "state": "fixed",
-   "fixed_in": "0.8.56",
+   "fixed_in": "0.8.57",
    "verified": false,
    "evidence": [
     "cause A: the gesture reader gated on navigator.userActivation.hasBeenActive, which is STICKY for the life of the page. After one click anywhere, every machine volumechange (Twitch muting on an ad, the ad path's claim silencing the page) was recorded as HIS intent and persisted per tab; the next player inherited it",
@@ -539,7 +539,7 @@
    "date": "2026-11-12",
    "title": "the picture froze right after an ad put the Twitch player back, and came back muted",
    "state": "fixed",
-   "fixed_in": "0.8.85",
+   "fixed_in": "0.8.92",
    "verified": false,
    "evidence": [
     "ko.adlog (owner tab, 0.8.84): `native-edge-recover {behind:2.5, gap:6.8, from:18.8, to:25.6}` with `buffered.end` 26.1 — the hand-back landed 0.5 s before the end of the downloaded data — then `native-resume {ct:25.6, rs:1}` and `video-pause {rs:1}`; 2 ms later `native-catchup {gap:2, from:25.6, to:27.6}` with 28.1, parked again. Twice in one second under a picture that had already stalled",
@@ -555,7 +555,7 @@
    "date": "2026-11-12",
    "title": "an accepted mute could not be attributed to his click or to the code",
    "state": "fixed",
-   "fixed_in": "0.8.85",
+   "fixed_in": "0.8.92",
    "verified": false,
    "evidence": [
     "every `audio-intent` line carried before/after/why/visible/claimed but no AUTHOR, so \"did this come from my mouse or from the code\" was unanswerable from his own log",
@@ -570,7 +570,7 @@
    "date": "2026-11-12",
    "title": "the ad log was a dump instead of an answer",
    "state": "fixed",
-   "fixed_in": "0.8.85",
+   "fixed_in": "0.8.92",
    "verified": false,
    "evidence": [
     "reconstructing one episode needed a manual join across nine `playing-not-healthy` lines, a count of reveal lines by hand, and reading `audio-mismatch` ramp by ramp",
@@ -585,7 +585,7 @@
    "date": "2026-11-13",
    "title": "the hand-back landed on the live edge instead of the frame he was watching, cutting the streamer's speech",
    "state": "fixed",
-   "fixed_in": "0.8.86",
+   "fixed_in": "0.8.92",
    "verified": false,
    "evidence": [
     "owner report: the held ad desynchronised the live and the hand-back advanced the clock, so a sentence was cut",
@@ -601,7 +601,7 @@
    "date": "2026-11-13",
    "title": "the clean picture was hidden while the pointer was over the player (hover opened a 0x0 rect)",
    "state": "fixed",
-   "fixed_in": "0.8.86",
+   "fixed_in": "0.8.92",
    "verified": false,
    "evidence": [
     "owner report: \"ele da hide mesmo dando hover\"",
@@ -617,7 +617,7 @@
    "date": "2026-11-13",
    "title": "go-live left the picture frozen while the player kept reporting Playing, and the reconnect never reloaded it",
    "state": "fixed",
-   "fixed_in": "0.8.87",
+   "fixed_in": "0.8.92",
    "verified": false,
    "evidence": [
     "guest 0.8.86, two kickparity runs: `go-live` failed with `live never advanced {\"pos\":9956.13,\"state\":\"Playing\",\"onDvr\":false}` and `{\"pos\":10262.7,...}` after a DVR seek",
@@ -634,7 +634,7 @@
    "date": "2026-11-13",
    "title": "a DVR stall was repaired onto the live url, and an exhausted DVR budget tore the layer down",
    "state": "fixed",
-   "fixed_in": "0.8.89",
+   "fixed_in": "0.8.92",
    "verified": false,
    "evidence": [
     "owner adlog 0.8.86: `stall {ct:10529}` x3 then `owner-regress {from:10529.4,to:46.2}` — a freeze on the replay url came back at the live edge",
@@ -650,7 +650,7 @@
    "date": "2026-11-13",
    "title": "the stall watchdog fired inside a source switch that was still loading",
    "state": "fixed",
-   "fixed_in": "0.8.89",
+   "fixed_in": "0.8.92",
    "verified": false,
    "evidence": [
     "0.8.88 adlog: `go-live {minted:true}` at +460 ms, then `stall {ct:11597}` at +9.8 s and three reconnects, for a load that took ~10 s to first frames",
@@ -666,7 +666,7 @@
    "date": "2026-11-13",
    "title": "go-live reloaded the playback_url minted at mount, whose IVS token had expired",
    "state": "fixed",
-   "fixed_in": "0.8.89",
+   "fixed_in": "0.8.92",
    "verified": false,
    "evidence": [
     "0.8.86/0.8.88: `go-live` -> `stall` on the OLD position, while the reconnect (which MINTS) is the only path that repaired it",
@@ -682,7 +682,7 @@
    "date": "2026-11-13",
    "title": "a hover hid the clean picture, because the rect grace was a timer over a live hover",
    "state": "fixed",
-   "fixed_in": "0.8.90",
+   "fixed_in": "0.8.92",
    "verified": false,
    "evidence": [
     "owner report: 'ele da hide mesmo dando hover' — Twitch's floating preview is up for as long as the mouse points at the player, so any fixed grace hides it",
@@ -699,7 +699,7 @@
    "date": "2026-11-14",
    "title": "a pod-sized deficit seeked an element that could not play forward (a 130 s jump past its buffer)",
    "state": "fixed",
-   "fixed_in": "0.8.91",
+   "fixed_in": "0.8.92",
    "verified": false,
    "evidence": [
     "owner's own ko.adlog 0.8.90 twitch.tv/buzzyi_: native-edge-unusable {from:30.1, rs:2} -> native-edge-recover {behind:144.9, from:30.1, to:172, buf:42.4} -> native-resume {ct:41.4, rs:1}",
@@ -715,7 +715,7 @@
    "date": "2026-11-14",
    "title": "a transition was emitted per heartbeat: 70 identical audio-mismatch rows evicted the pod chronology",
    "state": "fixed",
-   "fixed_in": "0.8.91",
+   "fixed_in": "0.8.92",
    "verified": false,
    "evidence": [
     "owner's own ring: 77 audio-mismatch rows, of which 70 were the same `late` signature {wantMuted:true, frameMuted:false, wantVol:0.76, frameVol:0.76} on 1 Hz `st`",
@@ -870,13 +870,13 @@
    "reported": "2026-11-15",
    "fixed_in": "0.8.93",
    "commit": null,
-   "verified": true,
+   "verified": false,
    "hypothesis": "`nudgeNativeToBuffer()` wrote `v.currentTime` and returned a boolean; nothing reached `ko.adlog`. Every other clock write logs a payload, so a rewind inside held media was the only move the ring could not show.",
    "falsifier": "Every write to the native clock appears in the ring with from/to/runway.",
    "evidence": [
     "arms assert a `native-nudge` row with from/to/runway; the RED asserts zero rows when the mutant does not move the clock"
    ],
-   "next": null
+   "next": "Owner: on the next real pod, every native clock write must appear in ko.adlog as a `native-nudge` row with from/to/runway. The arms only prove the code path, not the live observation."
   },
   {
    "id": "KO-20261115-09",
@@ -986,7 +986,7 @@
    "reported": "2026-11-16",
    "fixed_in": "0.8.95",
    "commit": null,
-   "verified": true,
+   "verified": false,
    "title": "The 20 s kick poll wrote a row per tick, so 268 of 1200 ring entries held one unchanging fact and evicted the chronology",
    "hypothesis": "`kick_probe {at:\"poll\"}` and `kick_offline` were emitted on every 20 s poll whether or not the outcome changed, and the mint-probe dedupe used ONE shared `kickMintSig` slot that a channel 404ing on both endpoints defeats (v2 and v1 alternate the value). A sample is not a transition: the rows pushed the ad/player chronology out of the ring, and the owner answered \"TUDO ISSO deveria estar nos logs\" with a log that could not hold it.",
    "falsifier": "Repeated identical polls must produce no new rows; a changed outcome must produce exactly one of each; and a channel that 404s on both endpoints must not re-log either probe.",
@@ -1012,7 +1012,7 @@
    "state": "fixed",
    "author": "lane",
    "reported": "2026-11-16",
-   "fixed_in": "0.8.96",
+   "fixed_in": "0.8.97",
    "commit": null,
    "verified": false,
    "title": "A mute persisted volume 0, so one unmute click left the tab silent while the bar said audible",
@@ -1031,7 +1031,7 @@
    "state": "fixed",
    "author": "lane",
    "reported": "2026-11-16",
-   "fixed_in": "0.8.96",
+   "fixed_in": "0.8.97",
    "commit": null,
    "verified": false,
    "title": "The pointer relay lived inside the hls.js branch, so the IVS kick layer never armed the bar",
@@ -1050,7 +1050,7 @@
    "state": "fixed",
    "author": "lane",
    "reported": "2026-11-16",
-   "fixed_in": "0.8.96",
+   "fixed_in": "0.8.97",
    "commit": null,
    "verified": false,
    "title": "A hand-back seek aimed past the downloaded media parked the native at rs:1 until he clicked pause/unpause",
@@ -1069,7 +1069,7 @@
    "state": "fixed",
    "author": "lane",
    "reported": "2026-11-16",
-   "fixed_in": "0.8.96",
+   "fixed_in": "0.8.97",
    "commit": null,
    "verified": false,
    "title": "A keystroke authorized Twitch's own ad volume as the user's decision",
@@ -1231,7 +1231,7 @@
    "state": "fixed",
    "author": "lane",
    "reported": "2026-11-25",
-   "fixed_in": "unreleased",
+   "fixed_in": "0.8.116",
    "commit": "30b48ac648be18045560c91d5d0ed6fd2283a7c0",
    "verified": false,
    "title": "Twitch fetches media playlists inside the player worker, so no page-level hook saw an ad: the pod never started and the ad played end to end",
