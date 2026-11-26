@@ -337,13 +337,28 @@ if (HLS_MODE) {
     if (TWITCH_HLS && !standbyLevelLogged) {
       const levels = (data && data.levels) || h.levels || [];
       if (levels.length) {
+        // The standby exists to be REVEALED over the native player, so its
+        // first rung must fit THAT rect. Picking the lowest bitrate rung (the
+        // pre-fix line) made the owner's 1236x695 player open at 360p and stay
+        // there until ABR climbed: `overlay-reveal {q:"360p"}` twice in one
+        // load. This is capLevelToPlayerSize's rule computed from the element
+        // itself, without waiting for a bandwidth sample: the smallest rung
+        // that covers the CSS height, or the largest rung if none does.
+        let height = 0;
+        try { height = V.getBoundingClientRect ? Math.max(0, V.getBoundingClientRect().height) : 0; } catch { /* no rect yet */ }
         let chosen = 0;
-        let best = Infinity;
+        let bestH = Infinity;
+        let topH = -1;
         for (let i = 0; i < levels.length; i++) {
-          const l = levels[i] || {};
-          const br = Number(l.bitrate);
-          const v = Number.isFinite(br) ? br : Infinity;
-          if (v < best) { best = v; chosen = i; }
+          const lh = Number((levels[i] || {}).height);
+          if (!Number.isFinite(lh) || lh <= 0) continue;
+          if (lh >= height && lh < bestH) { bestH = lh; chosen = i; }
+          if (lh > topH) topH = lh;
+        }
+        if (bestH === Infinity && topH > 0) {
+          for (let i = 0; i < levels.length; i++) {
+            if (Number((levels[i] || {}).height) === topH) { chosen = i; break; }
+          }
         }
         h.startLevel = chosen;
         const l = levels[chosen] || {};

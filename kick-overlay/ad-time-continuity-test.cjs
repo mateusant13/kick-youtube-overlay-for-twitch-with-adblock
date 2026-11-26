@@ -100,7 +100,7 @@ const PRE_FIX_NUDGE = [[
 // 8. the 4s reveal floor with no liveness exception: unreachable behind a 3s
 //    live sync, so a decoding player was judged unhealthy on every tick.
 const PRE_FIX_HEALTH = [
-  ['const HEALTH_BUFFER_SEC = 3;', 'const HEALTH_BUFFER_SEC = 4;'],
+  ['const decoding = advancing !== false && forwardOk;', 'const decoding = advancing !== false && forwardOk && buffered >= 4;'],
   ['const alive = overlay.playing && rsOk', 'const alive = false && rsOk'],
 ];
 
@@ -714,11 +714,11 @@ async function main() {
     for (let i = 0; i < 3; i++) page.frameMsg(healthySt({ pos: 33, lat: 3, buffered: 8 }));
     await settle(60);
     // Exactly the reported shape: the edge is 9 s away, the buffer holds 8.6.
-    for (let i = 0; i < 3; i++) page.frameMsg(healthySt({ pos: 36, lat: 9, buffered: 8.6 }));
+    for (let i = 0; i < 3; i++) { page.frameMsg(healthySt({ pos: 36 + i * 0.4, lat: 9, buffered: 8.6 })); await settle(220); }
     await settle(10);
     const before = page.seeks().length;
     for (let i = 0; i < 4; i++) {
-      page.frameMsg(healthySt({ pos: 41 + i * 5, lat: 9, buffered: 8.6 }));
+      page.frameMsg(healthySt({ pos: 37.2 + i * 2.2, lat: 9, buffered: 8.6 }));
       await settle(2200); // past the 2 s catch-up throttle
     }
     check('a catch-up never seeks when the buffer already reaches the edge', () => {
@@ -1267,6 +1267,87 @@ async function main() {
       const r = page.logsOf('ad-ui-release').pop();
       assert(!!r, 'the release wrote no line');
       assert(r.d.act === 'playing', `act=${JSON.stringify(r.d.act)}`);
+    });
+  }
+  // ---- 4. A PAUSE IS THE USER'S ONLY WITH A REAL INPUT BESIDE IT ---------
+  // Owner ring 2026-11-26 (0.8.116, twitch.tv/buzzyi_): alt-tabbed, the page
+  // paused its OWN element inside a playlist pod (`ad-tick playing while
+  // owned=6`), the listener stamped `ad-ui-hold {act:"user-pause", ct:3.4}`
+  // with nobody at the keyboard, and `userPausedInPod` then refused every
+  // hand-back resume for the rest of the pod - `native-handoff
+  // {resume:NEVER, podAge:3m12.1}` with the picture parked. That is the report
+  // verbatim: "a live pausou enquanto eu estava alt tab".
+  {
+    const page = makeWorld();
+    const api = page.stats();
+    setNative(page, { ct: 120, edge: 400, bufferedEnd: 400 });
+    await pod(page);
+    await settle(300); // OUR take-over pause (`selfPausedAt`) must age out first
+    api.adTestClock({ clearInput: true });
+    page.video.pause();
+    page.document.fire({ type: 'pause', target: page.video });
+    await settle(10);
+    check('a machine pause inside a pod is not the user parking the picture', () => {
+      const rows = page.logsOf('ad-ui-hold');
+      const stamped = rows.filter((r) => r.d.act === 'user-pause');
+      assert(stamped.length === 0,
+        `a gestureless pause was stamped as the user's: ${JSON.stringify(stamped.map((r) => r.d))}`);
+      const refused = rows.filter((r) => r.d.act === 'pause-refused');
+      assert(refused.length === 1,
+        `the refusal was not recorded exactly once: ${JSON.stringify(rows.map((r) => r.d.act))}`);
+      assert(refused[0].d.sinceInputMs == null, `the refusal invented an input age: ${JSON.stringify(refused[0].d)}`);
+    });
+    page.bypass({ type: 'ad-end' });
+    await settle(400);
+    check('...and that pod still gives the picture back at the hand-back', () => {
+      assert(page.video.paused === false,
+        'the hand-back left the element parked after a pause nobody made');
+    });
+  }
+  {
+    // The companion: the same two events WITH a gesture are the user's, and
+    // the hand-back must then leave his picture alone.
+    const page = makeWorld();
+    const api = page.stats();
+    setNative(page, { ct: 120, edge: 400, bufferedEnd: 400 });
+    await pod(page);
+    await settle(300); // OUR take-over pause (`selfPausedAt`) must age out first
+    page.document.fire({ type: 'pointerdown' });
+    page.video.pause();
+    page.document.fire({ type: 'pause', target: page.video });
+    await settle(10);
+    check('a pause with a fresh input is the user\'s, and the row names the input', () => {
+      const rows = page.logsOf('ad-ui-hold').filter((r) => r.d.act === 'user-pause');
+      assert(rows.length === 1, `user-pause rows=${JSON.stringify(rows.map((r) => r.d))}`);
+      assert(typeof rows[0].d.inputAgeMs === 'number',
+        `the accepted pause did not name the input that authorized it: ${JSON.stringify(rows[0].d)}`);
+    });
+    page.bypass({ type: 'ad-end' });
+    await settle(400);
+    check('...and a player HE parked stays parked at the hand-back', () => {
+      assert(page.video.paused === true, 'the ad path restarted a player the user paused');
+    });
+  }
+  // RED: without the input clock any pause that is not ours becomes the user's,
+  // which is the measured production behaviour.
+  {
+    const blindPause = mutate([[
+      "      if (!hasFreshInput()) {\n        if (!userPauseRefusedLogged) {",
+      "      if (false) {\n        if (!userPauseRefusedLogged) {",
+    ]]);
+    const page = makeWorld({ adSource: blindPause });
+    const api = page.stats();
+    setNative(page, { ct: 120, edge: 400, bufferedEnd: 400 });
+    await pod(page);
+    await settle(300); // OUR take-over pause (`selfPausedAt`) must age out first
+    api.adTestClock({ clearInput: true });
+    page.video.pause();
+    page.document.fire({ type: 'pause', target: page.video });
+    await settle(10);
+    check('RED: without the input clock a machine pause parks the picture for the pod', () => {
+      const stamped = page.logsOf('ad-ui-hold').filter((r) => r.d.act === 'user-pause');
+      assert(stamped.length === 1,
+        `the mutant refused the pause: this arm measures nothing (${JSON.stringify(page.logsOf('ad-ui-hold').map((r) => r.d.act))})`);
     });
   }
   // RED: the pre-fix play listener had no input clock, so a gesture did not
@@ -2186,7 +2267,7 @@ async function main() {
     setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
     await pod(page, { pos: 100, lat: 3 });
     // playing-not-healthy arm: unhealthy Playing report
-    page.frameMsg({ t: 'st', st: { state: 'Playing', paused: false, muted: true, rs: 4, buffered: 0.5, pos: 102, lat: 12, dur: 0, q: { name: '360p' }, lv: 0, bw: 400000 } });
+    page.frameMsg({ t: 'st', st: { state: 'Playing', paused: false, muted: true, rs: 2, buffered: 0.5, pos: 102, lat: 12, dur: 0, q: { name: '360p' }, lv: 0, bw: 400000 } });
     await settle(30);
     const pnh = page.logsOf('playing-not-healthy').pop();
     check('A: playing-not-healthy carries lv and bw from frame st payload', () => {
@@ -2217,7 +2298,7 @@ async function main() {
     const page = makeWorld({ adSource: old });
     setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
     await pod(page, { pos: 100, lat: 3 });
-    page.frameMsg({ t: 'st', st: { state: 'Playing', paused: false, muted: true, rs: 4, buffered: 0.5, pos: 102, lat: 12, dur: 0, q: { name: '360p' }, lv: 0, bw: 400000 } });
+    page.frameMsg({ t: 'st', st: { state: 'Playing', paused: false, muted: true, rs: 2, buffered: 0.5, pos: 102, lat: 12, dur: 0, q: { name: '360p' }, lv: 0, bw: 400000 } });
     await settle(30);
     const pnh = page.logsOf('playing-not-healthy').pop();
     check('A RED: pre-fix playing-not-healthy omits lv/bw', () => {
@@ -2585,6 +2666,142 @@ async function main() {
   ]]);
   await redArm('RED: the pre-fix hold expiry resumes the parked ad frame', redHoldExpiry, holdExpiryArm);
   await greenArm('an expired hold reveals the healthy mounted clean player', () => holdExpiryArm(SOURCE));
+  // ---- 14. THE REVEAL GATE MEASURES A DECODING FRAME, NOT A BUFFER SNAPSHOT
+  // Owner ring 0.8.115: reveal 11.0 s after ad-hold, q:"360p", hold 2.86 at
+  // rs=4 with latSrc "hls". The 3 s floor called that frame unhealthy on every
+  // heartbeat although its position advanced at 1x. The replica's owner-shape
+  // arm (KO_REPLICA_NO_INFLIGHT=1) reproduced it: hold 2.85/2.02, no reveal at
+  // 4/9/13 s and the ad painted end to end. This arm feeds exactly that shape.
+  async function drainedLiveArm(src) {
+    const page = makePage(src);
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    page.bypass({ type: 'ad-hold' });
+    page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+    await settle(20);
+    page.frameMsg({ t: 'ready' });
+    page.frameMsg(healthySt({ pos: 37.1, lat: 3.3, buffered: 2.86 }));
+    await settle(600);
+    page.frameMsg(healthySt({ pos: 37.7, lat: 3.3, buffered: 2.86 }));
+    await settle(20);
+    assert(page.logsOf('overlay-reveal').length === 1,
+      `a decoding frame at hold 2.86 was never revealed: ${JSON.stringify(page.logs().map((l) => l.ev))}`);
+    assert(page.logsOf('playing-not-healthy').length === 0
+      && page.logsOf('overlay-nudge').length === 0
+      && page.logsOf('overlay-stall-stop').length === 0,
+      `a decoding frame was treated as stalled: ${JSON.stringify(page.logsOf('playing-not-healthy').map((l) => l.d))}`);
+  }
+  const RED_DRAINED_GATE = mutate([[
+    'const decoding = advancing !== false && forwardOk;',
+    'const decoding = advancing !== false && forwardOk && buffered >= HEALTH_BUFFER_SEC;',
+  ]]);
+  await redArm('RED: the old 3 s buffer floor refuses a decoding frame at hold 2.86', RED_DRAINED_GATE, drainedLiveArm);
+  await greenArm('a decoding frame at hold 2.86 is revealed on progress, not buffer size', () => drainedLiveArm(SOURCE));
+  {
+    // FALSIFIER of "the gate was simply removed": a stalled frame must still
+    // be refused (replica row pos 15.95 twice, rs=2, 0.05 s in hand).
+    const page = makePage(SOURCE);
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    page.bypass({ type: 'ad-hold' });
+    page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+    await settle(20);
+    page.frameMsg({ t: 'ready' });
+    page.frameMsg(healthySt({ pos: 15.95, lat: 0.57, buffered: 0.05, rs: 2 }));
+    await settle(600);
+    page.frameMsg(healthySt({ pos: 15.95, lat: 0.57, buffered: 0.05, rs: 2 }));
+    await settle(20);
+    check('a frozen rs=2 frame with 0.05 s in hand is still not revealed', () => {
+      assert(page.logsOf('overlay-reveal').length === 0, 'a stalled frame was revealed');
+      assert(page.logsOf('playing-not-healthy').length > 0, 'the stall was not logged');
+    });
+  }
+
+  // ---- 15. THE WORKER CAN RE-ASK FOR A STANDBY AT INSTALL TIME -----------
+  // The page's first cold-start posts predate the Worker hook, and
+  // BroadcastChannel does not replay. The new worker-ready handshake makes
+  // the first *effective* request happen at worker install, not at the first
+  // master fetch (owner ring: 8135 ms standby-start after 1444 ms hook).
+  async function workerReadyArm(src) {
+    const page = makePage(src);
+    await settle(20);
+    page.bypass({ type: 'worker-ready' });
+    await settle(20);
+    const rows = page.logsOf('standby-request').filter((l) => l.d && l.d.why === 'worker-ready');
+    assert(rows.length === 1,
+      `worker-ready did not produce exactly one cold request: ${JSON.stringify(rows)}`);
+    // The guard is still the old one: a held cold pod cannot be over-requested.
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    page.bypass({ type: 'ad-hold' });
+    await settle(20);
+    page.bypass({ type: 'worker-ready' });
+    await settle(20);
+    assert(page.logsOf('standby-request').filter((l) => l.d && l.d.why === 'worker-ready').length === 1,
+      'worker-ready bypassed the held-pod guard');
+  }
+  const RED_NO_READY = mutate([[
+    "if (msg.type === 'worker-ready') {",
+    "if (msg.type === 'worker-ready-never') {",
+  ]]);
+  await redArm('RED: without the worker-ready handshake no cold request is re-asked', RED_NO_READY, workerReadyArm);
+  await greenArm('a worker-ready message re-asks once, then respects a held pod', () => workerReadyArm(SOURCE));
+
+  // ---- 13b. A POD END OWNS THE HAND-BACK OVER A LATE HOLD EXPIRY ---------
+  // Owner ring 2026-11-25, one page load: ms 55784 `native-handoff
+  // {ct:0.5, holdCt:0.5, podAgeMs:14853, se:1073741824}` (no seek), ms 56066
+  // `ad-ui-hold {act:"release", why:"hold-expired", ct:0.5, paused:false}`,
+  // ms 56068 `native-resume {tag:"hold-expired", ct:0.5, st.who.holdAt:0}`.
+  // The pod end consumed the take-over stamp; 284 ms later the expired DOM
+  // hold resumed the same element at the parked ad position, and the native
+  // played the whole ad program from 0.5 to 49.6 s.
+  async function podEndHoldExpiryArm(src) {
+    const page = makeWorld({ adSource: src });
+    setNative(page, { ct: 0.5, edge: 1073741824, bufferedEnd: 8.1 });
+    const api = page.stats();
+    // A hold that predates the pod end and is NOT yet expired when the pod
+    // takes over (the slate hold in the ring). It survives the worker's
+    // ad-end, which does not go through `adUiRelease(true)`.
+    api.adTestClock({ holdUiAgeMs: 3000 });
+    await pod(page);
+    assert(page.logsOf('overlay-reveal').length === 1, 'precondition: the pod never revealed');
+    assert(page.logsOf('native-handoff').length === 0, 'precondition: the pod handed back before the test did');
+    // The owner had been away from the tab: the hand-back DECLINED the seek
+    // (`hiddenMs > 1000`), consumed the stamp, and left the element at ct 0.5.
+    api.adTestClock({ hiddenGapMs: 15000 });
+    page.bypass({ type: 'ad-end' });
+    await settle(60);
+    assert(page.logsOf('native-handoff').length === 1,
+      `precondition: the pod end wrote ${page.logsOf('native-handoff').length} hand-offs`);
+    assert(page.logsOf('native-resume').filter((l) => l.d.tag === 'ad-end').length === 1,
+      'precondition: the pod end did not hand the picture back');
+    assert(page.logsOf('native-seek-declined').some((l) => l.d.why === 'hidden-tab'),
+      'precondition: the pod hand-back seeked instead of declining the hidden-tab gap');
+    assert(Math.abs(page.video.currentTime - 0.5) < 0.1,
+      `precondition: the pod hand-back moved the ad element to ${page.video.currentTime}`);
+    // 284 ms later the same hold runs out of budget and the DOM tick fires.
+    await settle(284);
+    api.adTestClock({ holdUiAgeMs: 12500 });
+    api.adUiHoldTick();
+    await settle(20);
+    const late = page.logsOf('native-resume').filter((l) => l.d.tag === 'hold-expired').map((l) => ({
+      tag: l.d.tag,
+      ct: l.d.ct,
+      holdAt: l.d.st && l.d.st.who && l.d.st.who.holdAt,
+      holdCt: l.d.st && l.d.st.who && l.d.st.who.holdCt,
+    }));
+    assert(late.length === 0,
+      `the expired hold resumed the element after the pod hand-back: ${JSON.stringify(late)}`);
+    const named = page.logsOf('ad-ui-hold').filter((l) => l.d.act === 'skip' && l.d.why === 'pod-handoff-owns');
+    assert(named.length === 1,
+      `the refusal did not name its owner: ${JSON.stringify(page.logsOf('ad-ui-hold').map((l) => l.d))}`);
+    assert(page.logsOf('overlay-reveal').length === 1,
+      'the expired hold revived the clean frame after the pod ended');
+    assert(page.logsOf('native-handoff').length === 1, 'a second hand-back was logged for one pod');
+  }
+  const redPodEndExpiry = mutate([[
+    '      if (overlay.podHandoffAt) {',
+    '      if (false && overlay.podHandoffAt) {',
+  ]]);
+  await redArm('hold expiry re-resumes the element the pod already handed back', redPodEndExpiry, podEndHoldExpiryArm);
+  await greenArm('a pod-end hand-back owns the element over a late hold expiry', () => podEndHoldExpiryArm(SOURCE));
 
   const failed = checks.filter((c) => c.status === 'FAIL');
   console.log('');

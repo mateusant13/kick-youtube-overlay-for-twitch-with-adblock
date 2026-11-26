@@ -618,6 +618,10 @@ function installNativeStamp() {
           ct: +Number(t.currentTime || 0).toFixed(2),
           rs: t.readyState,
           hidden: !!document.hidden,
+          // `hidden` is a FLAG the visibility edge clears (0.8.104); this one
+          // never clears, because "this pause came from the hidden stretch" is
+          // the only attribution that survives the return to the tab.
+          hiddenAt: document.hidden ? Date.now() : 0,
           inputAgeMs: KO.lastInputAt ? Date.now() - KO.lastInputAt : null,
           input: KO.lastInputWhat || null,
           ours: KO.twPaused.has(t),
@@ -784,6 +788,7 @@ function nativeStallWatch(v, now, sample) {
     return nativeStallIdle();
   }
   let adParkStale = false;
+  let hidPause = false;
   if (v.paused) {
     const p = KO.natPause && KO.natPause.el === v ? KO.natPause : null;
     if (!p) {
@@ -802,7 +807,12 @@ function nativeStallWatch(v, now, sample) {
       // not be undone by a watchdog that thinks it knows better).
       return nativeStallRefuse('user-paused', { ct, rs, buf: runway, inputAgeMs: p.inputAgeMs, input: p.input || null });
     }
-    if (p.hidden) return nativeStallRefuse('hidden', { ct, rs, buf: runway });
+    // A PAUSE STAMPED IN A HIDDEN TAB IS NOT INTENT, AND IT IS NOT DURABLE
+    // EITHER. Chrome pauses hidden media and Twitch's own player pauses with
+    // it, so the stamp carries `hiddenAt`; while the tab IS hidden this is a
+    // refusal, and once it is back the pause is due for recovery (below).
+    if (p.hidden && document.hidden) return nativeStallRefuse('hidden', { ct, rs, buf: runway });
+    hidPause = !!p.hiddenAt && !document.hidden && now - p.at >= NATIVE_STALL_MS;
     if (p.ours) return nativeStallIdle(); // we parked it: by design
     // A PAUSE THE AD PATH MADE GETS ITS BUDGET, THEN THE PICTURE IS THE USER'S.
     // The ad path declares its own park (`data-ko-adpark`, stamped above), and
@@ -821,8 +831,16 @@ function nativeStallWatch(v, now, sample) {
     }
     if (p.adpark) {
       adParkStale = true; // the hold is stale, and a stale hold is a freeze
-    } else if (!starved) {
-      return nativeStallIdle(); // a healthy parked player stays parked
+    } else if (!starved && !hidPause) {
+      // A HEALTHY PARKED PLAYER STAYS PARKED **WHEN SOMEONE PARKED IT**.
+      // Measured in the owner's ring 2026-11-26 (0.8.116, twitch.tv/buzzyi_):
+      // alt-tabbed during a playlist pod, the page paused its own element, the
+      // pod ended while the tab was hidden, and the element sat at
+      // `ct 12.65, buf 17.2, paused:true` for 5m11 with ZERO `native-stall`
+      // rows - because 17.2 s of runway read as "he parked it". Nobody did.
+      // A pause stamped while hidden, with the tab back and the pause past
+      // NATIVE_STALL_MS, is the freeze this line used to hide.
+      return nativeStallIdle();
     }
     if (now - p.at < NATIVE_STALL_MS) return; // give the page's own reload a beat
   } else if (!(rs < 3 || sample.frozen)) {
@@ -839,7 +857,9 @@ function nativeStallWatch(v, now, sample) {
   if (now - nat.since < NATIVE_STALL_MS) return;
   if (!nat.logged) {
     nat.logged = true;
-    nat.why = v.paused ? (adParkStale ? 'ad-park-expired' : 'page-pause-starved') : rs < 3 ? 'no-future-data' : 'clock-frozen';
+    nat.why = v.paused
+      ? (adParkStale ? 'ad-park-expired' : (hidPause ? 'hidden-pause' : 'page-pause-starved'))
+      : rs < 3 ? 'no-future-data' : 'clock-frozen';
     // NAMES ITSELF. "Was it the page, us, or him" is answered here: `inputAgeMs`
     // is the distance from the last real input to the pause, `ours` is whether
     // this extension had parked the element, and `owner` is who the extension
@@ -991,7 +1011,7 @@ const NOT_CHANNEL = new Set([
 
 // Build marker for the diag stream — lets us tell which code a tab runs
 // (content scripts of pre-reload tabs survive extension reloads).
-const KO_VER = '0.8.116';
+const KO_VER = '0.8.117';
 // How long a lost picture may last before the native player is allowed to
 // reclaim the screen (owner 2026-11-11: an ad and the player fighting).
 const OWNER_GRACE_MS = 6000;

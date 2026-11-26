@@ -2372,6 +2372,32 @@ writes `ad-layout {act:'restore'}` and a release restores the full-size picture;
 held (`ad-ui-hold {act:'ad-after-reveal'}`); and a replay error with no duration re-loads the replay instead
 of minting (`dvr-ended-rescue {dur:0, wentLive:false}`).
 
+## Read the box before the one heavy step (measured 2026-11-26, seat freeze order)
+
+The owner reported the PC freezing hard twice in one hour. Measured by the seat in that window: 12
+P-cores at 77% mean, **all 8 E-cores pinned at 100%**, total 86%, watcher tick gaps of 35 s with verdict
+`not_scheduled`, and `I:` at 0.2% free. This pane's own tree measured **16.7% of one core**, dropping to
+**11.9%** once its one heavy job (the gate) was cancelled, so the gate was not the burn - but a suite
+started on a box in that state buys wall time and steals the machine back from the owner, and that is
+the report.
+
+- **`node _tools/ko-load-check.mjs --gate` is the pre-flight, and it must be the left side of `&&`:**
+  `node _tools/ko-load-check.mjs --gate && node _tools/ko-verify.mjs`. Inside `$(...)` it cannot gate
+  anything - measured 2026-11-26, the reading printed `BUSY (pinned=8, busiest=100)` and the `&&` still
+  launched the gate because the substitution's status never reached the shell. Run in one 1.5 s window with `os.cpus()`
+  deltas (no child process, no tree walk, no disk I/O). It prints `{verdict, total, busiest, pinned,
+  perCore}` and exits **2 (BUSY)** when the whole box is above 70% or any single core is above 90%.
+  A BUSY reading means the heavy step is **queued, not started**; re-read after the load leaves, and
+  never "retry in a loop" - the box is the reason, and polling it is another cost.
+- The same run is the READY receipt: measured twice minutes apart in that freeze, `56.5% total with 8
+  cores pinned` (BUSY) and `49% total, busiest 70.8, pinned 0` (READY). Two samples of the same
+  instrument, opposite verdicts, which is what makes the check discriminating instead of decorative.
+- **The gate is this project's one heavy step** (`node _tools/ko-verify.mjs`, ~330 s serial on the SMR
+  volume). One at a time, with the READY reading quoted beside its result, and no second suite, build,
+  replica scenario or browser guest started while it runs.
+- A lane that cannot measure the box (a worktree without the tool) inherits the parent's reading and
+  does not re-derive it: the census is the seat's, the cost is shared.
+
 ## Performance budget - measured 2026-11-24 post-reboot, before any perf work
 
 Read from `G:/watcher-state/status/events.jsonl` (last 6 h; the primary `perf-history-6h.md` did not

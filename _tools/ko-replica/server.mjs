@@ -29,7 +29,7 @@ import https from 'node:https';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { ensureCerts } from './certs.mjs';
-import { ensureMedia } from './media.mjs';
+import { ensureMedia, RUNGS, PROGRAM_SECONDS } from './media.mjs';
 
 const argOf = (name, dflt) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -84,8 +84,8 @@ function pageLoaded() {
 // ---- playlists ------------------------------------------------------------
 const pad = (n) => String(n).padStart(3, '0');
 const SEG = Number(process.env.KO_REPLICA_SEG || 2);
-const CONTENT_SEGS = Math.round(120 / SEG);
-const AD_SEGS = Math.round(30 / SEG);
+const CONTENT_SEGS = Math.round(PROGRAM_SECONDS.content / SEG);
+const AD_SEGS = Math.round(PROGRAM_SECONDS.ad / SEG);
 const EDGE = 'https://video-edge-a.playlist.ttvnw.net';
 
 function tokenFor(playerType, platform) {
@@ -108,13 +108,16 @@ function isCleanToken(playerType, platform) {
   return pt === 'autoplay' || (pt === 'mobile' && pf === 'android');
 }
 
-// The fixture's stream "went live" a few segments before the page loads. That
-// is what makes the clean frame's FIRST position healthy: hls.js joins an
-// EVENT playlist at its oldest segment and buffers the whole window (needs
-// rs>=3 AND buffered>=3 before the extension may cover an ad), instead of
-// parking exactly liveSyncDuration-epsilon behind a sliding edge, which can
-// never satisfy a 3 s gate.
-const PREROLL_SEGS = 4;
+// A CHANNEL THAT HAS BEEN LIVE FOR A WHILE, because that is the page the owner
+// loads. This used to be 4, which made the first window an EVENT playlist so
+// hls.js joined at its OLDEST segment and buffered the whole window -- a state
+// real Twitch never has at a page load, kept because it was the only way the
+// clean frame cleared the extension's 3 s health gate. That trade is the
+// defect: a fixture arranged to pass a gate hides a product that cannot pass it
+// (his own ring: reveal 11.0 s after the ad was detected, `q:"360p"`,
+// `stall-stop hist:[4/3 4/1.01 4/0.99]`). The window now slides from the first
+// request and the frame lives where Twitch's live player lives.
+const PREROLL_SEGS = 40;
 function contentIndex(t) {
   return PREROLL_SEGS + Math.floor(Math.max(0, t) / (SEG * 1000));
 }
@@ -124,11 +127,11 @@ function contentIndex(t) {
 // MAP + discontinuity before EVERY segment made hls.js anchor the live window
 // at its first fragment (pos 0.1, 1.9 s of runway, never healthy), so the seam
 // is declared only where a different program actually starts: the ad block.
-function segLine(kind, k, query, dur) {
+function segLine(kind, k, query, dur, v = 720) {
   const idx = k % (kind === 'content' ? CONTENT_SEGS : AD_SEGS);
   const tag = kind === 'content' ? ',live' : ',';
   const d = Number.isFinite(dur) ? Number(dur).toFixed(3) : `${SEG}.000`;
-  return `#EXTINF:${d}${tag}\n${EDGE}/v1/segment/${kind}_${pad(idx)}.m4s${query || ''}`;
+  return `#EXTINF:${d}${tag}\n${EDGE}/v1/segment/${kind}_${v}_${pad(idx)}.m4s${query || ''}`;
 }
 
 // A live ad window slides like the content one: a static all-ad playlist never
@@ -140,29 +143,29 @@ const AD_WINDOW_BACK = 6;
 function adBase(t, ev) {
   return Math.max(0, Math.floor(Math.max(0, t - ev.at) / (SEG * 1000)));
 }
-function adLines(pod, base) {
-  const last = Math.min(base + 1, AD_SEGS - 1);
+function adLines(pod, base, v = 720) {
+  const last = Math.min(base, AD_SEGS - 1);
   const from = Math.max(0, last - AD_WINDOW_BACK);
   const count = last - from + 1;
   const out = [
     '#EXT-X-MEDIA-SEQUENCE:' + from,
     '#EXT-X-DATERANGE:ID="twitch-stitched-ad-' + pod + '",CLASS="twitch-stitched-ad",START-DATE="2026-11-25T00:00:00.000Z",DURATION=' + (count * SEG) + '.000,X-TV-TWITCH-AD-URL="https://ads.example/creative/' + pod + '"',
-    '#EXT-X-TWITCH-PREFETCH:https://video-edge-a.playlist.ttvnw.net/v1/segment/ad_000.m4s',
+    '#EXT-X-TWITCH-PREFETCH:https://video-edge-a.playlist.ttvnw.net/v1/segment/ad_' + v + '_000.m4s',
     '#EXT-X-DISCONTINUITY',
-    '#EXT-X-MAP:URI="/v1/segment/ad_init.mp4"',
+    '#EXT-X-MAP:URI="/v1/segment/ad_' + v + '_init.mp4"',
   ];
   // The URI must identify the MEDIA, not the window slot: `&k=` made the same
   // file a new URL on every window step, so the player appended the ad block
   // twelve times over 4 s (measured 2026-11-25: `ct 1.43 -> 24.41` in two
   // seconds, ad blue then content while the pod was still live).
-  for (let k = from; k <= last; k++) out.push(segLine('ad', k, `?pod=${pod}`));
+  for (let k = from; k <= last; k++) out.push(segLine('ad', k, `?pod=${pod}`, undefined, v));
   return { lines: out, from };
 }
 
 // A playlist is a pure function of (clean, token type, wall clock, pod). No
 // per-client state: the native worker and the clean iframe fetch the same URL
 // and each one appends what it has not seen.
-function mediaPlaylist({ clean, t, pod }) {
+function mediaPlaylist({ clean, t, pod, v = 720 }) {
   const ev = activeEvent(t);
   const adOn = !clean && !!ev;
   const lines = ['#EXTM3U', '#EXT-X-VERSION:7', `#EXT-X-TARGETDURATION:${SEG}`, '#EXT-X-INDEPENDENT-SEGMENTS'];
@@ -170,7 +173,7 @@ function mediaPlaylist({ clean, t, pod }) {
 
   if (adOn && ev.kind === 'preroll') {
     // A cold preroll is an ALL-AD playlist: no content segment exists yet.
-    lines.push(...adLines(pod, adBase(t, ev)).lines);
+    lines.push(...adLines(pod, adBase(t, ev), v).lines);
     return lines.join('\n') + '\n';
   }
 
@@ -182,41 +185,44 @@ function mediaPlaylist({ clean, t, pod }) {
   // hls.js dedupes fragments by URL, which left the frame with a fragment list
   // it could not append ahead (measured: playhead drained to rs=2 while the
   // playlist kept refreshing).
-  // One segment of the window is published AHEAD of the wall clock: a live
-  // server's playlist ends past the presentation point, which is what keeps a
-  // player's forward buffer above the 3 s the extension measures. Without it
-  // the buffer sits at exactly liveSyncDuration - epsilon (measured max 2.95 s)
-  // and the clean frame can never be judged healthy.
+  // NOTHING IS PUBLISHED AHEAD OF THE WALL CLOCK, and this is the correction
+  // that makes the replica able to fail. It used to list `i + 2` with the
+  // newest segment at 0.8x EXTINF, justified by "a real edge lists the segment
+  // still being produced". That is not how a live origin behaves (a fragment
+  // appears in the playlist when it is complete, with its full duration) and it
+  // was there for one reason, in its own words: so the forward buffer cleared
+  // the extension's 3 s gate. A fixture tuned to the gate cannot report the
+  // gate's cost, and the cost is the owner's report: reveal 11.0 s after the ad
+  // was detected, `q:"360p"`, `stall-stop hist:[4/3 4/1.01 4/0.99]`.
+  // `KO_REPLICA_EDGE_AHEAD=N` re-adds the cheat as an explicitly labelled knob
+  // for an A/B; measured runs keep it at 0.
+  const ahead = Number(process.env.KO_REPLICA_EDGE_AHEAD || 0) || 0;
   const from = Math.max(0, i - 12);
   // A window that still starts at the first segment is an EVENT window (the
   // stream just began) and hls.js starts at its oldest fragment; once it slides
   // it is an ordinary live window.
   if (from === 0) lines.push('#EXT-X-PLAYLIST-TYPE:EVENT');
   lines.push(`#EXT-X-MEDIA-SEQUENCE:${from}`);
-  lines.push('#EXT-X-MAP:URI="/v1/segment/content_init.mp4"');
-  // The newest listed segment is the one still being produced. A live origin
-  // declares it with the duration published SO FAR while the file it serves
-  // already holds the whole fragment, so a player's declared edge sits a
-  // fraction of a segment behind the media it can actually append. Without
-  // that, `buffered` reads exactly liveSyncDuration - epsilon (measured
-  // 2.86-2.95 s) and never clears the extension's 3 s gate.
-  const inflight = SEG * 0.8;
-  for (let k = from; k <= i + 2; k++) lines.push(segLine('content', k, null, k === i + 2 ? inflight : undefined));
+  lines.push('#EXT-X-MAP:URI="/v1/segment/content_' + v + '_init.mp4"');
+  for (let k = from; k <= i + ahead; k++) lines.push(segLine('content', k, null, undefined, v));
   if (adOn) {
-    lines.push(...adLines(pod, adBase(t, ev)).lines);
+    lines.push(...adLines(pod, adBase(t, ev), v).lines);
   }
   return lines.join('\n') + '\n';
 }
 
+// A LADDER, because one variant makes `q` a constant and every quality defect
+// invisible: the owner's ring reveals the clean player at `q:"360p"` twice on a
+// 1280x720 page, and a single-rung master could not represent that pick at all.
 function masterFor(playerType, platform) {
   const clean = isCleanToken(playerType, platform) ? 1 : 0;
-  const v = `${EDGE}/v1/playlist/live.m3u8?clean=${clean}&pt=${encodeURIComponent(playerType || '')}`;
-  return [
-    '#EXTM3U',
-    '#EXT-X-VERSION:7',
-    '#EXT-X-STREAM-INF:BANDWIDTH=1800000,RESOLUTION=1280x720,CODECS="avc1.4d401f"',
-    v,
-  ].join('\n') + '\n';
+  const pt = encodeURIComponent(playerType || '');
+  const out = ['#EXTM3U', '#EXT-X-VERSION:7'];
+  for (const r of RUNGS) {
+    out.push(`#EXT-X-STREAM-INF:BANDWIDTH=${r.bw},RESOLUTION=${r.w}x${r.h},CODECS="avc1.4d401f"`);
+    out.push(`${EDGE}/v1/playlist/live.m3u8?clean=${clean}&pt=${pt}&v=${r.v}`);
+  }
+  return out.join('\n') + '\n';
 }
 
 // ---- page assets ----------------------------------------------------------
@@ -241,6 +247,10 @@ function pageStatus() {
     nativeMuted: typeof ev.nativeMuted === 'boolean' ? ev.nativeMuted : null,
     durationMs: scenario.durationMs || 45000,
     pods: state.pod,
+    // Evidence that the adverse arm fired: a run that declares `stall` and
+    // reports 0 here measured a different stream than the one it described.
+    stalls: state.stalls || 0,
+    rungs: RUNGS.map((r) => r.v),
     // The last requests are the only way to tell "the player did not ask" from
     // "the server answered badly" when a clean frame starves.
     recent: state.requests.slice(-40).map((r) => `${Math.round(r.t - state.t0)}:${r.path}`),
@@ -314,16 +324,38 @@ const server = https.createServer({ key: readFileSync(key), cert: readFileSync(c
   if (host.startsWith('video-edge')) {
     if (path === '/v1/playlist/live.m3u8') {
       const clean = url.searchParams.get('clean') === '1';
-      const key = `${CHANNEL}|${clean ? 'clean' : 'live'}|${url.searchParams.get('pt') || ''}`;
-      return send(res, 200, 'application/vnd.apple.mpegurl', mediaPlaylist({ clean, t: now(), pod: state.pod }));
+      const v = Number(url.searchParams.get('v') || 720);
+      return send(res, 200, 'application/vnd.apple.mpegurl', mediaPlaylist({ clean, t: now(), pod: state.pod, v }));
     }
     const seg = /^\/v1\/segment\/([\w.-]+)$/.exec(path);
     if (seg) {
       const file = join(MEDIA_DIR, seg[1]);
       if (!existsSync(file)) return send(res, 404, 'text/plain', 'no segment');
-      cors(res);
-      res.writeHead(200, { 'content-type': 'video/mp4', 'content-length': readFileSync(file).length });
-      return res.end(readFileSync(file));
+      const body = readFileSync(file);
+      const serve = () => {
+        cors(res);
+        res.writeHead(200, { 'content-type': 'video/mp4', 'content-length': body.length });
+        res.end(body);
+      };
+      // AN EDGE THAT STOPS ANSWERING, because a perfect local file never
+      // starves: the clean frame lives at ~1 s of forward buffer on a real CDN
+      // edge and the extension stall-stops it with `hist:[4/3 4/1.01 4/0.99]`.
+      // A fixture that always answers in 2 ms cannot represent that, so a
+      // scenario declares `stall:{atMs, ms, on}` and the edge withholds content
+      // segments for that window. The delay is bounded by the window itself,
+      // never by a fixed sleep.
+      const st = scenario.stall;
+      if (st && st.ms > 0) {
+        const want = st.on || 'content';
+        const isContent = /^content_/.test(seg[1]);
+        const t = now();
+        if ((want === 'all' || isContent) && t >= st.atMs && t < st.atMs + st.ms) {
+          const wait = Math.max(0, st.atMs + st.ms - t);
+          state.stalls = (state.stalls || 0) + 1;
+          return setTimeout(serve, wait);
+        }
+      }
+      return serve();
     }
     return send(res, 404, 'text/plain', 'no route');
   }

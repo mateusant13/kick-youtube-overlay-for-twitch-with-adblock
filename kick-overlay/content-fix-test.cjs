@@ -3455,24 +3455,26 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
       assert.strictEqual(mv.playCount, 0, 'N2c RED: a hidden tab still resumes nothing (the guard is the row)');
       assert.strictEqual(evOf(calls, 'native-stall-refused').length, 0, 'N2c RED: a hidden tab decides silently again (pre-fix)');
     }
-    // ...and the stamp written HIDDEN is the other entry: the tab is visible now,
-    // so the sampler runs, and the watchdog must still refuse that pause.
+    // ...and the SAME stamp with the tab BACK is no longer a refusal: the flag is
+    // cleared on the visibility edge (0.8.104), and a pause that outlives the
+    // return is exactly what parked his picture for 71 s (2026-11-19). The
+    // pre-fix line refused it while the tab was visible, which is the RED.
     reset();
     v = mkVideo();
     parkStarvedMeasured(v);
     KO.natPause.hidden = true;
     api.dispSample();
-    assert.strictEqual(v.playCount, 0, 'a pause stamped while hidden was resumed on the first visible tick');
-    cRef = refuses();
-    assert.strictEqual(cRef.length, 1, `the hidden-stamp refusal is not in the log: ${JSON.stringify(cRef)}`);
-    assert.strictEqual(cRef[0].why, 'hidden', `the hidden-stamp refusal named the wrong reason: ${JSON.stringify(cRef[0])}`);
+    assert.strictEqual(v.playCount, 1, 'a pause stamped while hidden was left parked after the tab came back');
+    assert.strictEqual(rows('native-stall').length, 1, `the recovered hidden-stamp pause was not named: ${JSON.stringify(rows('native-stall'))}`);
     {
-      const m = red("    if (p.hidden) return nativeStallRefuse('hidden', { ct, rs, buf: runway });", '    if (false) return nativeStallRefuse(\'hidden\', { ct, rs, buf: runway }); // RED');
+      const from = "    if (p.hidden && document.hidden) return nativeStallRefuse('hidden', { ct, rs, buf: runway });";
+      assert.ok(src.includes(from), 'N2c RED: the hidden-tab condition is gone from the source');
+      const m = red(from, "    if (p.hidden) return nativeStallRefuse('hidden', { ct, rs, buf: runway }); // RED: pre-fix");
       const r = prep(m, (mv, K) => {
         parkStarvedMeasured(mv, K);
         K.natPause.hidden = true;
       });
-      assert.strictEqual(r.v.playCount, 1, 'N2c RED: without the hidden check the throttle pause is resumed (pre-fix)');
+      assert.strictEqual(r.v.playCount, 0, 'N2c RED: the pre-fix line refuses the pause the tab brought back (his 71 s)');
     }
 
     // N2d: a layer owns the picture - the layer's own watchdog owns the native.
@@ -3695,7 +3697,54 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
       doc.documentElement.setAttribute('data-ko-adpark', '0');
       KO.natPause = null;
     }
+    // (d) A PAUSE STAMPED WHILE THE TAB WAS HIDDEN IS NOT HIS, AND IT IS NOT
+    //     DURABLE EITHER. Measured in the owner's ring 2026-11-26 (0.8.116,
+    //     twitch.tv/buzzyi_): alt-tabbed, the page paused its own element inside
+    //     a playlist pod, the pod ended while the tab was hidden, and the element
+    //     sat at `ct 12.65, buf 17.2, paused:true` for 5m11 with ZERO
+    //     `native-stall` rows - 17.2 s of runway read as "he parked it". Nobody
+    //     did: the stamp was written in a hidden tab. The pre-fix early return
+    //     (`!starved -> idle`) is the RED below.
+    b0 = swCalls.length;
+    doc.hidden = false;
+    v3 = mkVideo3({ length: 1, start: () => 11, end: () => 29.85 }); // buf 17.2, exactly his row
+    v3.currentTime = 12.65;
+    parkSeed(v3, Date.now() - 9000, false);
+    KO.natPause.hiddenAt = Date.now() - 9000; // stamped in the hidden stretch
+    KO.natPause.hidden = false; // the visibility edge cleared the flag, not the record
+    api.dispSample();
+    const dStall = rowsN3('native-stall');
+    assert.strictEqual(dStall.length, 1, `the pause from the hidden stretch was never named: ${JSON.stringify(dStall)}`);
+    assert.strictEqual(dStall[0].why, 'hidden-pause', `the row blamed the wrong cause: ${JSON.stringify(dStall[0])}`);
+    assert.strictEqual(v3.playCount, 1, 'the picture stayed parked for the rest of the page load (his 5m11)');
+    assert.strictEqual(v3.loadCount, 0, 'the element was reloaded instead of resumed (the preroll risk)');
+    // ...and the SAME pause stamped while the tab was VISIBLE is his, and stays
+    // parked: the origin is the discriminator, not the runway.
+    b0 = swCalls.length;
+    v3 = mkVideo3({ length: 1, start: () => 11, end: () => 29.85 });
+    v3.currentTime = 12.65;
+    parkSeed(v3, Date.now() - 9000, false);
+    api.dispSample();
+    assert.strictEqual(v3.playCount, 0, 'a pause HE made with media in hand was resumed (the watchdog undid his park)');
+    assert.strictEqual(rowsN3('native-stall').length, 0, `his own park was named a stall: ${JSON.stringify(rowsN3('native-stall'))}`);
+    {
+      const gate = '    } else if (!starved && !hidPause) {';
+      assert.ok(src.includes(gate), 'N3(d) RED: the parked-player gate is gone from the source');
+      const m = mk(src.replace(gate, '    } else if (!starved) { // RED: pre-fix, any roomy park stays parked'));
+      const mv = mkVideo3({ length: 1, start: () => 11, end: () => 29.85 });
+      mv.currentTime = 12.65;
+      parkSeed(mv, Date.now() - 9000, false, m.KO);
+      m.KO.natPause.hiddenAt = Date.now() - 9000;
+      fakeVideos.length = 0;
+      fakeVideos.push(mv);
+      const bb = swCalls.length;
+      m.dispSample();
+      assert.strictEqual(mv.playCount, 0, 'N3(d) RED: without the hidden-origin gate the parked element is still left alone (his 5m11)');
+      assert.strictEqual(swCalls.slice(bb).filter((x) => x && x.__koDiag && x.__koDiag.ev === 'native-stall').length, 0,
+        'N3(d) RED: the pre-fix watchdog never named the parked element');
+    }
     console.log('N3 ad park: attributed at the pause, budgeted, then cured - OK');
+    console.log('N3d hidden pause: a pause from the hidden stretch is cured, his visible pause is not - OK');
   }
 
   // ---- O1: the DEATH PATH publishes the loss of the picture ----------------
@@ -4106,6 +4155,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     'A3a arrow hold', 'A3b arrow burst', 'A3c arrow handoff', 'A3d arrow refusals', 'A3e arrow mirror',
     'A3f arrow coalesced report', 'A3g arrow delivery',
     'S1 drag-deep', 'S2 drag-edge', 'S3 dvr-ended', 'S4 chip-live', 'S5 dvr-ended-no-duration', 'U2 storage partial-enable',
+    'N3 ad park', 'N3d hidden pause',
   ];
   const printed = armLog.map((l) => String(l).trim());
   const missing = ARMS.filter((a) => !printed.some((l) => l.startsWith(a)));

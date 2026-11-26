@@ -244,21 +244,14 @@
   // 3292 ms, hand-off at 15294 ms). The catch-up below still moves the picture
   // to the edge on the next tick, so a late reveal corrects itself.
   const CLEAN_LAT_REVEAL_MAX = 20;
-  // How much forward buffer the clean player must hold before it may cover the
-  // native surface. The bridge syncs at `liveSyncDuration: 3`, so a 4 s floor is
-  // UNREACHABLE by construction: measured in the owner's own ko.adlog on
-  // 2026-11-08, every clean tick sat at buffered 3.38-3.65 while genuinely
-  // playing (rs=4), i.e. permanently "not healthy" — which fired the stall
-  // guard, rewound the picture 2 s per nudge (`overlay-nudge` x14) and then tore
-  // the overlay down (`overlay-stall-stop`), handing the native back several
-  // seconds behind. The floor is the sync target plus the one second hls.js
-  // keeps in front of it, and it is the number the two surfaces are aligned to.
+  // HEALTH_BUFFER_SEC is a CATCH-UP LANDING RUNWAY (see catchUpClean and
+  // nudgeNativeToBuffer), not the reveal gate. It used to be the reveal floor
+  // too: replica 2026-11-25 (KO_REPLICA_NO_INFLIGHT=1) measured an rs=4 player
+  // decoding at 1x with hold 2.85/2.02/1.36/0.96 s against a 3 s floor, so no
+  // reveal fired for the whole pod and the ad painted end to end. hls.js
+  // deliberately sits liveSyncDuration behind the edge, so the forward buffer
+  // OSCILLATES around that target; the gate measures progress instead.
   const HEALTH_BUFFER_SEC = 3;
-  // An ALREADY REVEALED player is judged more loosely: a dip to 1.5 s while it
-  // keeps decoding is normal jitter on a refresh, and tearing down a running
-  // picture for it is what produced both the rewind and the "several seconds
-  // behind" hand-back. Below this the stall guard still restores the native.
-  const REVEALED_MIN_BUFFER_SEC = 1.5;
   // A cold cover holds the picture while the clean source is still minting, so
   // it needs a hard deadline INSIDE the 12 s contract, not equal to it. Equal
   // was unpassable: the timer fired at 12000 ms and the reachability arm
@@ -344,6 +337,11 @@
     // hand-back: a stale `holdAt` left by an earlier pod must not make every
     // later standby/ad-only/clean-stall teardown look like a hand-back.
     nativeHandoffLogged: false,
+    // The pod END consumed the take-over stamp and owns the hand-back. A DOM
+    // hold raised before that end can outlive it: its expiry must not resume
+    // the same element a second time from a now-consumed stamp. Cleared at the
+    // next take-over and when a NEW hold takes the element.
+    podHandoffAt: 0,
     holdBehind: 0, // native distance behind the live edge at take-over (DVR offset)
     userDvr: false, // a take-over behind the edge by a pod-sized margin: keep the offset
     hiddenAt: 0, // wall clock when the tab went hidden
@@ -427,7 +425,8 @@
   // or when the tab becomes visible again. It never starts anything directly.
   let standbyRequestTimer = 0;
   let lastStandbyRequestAt = 0;
-  const standbyLife = { requestAt: 0, urlAt: 0, frameAt: 0, frameLogged: false, firstStLogged: false, playLogged: false };
+  let standbyRefusedSig = ''; // one refusal row per reason, cleared by a real request
+  const standbyLife = { requestAt: 0, urlAt: 0, frameAt: 0, frameLogged: false, firstStLogged: false, firstDecodedLogged: false, playLogged: false };
   function pageChannel() {
     try {
       return (location.pathname.split('/').filter(Boolean)[0] || '').toLowerCase();
@@ -445,22 +444,44 @@
     }
   }
   function requestStandby(delay = 1200, force = false, why = 'unspecified') {
+    // A REFUSAL IS A ROW, NEVER SILENCE. Both guards below drop a request, and
+    // both are decisions this ring has to be able to read: the cold boot asks
+    // four times (200/1000/2500/5000 ms) and `worker-ready` asks again, so a
+    // dropped ask is indistinguishable from an ask that never happened. Keyed
+    // by reason (`standbyRefusedSig`, cleared when a request is really made) so
+    // this is one line per transition, never one per call - the KO-20261114-02
+    // class. Written INLINE at each site instead of through a helper: the
+    // census reads a helper call as an exit of its own and would flag both.
     // A standby that keeps failing (offline channel, bad token) must not turn
     // into a mint/error loop. Normal requests still re-post immediately and
     // do not arm the cooldown, so recovery after an ad is not delayed.
     if (force) {
       const now = Date.now();
-      if (now - lastStandbyRequestAt < 4000) return;
+      if (now - lastStandbyRequestAt < 4000) {
+        if (standbyRefusedSig !== 'throttle') {
+          standbyRefusedSig = 'throttle';
+          adLog('standby-refused', { why: 'throttle', ask: String(why || 'unspecified'), forMs: delay, sinceMs: now - lastStandbyRequestAt, cooldownMs: 4000 });
+        }
+        return;
+      }
       lastStandbyRequestAt = now;
     }
     try { clearTimeout(standbyRequestTimer); } catch { /* ignore */ }
     standbyRequestTimer = setTimeout(() => {
       standbyRequestTimer = 0;
-      if (overlay.frame || overlay.held || overlay.adActive) return;
+      if (overlay.frame || overlay.held || overlay.adActive) {
+        if (standbyRefusedSig !== 'busy') {
+          standbyRefusedSig = 'busy';
+          adLog('standby-refused', { why: 'busy', ask: String(why || 'unspecified'), forMs: delay, frame: !!overlay.frame, held: !!overlay.held, adActive: !!overlay.adActive });
+        }
+        return;
+      }
+      standbyRefusedSig = '';
       standbyLife.requestAt = Date.now();
       standbyLife.urlAt = 0;
       standbyLife.frameAt = 0;
       standbyLife.frameLogged = false;
+      standbyLife.firstDecodedLogged = false;
       standbyLife.firstStLogged = false;
       standbyLife.playLogged = false;
       adLog('standby-request', { why: String(why || 'unspecified'), delay: Number(delay) || 0 });
@@ -774,11 +795,36 @@
     return cleanLatTarget();
   }
   stats.cleanHandoffLat = cleanHandoffLat;
+  // Health is PROGRESS, not a forward-buffer snapshot. Two consecutive
+  // heartbeats are the instrument: a decoding live frame advances ~1 s per
+  // second; a stalled one repeats its position (replica: pos 15.95 twice with
+  // rs=2 and 0.05 s in hand). A gap outside 0.3-4 s cannot measure progress
+  // (back-to-back harness samples, or a throttled tab's sparse heartbeat), so
+  // it is UNKNOWN, never a failure. A seek is not progress either: hls.js's
+  // own live sync closes latency smoothly, and the next sample after the seek
+  // is the one the gate judges.
+  function cleanFrameAdvancing(st) {
+    const prev = overlay.prevSt;
+    const at = overlay.prevStAt;
+    if (!prev || !at || typeof prev.pos !== 'number' || typeof st.pos !== 'number') return null;
+    const gap = Date.now() - at;
+    if (gap < 300 || gap > 4000) return null;
+    const moved = Number(st.pos) - Number(prev.pos);
+    if (!(moved >= 0)) return false; // a rewind is never evidence of health
+    const expected = gap / 1000;
+    return moved >= Math.min(0.25, expected * 0.5) && moved <= expected * 2 + 0.2;
+  }
+  // Some media ahead of the playhead must exist, but its LENGTH is not a
+  // health threshold: `buffered` is the last segment boundary, not the amount
+  // the decoder needs for the next frame (readyState >= 3 already says that).
+  function cleanFrameHasForward(st) {
+    return st.buffered === undefined || (Number.isFinite(Number(st.buffered)) && Number(st.buffered) > 0);
+  }
 
   // A hold that ran out of time still has to leave the user on the picture
   // that was meant to be on screen. A mounted clean frame that is decoding is
-  // that picture; NO gate is loosened here to get it (same rs/lat/buffer/fresh
-  // position requirements as the heartbeat, which also must have marked it
+  // that picture; NO gate is loosened here to get it (same rs/lat/forward-data/
+  // progress requirements as the heartbeat, which also must have marked it
   // playing). Replica 2026-11-25: a hold released at ct 0.4 with a healthy
   // clean frame at pos 22.8, and the native resumed at the parked ad position.
   function cleanFrameCanCover() {
@@ -787,9 +833,9 @@
     if (st.paused || (st.state && st.state !== 'Playing')) return false;
     const lat = Number(st.lat);
     const rs = Number(st.rs);
-    const buf = Number(st.buffered);
     if (!(lat >= 0) || lat > CLEAN_LAT_REVEAL_MAX) return false;
-    if (!(rs >= 3) || !(buf >= HEALTH_BUFFER_SEC)) return false;
+    if (!(rs >= 3) || !cleanFrameHasForward(st)) return false;
+    if (cleanFrameAdvancing(st) === false) return false;
     if (overlay.prevSt && overlay.prevStAt && Date.now() - overlay.prevStAt > 2000
       && Number(st.pos) > 0 && typeof overlay.prevSt.pos === 'number'
       && Math.abs(Number(st.pos) - Number(overlay.prevSt.pos)) < 0.05) return false;
@@ -1627,6 +1673,11 @@
   let adUiUserResumeAt = 0;
   let adUserResumeLogged = false;
   let lastUserInputAt = 0;
+  // ONE RULE FOR BOTH GESTURES. A media event is the user's only when a real
+  // input arrived within this window; `play` already used it, and `pause` did
+  // not - which is the defect measured in the owner's ring on 2026-11-26.
+  const USER_GESTURE_MS = 1500;
+  const hasFreshInput = () => !!lastUserInputAt && Date.now() - lastUserInputAt <= USER_GESTURE_MS;
   let userPlayAt = 0;
   let ownPlayAt = 0;
   // A user pause made AFTER this pod took over. Unlike a play, a pause needs
@@ -1635,6 +1686,7 @@
   // for this. Only a fresh user play gives the picture back.
   let userPausedInPod = false;
   let userPauseLogged = false;
+  let userPauseRefusedLogged = false;
   function userResumedHeld() {
     return !!adUiUserResumeAt && Date.now() - adUiUserResumeAt < AD_UI_HOLD_MAX_MS;
   }
@@ -1800,7 +1852,19 @@
       const ct0 = v0 ? +Number(v0.currentTime || 0).toFixed(1) : null;
       // A release is a transition: one row for the episode, with the numbers.
       adLogState('ad-ui-hold', { act: 'release', why: 'hold-expired', heldMs: Math.round(heldMs), ct: ct0, paused: !!(v0 && v0.paused) });
+      // THE POD END OWNS THIS ELEMENT. Its `stopAdOverlay('ad-end')` already
+      // consumed `holdAt`/`holdCt` and handed the picture back (with its own
+      // seek and retries). Measured in the owner's ring 2026-11-25: the pod
+      // hand-back at ms 55784 was followed 284 ms later by a stale hold
+      // expiry that resumed the SAME element at ct 0.5 with `holdAt:0` - the
+      // deficit was gone, so Twitch played the ad program from its start for
+      // 49 s. Fail closed here (the pod's recovery owns the picture), and name
+      // the reason in the ring instead of writing a second hand-back.
       markAdPark(false);
+      if (overlay.podHandoffAt) {
+        adLog('ad-ui-hold', { act: 'skip', why: 'pod-handoff-owns', ct: ct0, handoffAgeMs: Date.now() - overlay.podHandoffAt });
+        return;
+      }
       // Keep a source warming so the REST of this break can still be covered if
       // one becomes ready; the episode itself stays failed (see `adUiHold`).
       requestStandby(1200, false, 'hold-expired');
@@ -1908,6 +1972,7 @@
     adUiReasserts = 0;
     if (v.paused) {
       adUiHeldAt = Date.now();
+      overlay.podHandoffAt = 0;
       // A cold cover (or the tick's previous re-assert) paused this element;
       // the following half must not re-label that pause as the native's.
       if (selfPausedRecently()) overlay.selfPausedAt = adUiHeldAt;
@@ -1916,6 +1981,7 @@
     }
     adUiHeldAt = Date.now();
     markAdPark(true);
+    overlay.podHandoffAt = 0;
     try { v.pause(); } catch { /* ignore */ }
     // The pod's take-over reads `v.paused` to decide whether the USER parked the
     // player, and this pause is ours: stamp it or the hand-back refuses to
@@ -1944,12 +2010,13 @@
       const t = e && e.target;
       if (!t || t.tagName !== 'VIDEO') return;
       if (overlay.selfPausedAt && Date.now() - overlay.selfPausedAt > 250) overlay.selfPausedAt = 0;
-      if (!lastUserInputAt || Date.now() - lastUserInputAt > 1500) return; // machine play
+      if (!hasFreshInput()) return; // machine play
       // Our own resume is not a user takeover, but a gesture AFTER it is.
       if (ownPlayAt && Date.now() - ownPlayAt <= 500 && lastUserInputAt <= ownPlayAt) return;
       userPlayAt = Date.now();
       userPausedInPod = false; // only a fresh user play gives the picture back
       userPauseLogged = false;
+      userPauseRefusedLogged = false;
       const pod = adUiHeldAt ? 'hold' : (overlay.adActive || overlay.revealed ? 'playlist' : null);
       if (!pod || userResumedHeld()) return;
       // A playlist pod opened by `ad-hold` has no DOM ad: `adUiHeldAt` was
@@ -1962,25 +2029,51 @@
       markAdPark(false);
       if (!adUserResumeLogged) {
         adUserResumeLogged = true;
-        adLog('ad-ui-hold', { act: 'user-resume', pod, ct: +Number(t.currentTime || 0).toFixed(1) });
+        // The input that authorized it, so "who resumed this" is one field and
+        // not a join across the ring.
+        adLog('ad-ui-hold', {
+          act: 'user-resume', pod, ct: +Number(t.currentTime || 0).toFixed(1),
+          inputAgeMs: Math.round(Date.now() - lastUserInputAt),
+        });
       }
     }, true);
   } catch { /* ignore */ }
   try {
-    // A USER pause during the pod stays parked at hand-back. No input clock:
-    // the control's own `pause` event is the evidence. Our pauses are stamped
-    // before the write (`selfPausedAt`) and a resume we issued marks
-    // `ownPlayAt`, so neither is attributed to the user.
+    // A USER pause during the pod stays parked at hand-back, and the ONLY
+    // evidence that a pause is the user's is a real input beside it. This used
+    // to accept "any pause that was not ours", and the owner's own ring
+    // (2026-11-26, 0.8.116, buzzyi_) shows what that costs: he was ALT-TABBED
+    // when the page paused its own element inside a playlist pod
+    // (`ad-tick playing while owned=6`), the listener stamped
+    // `ad-ui-hold {act:"user-pause", ct:3.4}`, and `userPausedInPod` then
+    // refused every hand-back resume for the rest of the pod -
+    // `native-handoff {resume:NEVER, podAge:3m12.1}` with the picture parked.
+    // That is literally his report: "a live pausou enquanto eu estava alt tab".
+    // Our pauses are still excluded first (`selfPausedAt` before the write, and
+    // `ownPlayAt` for a resume we issued); a refusal is a row, never silence.
     document.addEventListener('pause', (e) => {
       const t = e && e.target;
       const ours = (overlay.selfPausedAt && Date.now() - overlay.selfPausedAt <= 250)
         || (ownPlayAt && Date.now() - ownPlayAt <= 250);
-      if (t && t.tagName === 'VIDEO' && (overlay.adActive || overlay.revealed) && !ours) {
-        userPausedInPod = true;
-        if (!userPauseLogged) {
-          userPauseLogged = true;
-          adLog('ad-ui-hold', { act: 'user-pause', ct: +Number(t.currentTime || 0).toFixed(1) });
+      if (!t || t.tagName !== 'VIDEO' || !(overlay.adActive || overlay.revealed) || ours) return;
+      if (!hasFreshInput()) {
+        if (!userPauseRefusedLogged) {
+          userPauseRefusedLogged = true;
+          adLog('ad-ui-hold', {
+            act: 'pause-refused', why: 'no-input',
+            ct: +Number(t.currentTime || 0).toFixed(1),
+            sinceInputMs: lastUserInputAt ? Math.round(Date.now() - lastUserInputAt) : null,
+          });
         }
+        return;
+      }
+      userPausedInPod = true;
+      if (!userPauseLogged) {
+        userPauseLogged = true;
+        adLog('ad-ui-hold', {
+          act: 'user-pause', ct: +Number(t.currentTime || 0).toFixed(1),
+          inputAgeMs: Math.round(Date.now() - lastUserInputAt),
+        });
       }
     }, true);
   } catch { /* ignore */ }
@@ -2883,6 +2976,7 @@
       }
       if (podEnd || overlay.holdAt) {
         if (podEnd && handoff) adLogState('native-handoff', handoff);
+        if (podEnd) overlay.podHandoffAt = Date.now();
         overlay.holdAt = 0;
         overlay.holdCt = 0;
         overlay.nativeHandoffLogged = true;
@@ -3649,6 +3743,20 @@
             rs: m.st.rs == null ? null : m.st.rs,
             pos: typeof m.st.pos === 'number' ? +Number(m.st.pos).toFixed(2) : null,
             lat: typeof m.st.lat === 'number' ? +Number(m.st.lat).toFixed(2) : null,
+            q: (m.st.q && m.st.q.name) || null,
+            lv: m.st.lv == null ? null : m.st.lv,
+          });
+        }
+        if (overlay.standby && !standbyLife.firstDecodedLogged && Number(m.st.rs) >= 3) {
+          standbyLife.firstDecodedLogged = true;
+          const decodedBase = standbyLife.frameAt || standbyLife.urlAt || standbyLife.requestAt || 0;
+          adLog('standby-firstdecoded', {
+            ms: decodedBase ? Date.now() - decodedBase : null,
+            rs: m.st.rs,
+            pos: typeof m.st.pos === 'number' ? +Number(m.st.pos).toFixed(2) : null,
+            lat: typeof m.st.lat === 'number' ? +Number(m.st.lat).toFixed(2) : null,
+            q: (m.st.q && m.st.q.name) || null,
+            lv: m.st.lv == null ? null : m.st.lv,
           });
         }
         // The frame reports what its OWN element is doing. If it disagrees with
@@ -3805,14 +3913,22 @@
             && typeof overlay.prevSt.pos === 'number'
             && Math.abs(Number(m.st.pos) - Number(overlay.prevSt.pos)) < 0.05
             && !(document.visibilityState && document.visibilityState !== 'visible');
-          const healthy = !posFrozen && latOk && rsOk && (buffered === undefined || buffered >= HEALTH_BUFFER_SEC);
+          // A decoding frame ADVANCES; its forward-buffer snapshot oscillates
+          // with segment boundaries around hls.js's liveSyncDuration. A 2.85 s
+          // buffer at rs=4 that moves 1x is healthy; a frozen pos at rs=2 with
+          // 0.05 s in hand is not. Progress is unknown on a sparse heartbeat,
+          // so rs and the presence of forward data decide there.
+          const advancing = cleanFrameAdvancing(m.st);
+          const forwardOk = cleanFrameHasForward(m.st);
+          const decoding = advancing !== false && forwardOk;
+          const healthy = !posFrozen && latOk && rsOk && decoding;
           // A player that is ALREADY on screen and still decoding is not torn
           // down for a jitter dip: that cycle (unhealthy -> nudge 2s back ->
           // still thin -> stall-stop -> native returns behind) is the owner's
-          // "voltou vários segundos" (ko.adlog 2026-11-08). Only a real drain
-          // below REVEALED_MIN_BUFFER_SEC or a loss of future data stops it.
-          const alive = overlay.playing && rsOk && !posFrozen
-            && (buffered === undefined || buffered >= REVEALED_MIN_BUFFER_SEC);
+          // "voltou vários segundos" (ko.adlog 2026-11-08). Only a frozen
+          // playhead or a loss of future data stops it now: the buffer length
+          // oscillates with segment boundaries and is not that signal.
+          const alive = overlay.playing && rsOk && !posFrozen && decoding;
           if (!healthy && !alive) {
             // A single healthy heartbeat is not enough. The 2026-10-23 run
             // revealed at a healthy tick and lost the buffer one second later;
@@ -3993,6 +4109,16 @@
         podAgeMs: msg.podAgeMs === undefined ? null : msg.podAgeMs,
         markerAgeMs: msg.markerAgeMs === undefined ? null : msg.markerAgeMs,
       });
+      if (msg.type === 'worker-ready') {
+        // BroadcastChannel does not replay: the page's 200/1000/2500/5000 ms
+        // cold-start requests were posted BEFORE this worker existed (owner
+        // ring: worker-hook 1444 ms, first standby-start 8135 ms). Re-ask from
+        // the pathname at the moment the worker can actually hear us, without
+        // a new timer. requestStandby's guards still refuse a hidden tab, an
+        // owned overlay or a held cold pod.
+        requestStandby(0, false, 'worker-ready');
+        return;
+      }
       if (document.documentElement.getAttribute('data-ko-adblock') === '0') {
         stopAdOverlay('disabled');
         return;
@@ -4084,6 +4210,7 @@
         // position at take-over and the wall clock that owns the edge.
         overlay.holdAt = Date.now();
         overlay.nativeHandoffLogged = false;
+        overlay.podHandoffAt = 0;
         overlay.holdCt = Number(v.currentTime || 0);
         const edgeAt = nativeEdge(v);
         overlay.holdBehind = edgeAt > 0 ? Math.max(0, edgeAt - overlay.holdCt) : 0;
@@ -4466,6 +4593,7 @@
         // survive THIS pod's hand-back, not the page load.
         userPausedInPod = false;
         userPauseLogged = false;
+        userPauseRefusedLogged = false;
         if (!overlay.revealed) adAfterRevealLogged = false;
         adUiOwnerLogged = false;
         if (ad) {
@@ -4693,6 +4821,11 @@
         /* overlay is optional */
       }
     }
+    // The worker is installed by the page's Worker hook; the page's early
+    // cold-start posts are already gone by then. Ask for one fresh request at
+    // the earliest point we can receive it instead of waiting for the first
+    // master fetch (the owner's 8135 ms standby-start).
+    postBypass({ type: 'worker-ready' });
 
     if (bypassChannel) {
       bypassChannel.onmessage = (ev) => {
@@ -5022,6 +5155,10 @@
       prewarm.busy = true;
       prewarmBusyChannel = channel;
       prewarmPromise = (async () => {
+        // Audit the whole cold chain in the page's ring: request -> mint start
+        // -> fast URL -> mint end. Without the worker's own stamps, "the page
+        // never asked" and "the worker took eight seconds" are indistinguishable.
+        postBypass({ type: 'standby-mint', reason: 'start', channel });
         try {
           // prewarmMode starts with autoplay/android: it is the only measured
           // clean-during-SSAI type. Starting a hidden HD web token here is what
@@ -5053,10 +5190,12 @@
             // Keep `busy` set: the full probe is still running. Only the URL
             // is published early so the page can start its hidden player.
             prewarm = { channel, url: fastUrl, at: Date.now(), busy: true };
+            postBypass({ type: 'standby-mint', reason: 'fast-url', channel });
             debugLog('prewarm.fast', { channel });
             postStandbyStart(channel, fastUrl);
           }
           const url = await withTimeout(findCleanHlsUrl(channel, true, true, fastUrl, fastMaster), 8000);
+          postBypass({ type: 'standby-mint', reason: 'end', channel, found: !!url });
           if (url) {
             prewarm = { channel, url, at: Date.now(), busy: false };
             debugLog('prewarm.ok', { channel });

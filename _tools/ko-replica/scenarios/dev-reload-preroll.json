@@ -1,0 +1,13 @@
+{
+  "name": "dev-reload-preroll",
+  "split": "dev",
+  "channel": "replicach",
+  "durationMs": 26000,
+  "tailMs": 0,
+  "reload": { "everyMs": 4000, "forMs": 24000 },
+  "events": [
+    { "at": 0, "kind": "preroll", "ms": 14000, "ui": "wrapper" }
+  ],
+  "samples": [],
+  "expect": []
+}

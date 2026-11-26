@@ -1,0 +1,13 @@
+{
+  "name": "dev-reload-midroll",
+  "split": "dev",
+  "channel": "replicach",
+  "durationMs": 30000,
+  "tailMs": 0,
+  "reload": { "everyMs": 4000, "forMs": 28000 },
+  "events": [
+    { "at": 2000, "kind": "midroll", "ms": 24000, "ui": "countdown" }
+  ],
+  "samples": [],
+  "expect": []
+}

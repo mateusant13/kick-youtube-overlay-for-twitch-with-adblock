@@ -316,6 +316,36 @@ const { sessionId } = await cdp.send('Target.attachToTarget', { targetId: page.t
 await cdp.send('Runtime.enable', {}, sessionId);
 await cdp.send('Page.enable', {}, sessionId);
 
+// CLEAN-FRAME PROBE. The bridge posts one {__koKick:{t:'st',st}} per second;
+// collecting them on the page is the only cross-origin-safe way to see the
+// clean frame's own pos/hold/lat/level without changing the product. The
+// iframe's own rect is read from the parent DOM (same document).
+if (!NO_EXT) {
+  await evaluate(`(() => {
+    const p = (window.__koStProbe = { rows: [], t0: Math.round(performance.now()) });
+    window.addEventListener('message', (ev) => {
+      const m = ev.data && ev.data.__koKick;
+      if (!m || m.t !== 'st' || !m.st) return;
+      const f = document.getElementById('ko-adfix');
+      const r = f ? f.getBoundingClientRect() : null;
+      p.rows.push({
+        ms: Math.round(performance.now()),
+        pos: +Number(m.st.pos || 0).toFixed(2),
+        hold: +Number(m.st.buffered || 0).toFixed(2),
+        lat: +Number(m.st.lat || 0).toFixed(2),
+        latSrc: m.st.latSrc || null,
+        rs: m.st.rs, state: m.st.state,
+        q: (m.st.q && m.st.q.name) || null,
+        lv: m.st.lv == null ? null : m.st.lv,
+        bw: m.st.bw == null ? null : m.st.bw,
+        levels: (m.st.qualities || []).map((x) => x.h || x.w || x.name),
+        rect: r ? [Math.round(r.width), Math.round(r.height)] : null,
+      });
+      if (p.rows.length > 600) p.rows.shift();
+    });
+    return true;
+  })()`);
+}
 async function evaluate(expr) {
   try {
     const r = await cdp.send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true }, sessionId, 15000);
@@ -453,6 +483,67 @@ try { sinceNav = await evaluate('performance.now()'); } catch (e) { evidence.not
 const pageEpoch = Date.now() - (typeof sinceNav === 'number' ? sinceNav : 0);
 evidence.navEpoch = pageEpoch;
 const t0 = pageEpoch;
+// ---- reload arm -----------------------------------------------------------
+// THE OWNER'S OWN QUESTION, MEASURED: "in some ads I can reload and get a few
+// seconds of the livestream, and every reload I get more seconds; other ads I
+// can't". A reload is a new navigation, therefore a new playback token, a new
+// playlist and a new ad decision, so whether it escapes depends on WHERE the ad
+// lives (a decision still in flight vs a segment already stitched into the
+// window). Anecdote cannot separate those two, this can: the same scenario is
+// played once per arm and the report prints content-seconds, ad-seconds and
+// load-seconds per cycle, so "it works sometimes" becomes a number per ad type.
+if (scenario.reload && scenario.reload.everyMs > 0) {
+  const everyMs = Number(scenario.reload.everyMs);
+  const totalMs = Number(scenario.reload.forMs || scenario.durationMs || 40000);
+  const rows = [];
+  let lastReload = Date.now();
+  let reloads = 0;
+  let prevCt = null;
+  const end = Date.now() + totalMs;
+  while (Date.now() < end) {
+    const at = Date.now() - pageEpoch;
+    let probe = null;
+    try { probe = await evaluate(probeExpr); } catch (e) { evidence.notes.push(`reload probe at ${at}: ${String(e)}`); }
+    const px = await centerRgb();
+    const ct = probe && probe.video ? probe.video.ct : null;
+    const playing = !!(probe && probe.video && !probe.video.paused && probe.video.rs >= 3);
+    // A cycle is LIVE only when the clock moved since the previous sample AND
+    // the picture is not the ad program.
+    const adv = ct != null && prevCt != null ? +(ct - prevCt).toFixed(2) : null;
+    prevCt = ct;
+    // Also recorded as a normal sample so `page-loaded` and the pixel rows keep
+    // grading: a reload arm that bypassed them would report an unmeasurable
+    // episode as a pass.
+    evidence.samples.push({ at, wallMs: at, probe, px, adv, reloads });
+    rows.push({
+      at, ct, adv, playing,
+      ad: px ? !!px.blue : null,
+      dark: px ? !!px.dark : null,
+      href: probe ? String(probe.href || '').slice(-40) : null,
+      reloads,
+    });
+    if (Date.now() - lastReload >= everyMs) {
+      try { await cdp.send('Page.reload', { ignoreCache: false }, sessionId, 15000); } catch (e) { evidence.notes.push(`reload: ${String(e)}`); }
+      lastReload = Date.now();
+      reloads++;
+      prevCt = null;
+    }
+    await sleep(Math.max(250, 1000 - (Date.now() - pageEpoch - at)));
+  }
+  const live = rows.filter((r) => r.adv != null && r.adv > 0.2 && r.ad === false).length;
+  const adSec = rows.filter((r) => r.ad === true).length;
+  const loadSec = rows.filter((r) => !r.playing).length;
+  evidence.reloadArm = {
+    everyMs, reloads, samples: rows.length, liveSec: live, adSec, loadSec,
+    livePerCycle: reloads ? +(live / reloads).toFixed(2) : null,
+    adPerCycle: reloads ? +(adSec / reloads).toFixed(2) : null,
+    loadPerCycle: reloads ? +(loadSec / reloads).toFixed(2) : null,
+    rows,
+  };
+  writeFileSync(join(runDir, `${scenario.name}-reload-${Date.now()}.json`), JSON.stringify(evidence.reloadArm, null, 1));
+  console.log(`RELOAD every=${everyMs}ms reloads=${reloads} live=${live}s ad=${adSec}s load=${loadSec}s -> live/cycle=${evidence.reloadArm.livePerCycle}s ad/cycle=${evidence.reloadArm.adPerCycle}s load/cycle=${evidence.reloadArm.loadPerCycle}s`);
+}
+
 for (const s of samples) {
   const wait = pageEpoch + s.at - Date.now();
   if (wait > 0) await sleep(wait);
@@ -603,6 +694,23 @@ for (const exp of scenario.expect || []) {
     } else {
       check(label, verdict, { px });
     }
+  }
+}
+// Print the clean frame once per second. Duplicates from the coalesced
+// event-driven `st` messages are collapsed by whole second, keeping the last
+// row in each second.
+if (!NO_EXT) {
+  const probeRows = await evaluate('window.__koStProbe ? window.__koStProbe.rows : []');
+  const bySec = new Map();
+  for (const row of Array.isArray(probeRows) ? probeRows : []) bySec.set(Math.floor(row.ms / 1000), row);
+  evidence.cleanRows = [...bySec.values()];
+  if (evidence.cleanRows.length) {
+    console.log(`CLEAN-VARIANTS ${JSON.stringify(evidence.cleanRows[0].levels)} rect=${JSON.stringify(evidence.cleanRows[0].rect)}`);
+    for (const r of evidence.cleanRows) {
+      console.log(`CLEAN ${r.ms}ms pos=${r.pos} hold=${r.hold} lat=${r.lat} ${r.latSrc} rs=${r.rs} ${r.state} q=${r.q} lv=${r.lv} bw=${r.bw} rect=${JSON.stringify(r.rect)}`);
+    }
+  } else {
+    console.log('CLEAN no st rows were observed (probe never fired)');
   }
 }
 

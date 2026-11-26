@@ -221,6 +221,84 @@ function ok(name, cond, detail) {
     return f.player.loadedUrl === 'https://example.invalid/ok.m3u8';
   })());
 }
+// ---- 6. the standby's first rung fits the frame, not the lowest bitrate ----
+// Owner ring 0.8.115: both reveals in one page load reported q:"360p" on a
+// 1280x720 player. MANIFEST_PARSED used to set startLevel to the lowest
+// bitrate rung; a ladder fixture makes that pick observable as `standby-level`.
+const HLS_LEVELS = [
+  { height: 720, width: 1280, bitrate: 1400000 },
+  { height: 480, width: 854, bitrate: 800000 },
+  { height: 360, width: 640, bitrate: 450000 },
+];
+function makeHlsFrame({ source = SOURCE, height = 695 } = {}) {
+  const delivered = [];
+  const listeners = {};
+  const intervals = [];
+  const video = {
+    controls: false, muted: false, readyState: 4, currentTime: 10,
+    addEventListener() {}, play() { return Promise.resolve(); }, pause() {},
+    getBoundingClientRect: () => ({ x: 0, y: 0, width: 1236, height }),
+    buffered: { length: 0 }, seekable: { length: 0 },
+  };
+  class Loader { load() {} }
+  class Hls {
+    constructor(config) {
+      this.config = config;
+      this.levels = [];
+      this.currentLevel = -1;
+      this.startLevel = -1;
+      this.latency = 3;
+      this.handlers = {};
+      Hls.last = this;
+    }
+    on(name, fn) { (this.handlers[name] = this.handlers[name] || []).push(fn); }
+    emit(name, data) { for (const fn of this.handlers[name] || []) fn(name, data); }
+    loadSource(url) { this.loadedUrl = url; }
+    attachMedia(v) { this.media = v; }
+  }
+  Hls.DefaultConfig = { loader: Loader };
+  Hls.Events = { MANIFEST_PARSED: 'manifestParsed', LEVEL_LOADED: 'levelLoaded', ERROR: 'error' };
+  const parent = { postMessage(msg, targetOrigin) { delivered.push({ msg, targetOrigin }); } };
+  const window = { parent, addEventListener(t, fn) { (listeners[t] = listeners[t] || []).push(fn); }, Hls };
+  const document = { getElementById: (id) => (id === 'v' ? video : null) };
+  const location = { search: `?m=hls&tw=1&token=${TOKEN}`, href: `chrome-extension://test/player.html?m=hls&tw=1&token=${TOKEN}` };
+  const chrome = { runtime: { getURL: (p) => `chrome-extension://test/${p}`, sendMessage: (_m, cb) => { if (cb) cb(); }, lastError: null } };
+  const run = new Function('window', 'document', 'chrome', 'location', 'performance', 'parent', 'Hls',
+    'setInterval', 'setTimeout', 'URLSearchParams', 'Date', source);
+  run(window, document, chrome, location, { now: () => 1 }, parent, Hls,
+    (fn) => { intervals.push(fn); return intervals.length; }, () => 1, URLSearchParams, Date);
+  return {
+    hls: Hls.last,
+    levelRow() { return delivered.map((d) => d.msg && d.msg.__koKick).find((m) => m && m.e === 'standby-level'); },
+  };
+}
+function startLevelArm(src, height) {
+  const f = makeHlsFrame({ source: src, height });
+  f.hls.emit('manifestParsed', { levels: HLS_LEVELS });
+  const row = f.levelRow();
+  if (!row) throw new Error('no standby-level row was posted');
+  return { row, startLevel: f.hls.startLevel };
+}
+try {
+  const green = startLevelArm(SOURCE, 695);
+  ok('a 695px frame starts at the 720p rung, not the lowest bitrate', green.row.d.name === '720p' && green.startLevel === 0, JSON.stringify(green));
+  const small = startLevelArm(SOURCE, 360);
+  ok('a 360px frame still starts at 360p', small.row.d.name === '360p' && small.startLevel === 2, JSON.stringify(small));
+} catch (e) {
+  ok('the start-rung arm ran', false, String(e && e.message));
+}
+{
+  let red = null;
+  try {
+    red = startLevelArm(SOURCE.replace(
+      'if (lh >= height && lh < bestH) { bestH = lh; chosen = i; }',
+      'if (Number((levels[i] || {}).bitrate) < bestH) { bestH = Number((levels[i] || {}).bitrate); chosen = i; }',
+    ), 695);
+  } catch (e) {
+    ok('RED mutation applied', false, String(e && e.message));
+  }
+  ok('RED: the pre-fix lowest-bitrate pick is caught at 360p', red && red.row.d.name === '360p' && red.startLevel === 2, JSON.stringify(red));
+}
 
 console.log(`\nRESULT ${failed ? 'FAIL' : 'PASS'} bridge-handshake checks=${checks} failed=${failed}`);
 process.exit(failed ? 1 : 0);
