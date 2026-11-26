@@ -1406,6 +1406,24 @@
     "compare.mjs verdict unchanged on the same pair (`RESULT CANNOT-MEASURE 4/12`, zero DIVERGE), so the false positive never reached a fidelity claim - it was caught before it did."
    ],
    "next": "A window that really serves a pod must still print ad-media from its titles; `--navigate` on a channel with a preroll is the run that closes it."
+  },
+  {
+   "id": "KO-20261126-08",
+   "title": "A refused pod-extent seek did not survive the next line: the catch-up seeked into the pod the refusal had just named",
+   "state": "fixed",
+   "author": "seat",
+   "reported": "2026-11-26",
+   "fixed_in": "0.8.119",
+   "commit": null,
+   "hypothesis": "`resumeNative` refused the clean offset when it fell inside the pod extent (`native-seek-skipped {why:'inside-pod'}`) by leaving `want = from` and `why = null`; the generic edge catch-up three lines later then had no refusal to respect and seeked to `se - cleanLat`, which is inside the same pod. Measured in the replica on 0.8.118 (dev-preroll-hold 1795670018437, a PASS run): `native-seek-skipped {why:'inside-pod', to:7.3, podExtent:14}` at 14587, `native-catchup {basis:'edge', from:0, to:7}` at 14587, then `native-edge-recover {basis:'wall', from:7.3, to:11}` at 14889 - two seeks, both inside pod media, the first landing 7 s of ad back from the end of what the element already held.",
+   "falsifier": "`ad-time-continuity` arm 'a pod-end landing is one seek, at the end of the pod media the element holds': a hand-back with `se 14 / buf 14 / holdAge 14300` writes exactly one `native-catchup {basis:'pod-end', to:11, podExtent:14}` and no `basis:'edge'` row, and the RED (`podLand = from`, the pre-fix no-seek) turns it red.",
+   "evidence": [
+    "Before, replica run 1795670018437: `native-seek-skipped inside-pod` then `native-catchup {from:0,to:7}` then `native-edge-recover {basis:'wall', to:11}` - the refusal named a region and the next decision entered it.",
+    "After (`node ad-time-continuity-test.cjs`): `RESULT PASS ad-time-continuity checks=163 failed=0`, `ARMS 16/16 present`.",
+    "The landing is `podExtent - HEALTH_BUFFER_SEC`, so the picture resumes on the last 3 s of held media instead of 7 s of it, and the wall recovery still follows once the buffer grows (its `behind` moves 27.9 -> 25 because it now measures from 11).",
+    "NOT taken in the next replica run: `dev-preroll-hold` 1795672342763 measured `elapsed 13.67` against `se 14`, so `podExtentEdge` was false by 0.08 s and the hand-back used the ordinary edge catch-up. The branch is arm-verified, not run-verified."
+   ],
+   "next": "A run whose hand-back measures `se <= ct0 + elapsed + 0.25` must show the `basis:'pod-end'` row once and no `basis:'edge'` catch-up on the same hand-back."
   }
  ]
 }

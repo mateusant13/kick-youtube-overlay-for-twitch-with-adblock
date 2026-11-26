@@ -2616,6 +2616,23 @@
               why = null;
               overlay.recoverBehind = 0;
               overlay.recoverLat = 0;
+              // ...BUT "NO SEEK" IS NOT "NO DECISION". The refusal used to leave
+              // `why = null`, and the generic catch-up three lines later then
+              // seeked into exactly the media the refusal had just named
+              // (`native-catchup {to:7}` on a pod extent of 14, measured in the
+              // replica on 0.8.118), and the retry watcher seeked AGAIN 300 ms
+              // later (`native-edge-recover {basis:'wall', to:11}`). Two seeks,
+              // both inside the pod, and the element landed further back than
+              // the media it already held allowed. The one landing this shape
+              // earns is the END OF THE POD WE HOLD: every second before it is
+              // ad media the owner should not see twice.
+              const podLand = se - HEALTH_BUFFER_SEC;
+              if (podLand > from + RESUME_GAP_SEC) {
+                want = +podLand.toFixed(1);
+                why = 'pod-end';
+                overlay.recoverBehind = +behind.toFixed(1);
+                overlay.recoverLat = +cleanLat.toFixed(1);
+              }
             }
           }
         }
@@ -2633,6 +2650,11 @@
             });
           }
         }
+        // (A pod-end landing needs no guard here: `want = se - HEALTH_BUFFER_SEC`
+        // is always FURTHER than `target = se - cleanLat` for any cleanLat past
+        // the runway, so `target > want` cannot hold for it. A guard that can
+        // never be false is not a guard; the RED for this change targets the
+        // landing itself.)
         if (target > want && hiddenMs <= 1000 && !overlay.userDvr) {
           want = target;
           why = why ? 'edge-recover+catchup' : 'catchup';
@@ -2724,10 +2746,16 @@
             // `edge` says where the position came from; `basis` says which
             // clock decided the seek, so a wall recovery on a seekable edge is
             // never silently read as a plain edge catch-up.
-            basis: why === 'user-dvr' ? 'dvr' : (why && why.startsWith('edge-recover') ? 'wall' : 'edge'),
+            basis: why === 'user-dvr' ? 'dvr'
+              : (why === 'pod-end' ? 'pod-end'
+                : (why && why.startsWith('edge-recover') ? 'wall' : 'edge')),
             why,
           };
           if (why.startsWith('edge-recover')) payload.behind = overlay.recoverBehind;
+          // A pod-end landing names the media it landed on: `podExtent` is the
+          // last frame the element holds from the pod, so the next reader can
+          // tell "landed at the end of what we hold" from "landed on content".
+          if (why === 'pod-end') payload.podExtent = +se.toFixed(1);
           // A clamped landing is a DIFFERENT decision from the one the wall
           // clock asked for: say both numbers, or the next reader cannot tell a
           // 16 s recovery from a 13 s one.
@@ -2736,6 +2764,11 @@
             payload.runway = +(runwayEnd - want).toFixed(1);
           }
           overlay.recoverBehind = 0;
+          // A pod-end landing is NOT the recovery: it only moves the picture to
+          // the end of the media the element already holds, and the wall-clock
+          // recovery still has to land it on content once the buffer grows past
+          // the pod. Marking it recovered would leave the element playing pod
+          // media to its last frame and never reach the live offset.
           if (why.startsWith('edge-recover') || why === 'user-dvr') overlay.edgeRecovered = true;
           adLogState(why === 'user-dvr' || why.startsWith('edge-recover') ? 'native-edge-recover' : 'native-catchup', payload);
         }

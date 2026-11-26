@@ -3066,13 +3066,18 @@ async function main() {
       ct: page.video.currentTime,
       resume: page.logsOf('native-resume').map((l) => ({ tag: l.d.tag, ct: l.d.ct, behind: l.d.behind })),
     });
+    // The hand-back now lands at `podExtent - HEALTH_BUFFER_SEC` (11) instead of
+    // declining, so the retry measures its deficit from 11: `behind = 36 - 11 =
+    // 25`, and the landing is `11 + 25 - cleanLat`. Both numbers moved with the
+    // landing; the invariant the arm guards is unchanged - ONE wall recovery,
+    // onto content past the pod.
     record('exactly one wall-clock recovery runs on the usable edge',
       rec.length === 1 && rec[0].d.basis === 'wall' && rec[0].d.why === 'edge-recover-retry'
-        && Math.abs(rec[0].d.behind - 27.9) < 1.5,
-      `expected one wall recovery on se 36: ${evidence}`);
+        && Math.abs(rec[0].d.behind - 25) < 1.5 && rec[0].d.from >= 10,
+      `expected one wall recovery on se 36 from the pod-end landing: ${evidence}`);
     record('the landing is on content inside the newly buffered range',
       rec.length === 1 && rec[0].d.to > 14 && rec[0].d.to <= 33
-        && seeks.length === 2 && seeks[0] < 14 && seeks[1] === rec[0].d.to
+        && seeks.length === 2 && seeks[0] > 10 && seeks[0] < 14 && seeks[1] === rec[0].d.to
         && page.video.currentTime > 14,
       `the picture stayed in the ad media or moved more than once: ${evidence}`);
   }
@@ -3119,6 +3124,48 @@ async function main() {
   await redArm('RED: a refused pod-extent seek is silent', RED_REFUSAL, (src) => refusedPodExtentSeekArm(src));
   await greenArm('a refused pod-extent seek is logged with both numbers and a why', () => refusedPodExtentSeekArm(SOURCE, checkRecord));
 
+  // ---- 22b. THE REFUSAL SURVIVES THE CATCH-UP ----------------------------
+  // Measured in the replica on 0.8.118 (dev-preroll-hold 1795670018437, a PASS
+  // run): the refusal named the media (`native-seek-skipped {why:'inside-pod',
+  // to:7.3, podExtent:14}`) and the generic catch-up seeked to 7.3 anyway one
+  // line later, then the retry watcher seeked again to 11. Two seeks, both
+  // inside the pod, and the element landed 7 s of ad media back from the end of
+  // what it already held. One landing, at the end of the pod, is the only one
+  // this shape earns.
+  async function podEndLandingArm(src, record = strictRecord) {
+    const page = makePage(src);
+    setNative(page, { ct: 0, edge: 14, bufferedEnd: 14 });
+    await pod(page, { pos: 35.6, lat: 5.9 });
+    page.stats().adTestClock({ holdAgeMs: 14300 });
+    const seeks = trackSeeks(page);
+    page.bypass({ type: 'ad-end' });
+    await settle(120);
+    const rows = page.logsOf('native-catchup').filter((l) => l.d.basis === 'pod-end');
+    const evidence = JSON.stringify({
+      seeks,
+      catchup: page.logsOf('native-catchup').map((l) => l.d),
+      skips: page.logsOf('native-seek-skipped').map((l) => l.d),
+      ct: page.video.currentTime,
+    });
+    record('the pod-end hand-back seeks ONCE, to the end of the pod media it holds',
+      rows.length === 1 && Math.abs(rows[0].d.to - 11) < 0.3
+        && Math.abs(rows[0].d.podExtent - 14) < 0.2
+        && seeks.length === 1 && Math.abs(page.video.currentTime - 11) < 0.3,
+      `expected one landing at 11 with podExtent 14: ${evidence}`);
+    record('the clean offset inside the pod is not taken by the catch-up',
+      page.logsOf('native-catchup').filter((l) => l.d.basis === 'edge').length === 0,
+      `a catch-up overrode the refusal: ${evidence}`);
+  }
+  // The landing itself is what this arm proves: with `podLand = from` the
+  // hand-back is the pre-fix "no seek", which leaves the picture at the head of
+  // the pod media and is what the generic catch-up used to move to 7.3.
+  const RED_POD_END = mutate([[
+    '              const podLand = se - HEALTH_BUFFER_SEC;',
+    '              const podLand = from; // RED: pre-fix, the refusal landed nothing',
+  ]]);
+  await redArm('RED: the catch-up overrides a pod-end landing', RED_POD_END, (src) => podEndLandingArm(src));
+  await greenArm('a pod-end landing is one seek, at the end of the pod media the element holds', () => podEndLandingArm(SOURCE, checkRecord));
+
   await prewarmArms();
 
   // ANTI-VACUITY. Every GREEN arm above prints its own label; one deleted or
@@ -3137,6 +3184,7 @@ async function main() {
     'one progressing sample reveals, a stalled one does not',
     'a pod-extent edge recovers once onto content after the buffer grows',
     'a refused pod-extent seek is logged with both numbers and a why',
+    'a pod-end landing is one seek, at the end of the pod media the element holds',
     'a pre-warmed source is consumed by the first pod without a second mint',
     'a failed pre-warm is not a precondition: the hold falls back to a mint and reveals',
   ];
