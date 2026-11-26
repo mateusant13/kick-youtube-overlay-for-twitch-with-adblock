@@ -2465,6 +2465,22 @@ went `ENOENT` from the repo root): source-text arms resolve via `__dirname`.
 `standby-request {why:'cold-start'|'ad-ui-hold'}` beside it. An extension reload does not re-inject, so
 the tab carries it on its next navigation.
 
+### 0.8.121, same day: the refusal the log could not explain
+
+The replica's reveal on 0.8.120 took 1392 ms, and the row that explains the wait read
+`playing-not-healthy {buffered:2.917, rs:4, why:null}`. `why` was `posFrozen ? 'pos-frozen' : null`, so the
+three other refusals (`rs < 3`, `lat` over the reveal ceiling, no forward data) and a playhead that simply
+did not advance were all `null`. Recomputing the predicate by hand from the samples was the only way to
+learn that the frame had advanced 0.07 s in 0.74 s - the provider's own start-up stall, **correctly
+refused**. No gate was loosened on that evidence: the row now names the reason (`pos-frozen`, `rs`, `lat`,
+`no-forward`, `advancing`) and carries `advanced` and `moved`, which is what a reader needs to accept or
+reject the refusal without re-reading the code.
+
+Known-answer on 0.8.121 (replica 1795677985765): `playing-not-healthy {advanced:false, buffered:2.859,
+moved:0.04, pos:25.1405, rs:4, why:'advancing'}` at 1160 ms, reveal at 1620 ms, and the later park on the
+same page names `why:'rs'` (buffered 0.03 s) and `why:'advancing'` (moved 0.15). `checks=175 failed=0`,
+`ARMS 19/19`, gate `RESULT PASS checks=25 failed=0` (360.15 s), census `guardShaped=111`.
+
 ### I: is ONE SMR spindle with 12 GB free (measured 2026-11-24 18:20Z, watcher DM dm-716515cbf460f5257d8f)
 
 The watcher's IOCTL window read `busy 1549%, q_avg 15.49, 123 ops in 906 ms, r=1.36 MB/s, w=0.15 MB/s,
