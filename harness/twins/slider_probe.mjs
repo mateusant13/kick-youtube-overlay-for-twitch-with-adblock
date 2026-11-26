@@ -20,7 +20,11 @@ const AT = NOW.toISOString();
 const PY_SCRIPTS = 'C:/Users/Administrador/.agents/skills/project-revival/scripts';
 const GIT_CHECKPOINT = `${PY_SCRIPTS}/git_checkpoint.py`;
 const FEATURE_SYNC = `${PY_SCRIPTS}/feature_map_sync.py`;
-const FAST_TEST = 'node _tools/ko-census.mjs --gate && node kick-overlay/bridge-handshake-test.cjs && node --check kick-overlay/twitch-adblock.js';
+// The per-edit loop of record is the same command revival/FRICTION.json names for
+// friction.inner_test_loop: the two behavioural suites on the virtual clock (8-10 s).
+// A narrower census+bridge+node--check smoke (0.6 s) cannot see the ad path's ordering,
+// so scoring it as the loop would flatter the number and measure nothing the row cares about.
+const EDIT_LOOP = 'node kick-overlay/mute-decision-test.cjs && node kick-overlay/ad-time-continuity-test.cjs';
 const GIT_LOG = 'git log -n12 --name-only --format=%x00%H';
 const CENSUS_CMD = 'node _tools/ko-census.mjs --json';
 const REPLAY_CMD = 'node harness/twins/replay.mjs --all --json';
@@ -130,7 +134,7 @@ const cachedValue = (key) => cache.values[key];
 // FAIL in 1.2 s warm). A child that still starves reports its own timeout.
 const getGitLog = () => once('gitLog', () => run('git', ['log', '-n12', '--name-only', '--format=%x00%H'], 8000));
 const getCensus = () => once('census', () => run('node', ['_tools/ko-census.mjs', '--json'], 12000));
-const getFast = () => once('fast', () => runShell(FAST_TEST, 14000));
+const getFast = () => once('fast', () => runShell(EDIT_LOOP, 14000));
 const getGate = () => once('gate', () => run('python', [FEATURE_SYNC, '--repo', '.', '--gate'], 14000));
 const getReplay = () => once('replay', () => run('node', ['harness/twins/replay.mjs', '--all', '--json'], 12000));
 const getHelp = (sub) => once(`help:${sub || 'top'}`, () => run('python', sub ? [GIT_CHECKPOINT, sub, '--help'] : [GIT_CHECKPOINT, '--help'], 12000));
@@ -181,7 +185,7 @@ function innerLoopSpeed(result) {
   const seconds = result.ms / 1000;
   const score = result.rc === 0 && !result.timedOut ? 100 * (1 - seconds / 15) : 0;
   const detail = result.rc === 0 && !result.timedOut ? '' : flat(result.stderr || result.stdout).slice(0, 120);
-  return measured(score, `rc=${result.rc} wall=${round(result.ms, 1)}ms${result.timedOut ? ' TIMEOUT' : ''}${detail ? ` tail=${detail}` : ''}`, FAST_TEST);
+  return measured(score, `rc=${result.rc} wall=${round(result.ms, 1)}ms${result.timedOut ? ' TIMEOUT' : ''}${detail ? ` tail=${detail}` : ''}`, EDIT_LOOP);
 }
 
 function architectureCoherence(result) {
@@ -384,16 +388,16 @@ async function buildPairs() {
       current: round(fast.ms / 1000, 3),
       counterpart_metric: 'twin_calibration_age_h',
       counterpart_value: ageHours,
-      basis: `fast_test_rc=${fast.rc} wall=${round(fast.ms, 1)}ms newest_recorded_at=${newestFile || 'missing'}`,
-      proof: FAST_TEST,
+      basis: `edit_loop_rc=${fast.rc} wall=${round(fast.ms, 1)}ms newest_recorded_at=${newestFile || 'missing'}`,
+      proof: EDIT_LOOP,
     }
     : {
       unit: 'seconds',
       current: fast ? round(fast.ms / 1000, 3) : 'CANNOT-MEASURE',
       counterpart_metric: 'twin_calibration_age_h',
       counterpart_value: ageHours,
-      basis: `CANNOT-MEASURE: fast_test did not complete (${fast ? flat(fast.error || fast.stderr).slice(0, 120) : 'not run'})`,
-      proof: FAST_TEST,
+      basis: `CANNOT-MEASURE: edit_loop did not complete (${fast ? flat(fast.error || fast.stderr).slice(0, 120) : 'not run'})`,
+      proof: EDIT_LOOP,
     };
 
   const e2e = replay && twins.length
