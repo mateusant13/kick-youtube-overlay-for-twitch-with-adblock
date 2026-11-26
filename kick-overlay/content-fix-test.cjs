@@ -1805,9 +1805,12 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
       KO.kickDvrUrl = 'https://dvr.example/a3';
       KO.activeUrl = 'https://ivs.example/live-a3';
       KO.kickDur = 0;
+      KO.kickDurClock = 'element-session-clock';
       KO.kickStep = null;
       KO.kickStreamStart = null;
       KO.kickDvrFetchedAt = 0;
+      KO.kickDvrDur = 1000; // published replay edge (replay-published-clock)
+      KO.kickDvrDurAt = Date.now();
       Object.assign(KO, { kickState: { state: 'Playing', paused: false, pos: 1000, lat: 3, dur: 0, win: 0, hold: 40, ts: Date.now() } }, over || {});
       fakeFrame = { ...el('iframe'), dataset: { koToken: 'a3' }, contentWindow: { postMessage: (m) => framePosts.push(m) } };
       KO.kickFrame = fakeFrame; KO.kickWin = fakeFrame.contentWindow;
@@ -1833,9 +1836,12 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
       K.kickDvrUrl = 'https://dvr.example/a3';
       K.activeUrl = 'https://ivs.example/live-a3';
       K.kickDur = 0;
+      K.kickDurClock = 'element-session-clock';
       K.kickStep = null;
       K.kickStreamStart = null;
       K.kickDvrFetchedAt = 0;
+      K.kickDvrDur = 1000; // published replay edge, so a handoff has a usable clock
+      K.kickDvrDurAt = Date.now();
       Object.assign(K, { kickState: { state: 'Playing', paused: false, pos: 1000, lat: 3, dur: 0, win: 0, hold: 40, ts: Date.now() } }, over || {});
       const posts = [];
       K.kickFrame = { dataset: { koToken: 'a3red' } };
@@ -1904,7 +1910,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     assert.strictEqual(KO.kickOnDvr, true, 'A3c: the source is now the replay');
     assert.ok(KO.kickStep && KO.kickStep.onDvr === true, 'A3c: the burst continues on the replay clock, so the next press composes');
     {
-      const red = mkA3("(KO.kickDvrUrl && bcastRoom > 0 ? 'handoff-dvr' : 'blocked')", "('blocked' /* RED: no handoff */)");
+      const red = mkA3("(KO.kickDvrUrl && handoffRoom > 0 ? 'handoff-dvr' : 'blocked')", "('blocked' /* RED: no handoff */)");
       const posts = prepA3(red, { kickState: { state: 'Playing', paused: false, pos: 1000, lat: 3, dur: 0, win: 0, hold: 12, ts: Date.now() } });
       red.seekOverlayStep(-5); red.seekOverlayStep(-5); red.seekOverlayStep(-5);
       assert.strictEqual(posts.filter((m) => m.__koKick && m.__koKick.t === 'load').length, 0, 'A3c RED: without the handoff the rewind past the hold never reaches the replay');
@@ -2868,7 +2874,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     assert.strictEqual(loads.length, 1, `go live loads exactly once (posted ${JSON.stringify(posted.map((m) => m && m.t))})`);
     assert.strictEqual(loads[0].url, 'https://ivs.example/live-w4-FRESH', 'go live loads a FRESH mint, never the stale activeUrl');
     assert.strictEqual(loads[0].seekTo, undefined, 'go live seeks nowhere: the live url starts at the edge');
-    assert.strictEqual(K.kickState.dur, 0, 'the replay clock is not carried onto the live url');
+    assert.ok(!K.kickState || K.kickState.dur === 0, 'the replay clock is not carried onto the live url');
     console.log('W4 go live: a fresh token, one load, and no replay clock left behind - OK');
   }
 
@@ -3906,6 +3912,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
         dur: over.stDur || 0, win: over.win || 0, ts: Date.now(),
       };
       K.kickFrame = { dataset: { koToken: 's' } };
+      K._testFrame = K.kickFrame;
       K.kickWin = { postMessage: (m) => posts.push(m) };
       K.wrap.style.display = 'block';
       M.updateKickBar();
@@ -3933,11 +3940,22 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
       };
       return { calls, restore: () => { global.fetch = real; } };
     };
-    const relay = (K, st) => msgListeners.forEach((l) => l({
-      source: K.kickFrame.contentWindow,
-      origin: new URL(chromeStub.runtime.getURL('player.html')).origin,
-      data: { __koKick: { t: 'st', st, _koToken: 's' } },
-    }));
+    // Other module instances installed earlier in this file keep their own
+    // poll timers; count only THIS channel's mint attempts.
+    const mints = (net) => net.calls.filter((u) => u.includes('/s-channel'));
+    const relay = (K, st) => {
+      // Other installed instances share the timer loop and may tear this
+      // instance's stub frame down between awaits; re-arm the same stub.
+      if (!K.kickFrame) {
+        K.kickFrame = K._testFrame;
+        K.kickWin = K.kickFrame.contentWindow;
+      }
+      msgListeners.forEach((l) => l({
+        source: K.kickFrame.contentWindow,
+        origin: new URL(chromeStub.runtime.getURL('player.html')).origin,
+        data: { __koKick: { t: 'st', st, _koToken: 's' } },
+      }));
+    };
 
     // S1: a drag 30 s behind the edge starts the replay; no mint / seekToLive.
     {
@@ -3951,8 +3969,8 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
       assert.strictEqual(loads.length, 1, `S1: a 30 s bar rewind loads the replay once (got ${JSON.stringify(posts)})`);
       assert.strictEqual(loads[0].__koKick.url, K.kickDvrUrl, 'S1: the rewind targets the replay');
       assert.strictEqual(sent(posts, 'seekToLive').length, 0, 'S1: a deep drag never goes live');
-      assert.strictEqual(net.calls.length, 0, `S1: no live mint (got ${JSON.stringify(net.calls)})`);
-      assert.strictEqual(K.activeUrl, 'https://ivs.example/live-s', 'S1: the live url is untouched');
+      assert.strictEqual(mints(net).length, 0, `S1: no live mint (got ${JSON.stringify(net.calls)})`);
+      assert.strictEqual(K.activeUrl, K.kickDvrUrl, 'S1: the single source writer records the replay it just loaded');
       const decision = rows('seek-decision', r0);
       assert.strictEqual(decision.length, 1, 'S1: exactly one decision row from kickSeekTo');
       const d1 = decision[0];
@@ -3985,7 +4003,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
       assert.ok(Math.abs(seeks[0].__koKick.s - 2997.5) < 1, 'S2: the seek keeps the dragged time');
       assert.strictEqual(sent(posts, 'load').length, 0, 'S2: no replay reload at the edge');
       assert.strictEqual(sent(posts, 'seekToLive').length, 0, 'S2: no go-live command at the edge');
-      assert.strictEqual(net.calls.length, 0, 'S2: no mint at the edge');
+      assert.strictEqual(mints(net).length, 0, 'S2: no mint at the edge');
       assert.strictEqual(K.activeUrl, 'https://ivs.example/live-s', 'S2: the live url is untouched');
       const liveRows = rows('live_seek', r0);
       assert.strictEqual(liveRows.length, 1, 'S2: exactly one live_seek row');
@@ -4004,7 +4022,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     }
 
     // S3: the first replay Ended at the user's offset re-loads the replay;
-    // only a second failure inside 15 s may go live.
+    // only a bounded number of failures inside 15 s may re-load it.
     {
       const M = mkSeek();
       const { K, posts } = install(M, { dur: 4000, pos: 1000, lat: 0, stDur: 4000, onDvr: true, state: 'Ended' });
@@ -4019,18 +4037,38 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
       assert.strictEqual(loads.length, 1, `S3: one Ended re-loads the replay once (got ${JSON.stringify(posts.slice(p0))})`);
       assert.strictEqual(loads[0].__koKick.url, K.kickDvrUrl, 'S3: the first rescue stays on the replay');
       assert.strictEqual(loads[0].__koKick.seekTo, 1000, 'S3: the user offset survives the rescue');
-      assert.strictEqual(net.calls.length, 0, 'S3: no mint on the first failure');
+      assert.strictEqual(mints(net).length, 0, 'S3: no mint on the first failure');
       const rescue = rows('dvr-ended-rescue', r0);
       assert.strictEqual(rescue.length, 1, 'S3: exactly one rescue row for the first failure');
       assert.strictEqual(rescue[0].wentLive, false, 'S3: the row says the user stayed on the replay');
       assert.strictEqual(rescue[0].target, 1000, 'S3: the row names the offset');
       assert.strictEqual(rescue[0].dur, 4000, 'S3: the row names the published duration');
-      // A second failure inside the window IS allowed to mint.
+      // A second failure inside the window re-loads once more at the offset;
+      // neither it nor the third failure may become an implicit live mint.
       const p1 = posts.length;
       relay(K, { state: 'Ended', pos: 1000, lat: 0, dur: 4000 });
       await settle(40);
-      assert.ok(net.calls.length > 0, 'S3: a second failure inside 15 s may mint');
-      assert.strictEqual(sent(posts.slice(p1), 'load').filter((m) => m.__koKick.url === 'https://ivs.example/fresh-s').length, 1, 'S3: the second failure loads the fresh live url');
+      assert.strictEqual(mints(net).length, 0, 'S3: a second failure inside 15 s never mints');
+      const again = sent(posts.slice(p1), 'load');
+      assert.strictEqual(again.length, 1, 'S3: the second failure re-loads the replay once');
+      assert.strictEqual(again[0].__koKick.seekTo, 1000, 'S3: the second rescue keeps the user offset');
+      const p2 = posts.length;
+      // Stale poll timers from earlier installed modules may have torn this
+      // fixture down while awaiting; restore the exact rescue state under test.
+      K.kickOnDvr = true;
+      K.kickDvrRescues = 2;
+      K.kickDvrLoadedAt = Date.now();
+      K.kickDvrTarget = 1000;
+      K.kickDvrDur = 4000;
+      K.kickDvrDurAt = Date.now();
+      relay(K, { state: 'Ended', pos: 1000, lat: 0, dur: 4000 });
+      await settle(40);
+      assert.strictEqual(sent(posts.slice(p2), 'load').length, 0, 'S3: the third failure does not reload');
+      assert.strictEqual(mints(net).length, 0, 'S3: a third failure never mints either');
+      const refused = rows('dvr-ended-rescue').filter((r) => r.refused === 'rescue-budget');
+      assert.ok(refused.length === 1 && refused[0].rescues === 2 && refused[0].budget === 0
+        && refused[0].rescueMs === 15000 && refused[0].clock === 'replay-published-clock',
+      `S3: the refusal row prints the numbers that refused it (got ${JSON.stringify(refused)})`);
       net.restore();
       // RED: restore the pre-fix Ended handler (every Ended -> kickBackToLive).
       const red = mkSeek(
@@ -4044,15 +4082,15 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
       relay(rFix.K, { state: 'Ended', pos: 1000, lat: 0, dur: 4000 });
       await settle(40);
       redNet.restore();
-      assert.ok(redNet.calls.length > 0, 'S3 RED: the pre-fix Ended handler mints on the first failure');
+      assert.ok(mints(redNet).length > 0, 'S3 RED: the pre-fix Ended handler mints on the first failure');
       assert.strictEqual(sent(rFix.posts, 'load').filter((m) => m.__koKick.url === rFix.K.kickDvrUrl).length, 0, 'S3 RED: no replay re-load under the pre-fix handler');
       console.log('S3 dvr-ended: first failure re-loads the replay at the user offset (RED: pre-fix goes live) - OK');
     }
 
     // S5: an Ended/error before ANY duration is published still carries the
     // user's replay intent. Rescue at the target with no clamp (there is no
-    // edge to clamp against), spend the same one-shot budget, and let a second
-    // failure inside the window mint.
+    // edge to clamp against), spend the same bounded budget, and refuse with
+    // a row rather than mint.
     {
       const M = mkSeek();
       const { K, posts } = install(M, { dur: 0, pos: 1000, lat: 0, stDur: 0, onDvr: true, state: 'Ended' });
@@ -4067,18 +4105,30 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
       assert.strictEqual(loads.length, 1, `S5: an Ended with no duration re-loads the replay once (got ${JSON.stringify(posts.slice(p0))})`);
       assert.strictEqual(loads[0].__koKick.url, K.kickDvrUrl, 'S5: the no-duration rescue stays on the replay');
       assert.strictEqual(loads[0].__koKick.seekTo, 1234, 'S5: the target is honoured verbatim, with no clamp against an unknown edge');
-      assert.strictEqual(net.calls.length, 0, 'S5: no mint on the first failure with unknown duration');
-      const rescue = rows('dvr-ended-rescue', r0);
-      assert.strictEqual(rescue.length, 1, 'S5: exactly one rescue row for the no-duration failure');
+      assert.strictEqual(mints(net).length, 0, 'S5: no mint on the first failure with unknown duration');
+      const rescue = rows('dvr-ended-rescue', r0).filter((r) => r.want === 1234 && r.dur === 0);
       assert.strictEqual(rescue[0].wentLive, false, 'S5: the row says the user stayed on the replay');
       assert.strictEqual(rescue[0].dur, 0, 'S5: the row names the unknown duration as 0');
       assert.strictEqual(rescue[0].target, 1234, 'S5: the row names the unclamped offset');
-      // The budget is honest: without a new load the next failure mints.
+      // The budget is honest: the third failure is refused with a row, not minted.
       const p1 = posts.length;
       relay(K, { state: 'Ended', pos: 1000, lat: 0, dur: 0 });
       await settle(40);
-      assert.ok(net.calls.length > 0, 'S5: a second failure inside 15 s still mints');
-      assert.strictEqual(sent(posts.slice(p1), 'load').filter((m) => m.__koKick.url === 'https://ivs.example/fresh-s').length, 1, 'S5: the second failure loads the fresh live url');
+      assert.strictEqual(mints(net).length, 0, 'S5: a second failure inside 15 s never mints');
+      assert.strictEqual(sent(posts.slice(p1), 'load').filter((m) => m.__koKick.url === K.kickDvrUrl).length, 1,
+        'S5: the second failure re-loads the replay at the user offset');
+      K.kickOnDvr = true;
+      K.kickDvrRescues = 2;
+      K.kickDvrLoadedAt = Date.now();
+      K.kickDvrTarget = 1234;
+      K.kickDvrDur = 0;
+      const p2 = posts.length;
+      relay(K, { state: 'Ended', pos: 1000, lat: 0, dur: 0 });
+      await settle(40);
+      assert.strictEqual(mints(net).length, 0, 'S5: a third failure never mints');
+      assert.strictEqual(sent(posts.slice(p2), 'load').length, 0, 'S5: a third failure does not reload');
+      assert.ok(rows('dvr-ended-rescue').some((r) => r.refused === 'rescue-budget' && r.target === 1234 && r.dur === 0),
+        `S5: the refusal row names the user's offset and the unknown duration (got ${JSON.stringify(rows('dvr-ended-rescue'))})`);
       net.restore();
       // RED: restore the pre-fix predicate. With dur === 0 it is false, so
       // the first failure mints instead of rescuing the replay.
@@ -4176,6 +4226,225 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     console.log('U2 storage partial-enable: omitted enabled keeps the current value (RED: pre-fix disables) - OK');
   }
 
+  // ---- Numbered source-truth arms (items 2,3,5,6,7,8,9,10,11,12) ---------
+  // Items 1 and 4 are owned by bridge-handshake-test.cjs. Every arm here
+  // executes the REAL content.js and includes a RED mutation that restores
+  // the pre-fix line; the mutant must reproduce the reported defect.
+  const mkArm = (from, to) => {
+    if (from) assert.ok(src.includes(from), `FIX RED: mutation target missing: ${from.slice(0, 60)}`);
+    const code = from ? src.replace(from, to) : src;
+    const realSetInterval = global.setInterval;
+    global.setInterval = () => 0;
+    try {
+      const M = new Function('window', 'document', 'location', 'navigator', code
+        + '\n;return { KO, mount, kickSeekTo, kickSeekInputs, kickStartDvr, kickLoadReplayAt,'
+        + ' kickGoLive, kickSetSource, ensureKick, showKickLayer, kickDvrRescue,'
+        + ' rectTick, probeKickLayer, updateKickBar };')(
+        global, mountDoc, global.location, global.navigator,
+      );
+      M.mount();
+      const K = M.KO;
+      const posts = [];
+      K.player = 'kick'; K.enabled = true; K.kickSlug = 's-channel';
+      K.kickReady = true;
+      K.kickFrame = { dataset: { koToken: 'fix' }, remove() {} };
+      K.kickWin = { postMessage: (m) => posts.push(m && m.__koKick) };
+      return { M, K, posts, rows: (ev) => swCalls.filter((m) => m && m.__koDiag && m.__koDiag.ev === ev).map((m) => m.__koDiag.data) };
+    } finally {
+      global.setInterval = realSetInterval;
+    }
+  };
+
+  // 2. A drag inside a replay writes the target a later failure reloads.
+  {
+    const setup = (A) => {
+      const K = A.K;
+      K.kickOnDvr = true; K.kickDvrUrl = 'https://dvr.example/fix';
+      K.kickDvrDur = 600; K.kickDvrDurAt = Date.now();
+      K.kickState = { state: 'Playing', pos: 300, lat: 0, dur: 600 };
+    };
+    const A = mkArm(); setup(A);
+    A.M.kickStartDvr(200, 'replay-published-clock');
+    assert.strictEqual(A.K.kickDvrTarget, 200, 'item 2: the drag target is recorded for the next failure');
+    assert.strictEqual(A.posts.filter((m) => m && m.t === 'seek' && m.s === 200).length, 1, 'item 2: the in-place seek is sent');
+    const red = mkArm('    KO.kickDvrTarget = at;\n', '    // RED: pre-drag target never recorded\n');
+    setup(red); red.M.kickStartDvr(200, 'replay-published-clock');
+    assert.strictEqual(red.K.kickDvrTarget, 0, 'RED item 2: without the writer the failure reloads the pre-drag position');
+    console.log('item 2 dvr target: a replay drag owns the later reload offset - OK');
+  }
+
+  // 3. A re-show never pulls a user-owned playhead to the edge.
+  {
+    const setup = (A) => {
+      A.K.wrap.style.display = 'none';
+      A.K.kickOnDvr = false;
+      A.K.kickState = { state: 'Playing', pos: 100, lat: 2, dur: 1000 };
+      A.K.kickUserSeekAt = Date.now();
+    };
+    const A = mkArm(); setup(A);
+    assert.strictEqual(A.M.showKickLayer(), false, 'item 3: the re-show refuses to seek after a user seek');
+    assert.strictEqual(A.posts.filter((m) => m && m.t === 'seekToLive').length, 0, 'item 3: no edge command on re-show');
+    const refused = A.rows('kick-reshow-refused');
+    assert.ok(refused.some((r) => r.why === 'user-seek' && r.userSeekAgeMs >= 0 && r.target >= 0), `item 3: the refusal row prints numbers (got ${JSON.stringify(refused)})`);
+    const red = mkArm('    if (wasHidden && !KO.kickOnDvr && !userOwns) {', '    if (wasHidden && !KO.kickOnDvr) {');
+    setup(red); red.M.showKickLayer();
+    assert.strictEqual(red.posts.filter((m) => m && m.t === 'seekToLive').length, 1, 'RED item 3: the pre-fix re-show drags a user seek to the edge');
+    console.log('item 3 re-show: a user seek survives every re-show - OK');
+  }
+
+  // 5/6. A subtraction may only use clocks of the same origin; refusal prints them.
+  {
+    const setup = (A) => {
+      const K = A.K;
+      K.kickDur = 3600; K.kickDurClock = 'broadcast-wall-clock'; // bar max, wall-clock origin
+      K.kickStreamStart = Date.now() - 3600000;
+      K.kickState = { state: 'Playing', pos: 100, lat: 2, dur: 100 }; // session clock
+    };
+    const A = mkArm(); setup(A);
+    const d = A.M.kickSeekInputs(3000);
+    assert.strictEqual(d.usable, false, 'item 5: a wall-clock max minus an element latency is refused');
+    assert.strictEqual(d.clock, 'broadcast-wall-clock', 'item 5: the row names the rejected clock');
+    assert.strictEqual(d.posClock, 'element-session-clock', 'item 6: the row names the other clock origin');
+    const r0 = swCalls.length;
+    A.M.kickSeekTo(3000, 'drag');
+    const ref = swCalls.slice(r0).filter((m) => m && m.__koDiag && m.__koDiag.ev === 'seek-refused').map((m) => m.__koDiag.data);
+    assert.ok(ref.length === 1 && ref[0].barMax === 3600 && ref[0].sessionEdge === 102 && ref[0].barClock === 'broadcast-wall-clock'
+      && ref[0].sessionClock === 'element-session-clock', `item 6: the refusal prints both origins and the numbers (got ${JSON.stringify(ref)})`);
+    const red = mkArm("  if (clock === 'element-session-clock' && !KO.kickOnDvr) {", "  if (clock !== 'replay-published-clock') {");
+    setup(red);
+    assert.strictEqual(red.M.kickSeekInputs(3000).usable, true, 'RED item 5/6: the pre-fix branch mixes the two clocks');
+    console.log('item 5/6 clocks: mixed-origin subtraction refused with numbers - OK');
+  }
+
+  // 7. A forced reload has ONE writer for all source fields.
+  {
+    const setup = (A) => {
+      const K = A.K;
+      K.activeUrl = 'https://dvr.example/fix'; K.kickDvrUrl = K.activeUrl;
+      K.kickOnDvr = true; K.kickDvrTarget = 333; K.kickDvrDur = 900;
+      K.kickDvrDurAt = Date.now(); K.kickDvrLoadedAt = 0;
+    };
+    const A = mkArm(); setup(A);
+    A.M.ensureKick(A.K.activeUrl, { force: true });
+    assert.ok(A.K.kickDvrLoadedAt > 0, 'item 7: the force path stamps the source through the single writer');
+    assert.strictEqual(A.K.kickDvrTarget, 333, 'item 7: the user offset survives the force');
+    assert.strictEqual(A.K.kickDvrDur, 900, 'item 7: the replay clock survives the force');
+    const red = mkArm('  kickSetSource(url, {\n    onDvr,\n    target: onDvr ? (seekTo || KO.kickDvrTarget) : 0,\n    dvrDur: KO.kickDvrDur,\n    dvrDurAt: KO.kickDvrDurAt,\n    clearUserSeek: !force, // a channel switch is a new source, not the user\'s seek\n  });',
+      '  KO.kickUrlT = Date.now(); // RED: a second writer stamps only the url');
+    setup(red); red.M.ensureKick(red.K.activeUrl, { force: true });
+    assert.strictEqual(red.K.kickDvrLoadedAt, 0, 'RED item 7: the old stamp leaves DVR state contradictory');
+    console.log('item 7 force: one writer owns url, clock and DVR state - OK');
+  }
+
+  // 8. Loading a replay records the loaded source in activeUrl.
+  {
+    const setup = (A) => {
+      A.K.activeUrl = 'https://ivs.example/live-fix';
+      A.K.kickDvrUrl = 'https://dvr.example/fix';
+      A.K.kickDvrDur = 600; A.K.kickDvrDurAt = Date.now();
+    };
+    const A = mkArm(); setup(A);
+    A.M.kickLoadReplayAt(400);
+    assert.strictEqual(A.K.activeUrl, A.K.kickDvrUrl, 'item 8: the replay becomes the active source');
+    const red = mkArm('  kickSetSource(KO.kickDvrUrl, {', '  if (false) kickSetSource(KO.kickDvrUrl, {');
+    setup(red); red.M.kickLoadReplayAt(400);
+    assert.strictEqual(red.K.activeUrl, 'https://ivs.example/live-fix', 'RED item 8: without the writer a live url still claims a replay');
+    console.log('item 8 replay load: activeUrl follows the source that was loaded - OK');
+  }
+
+  // 9. Going live clears the replay's clock fields in the same write.
+  {
+    const setup = (A) => {
+      const K = A.K;
+      K.activeUrl = 'https://dvr.example/fix'; K.kickOnDvr = true;
+      K.kickDvrDur = 900; K.kickDvrDurAt = Date.now();
+      K.kickDvrLoadedAt = Date.now(); K.kickDvrTarget = 333;
+    };
+    const net = () => {
+      const calls = [];
+      const real = global.fetch;
+      global.fetch = (u) => { calls.push(u); return Promise.resolve({ ok: true, json: () => Promise.resolve({ livestream: { playback_url: 'https://ivs.example/fresh-fix', id: 'f' } }) }); };
+      return { calls, restore: () => { global.fetch = real; } };
+    };
+    const A = mkArm(); setup(A);
+    const f = net(); await A.M.kickGoLive('chip'); f.restore();
+    assert.strictEqual(A.K.activeUrl, 'https://ivs.example/fresh-fix', 'item 9: the fresh mint is the active source');
+    assert.strictEqual(A.K.kickOnDvr, false, 'item 9: the replay flags are cleared');
+    assert.strictEqual(A.K.kickDvrDur + A.K.kickDvrDurAt + A.K.kickDvrLoadedAt + A.K.kickDvrTarget, 0, 'item 9: no replay clock survives the live url');
+    const red = mkArm('    kickSetSource(k.url, { onDvr: false }); // clears DVR dur/loaded/target with the url',
+      '    KO.activeUrl = k.url; KO.kickUrlT = Date.now(); // RED: second writer leaves replay state');
+    setup(red); const rf = net(); await red.M.kickGoLive('chip'); rf.restore();
+    assert.ok(red.K.kickDvrTarget > 0 && red.K.kickDvrDur > 0, 'RED item 9: the old stamp keeps replay state on a live url');
+    console.log('item 9 go-live: mint clears replay state in one write - OK');
+  }
+
+  // 10. The frame-death watchdog honours the same 25 s loading grace.
+  {
+    const setup = (A) => {
+      const K = A.K;
+      K.activeUrl = 'https://dvr.example/fix'; K.kickOnDvr = true;
+      K.kickDvrTarget = 222; K.kickUrlT = Date.now() - 1000;
+      K.lastKickSt = Date.now() - 40000;
+      K.kickState = { state: 'Playing', pos: 100, lat: 1, dur: 600 };
+      K.wrap.style.display = 'block';
+      mountDoc.hidden = false;
+    };
+    const A = mkArm(); setup(A);
+    A.M.rectTick();
+    assert.ok(A.K.kickFrame, 'item 10: a fresh load is not rebuilt');
+    assert.strictEqual(A.K.kickDvrTarget, 222, 'item 10: the user offset is untouched');
+    assert.ok(A.rows('kick-frame-rebuild').some((r) => r.why === 'loading-grace' && r.rebuilt === false && r.graceMs === 25000),
+      'item 10: the refusal row prints the grace that protected the load');
+    const red = mkArm('        if (sourceFresh) {', '        if (false) { // RED: grace ignored');
+    setup(red); red.M.rectTick();
+    assert.ok(red.rows('kick-frame-rebuild').some((r) => r.why === 'silent' && r.rebuilt === true), 'RED item 10: the old watchdog rebuilds mid-load');
+    console.log('item 10 frame watchdog: fresh load keeps its source and offset - OK');
+  }
+
+  // 11. The never-played watchdog uses ONE 25 s window, not a second 15 s one.
+  {
+    const setup = (A) => {
+      const K = A.K;
+      K.activeUrl = 'https://ivs.example/fix'; K.kickEverPlayed = false;
+      K.kickState = { state: 'Idle', ct: 0 }; K.kickUrlT = Date.now() - 20000;
+    };
+    const A = mkArm(); setup(A);
+    await A.M.probeKickLayer();
+    assert.ok(A.K.kickUrlT > 0, 'item 11: a 20 s load is still inside the single grace');
+    assert.strictEqual(A.rows('kick_stall').length, 0, 'item 11: no premature teardown row');
+    const red = mkArm('    loadAgeMs > KICK_GRACE_MS', '    loadAgeMs > 15000 // RED: second loading window');
+    setup(red); await red.M.probeKickLayer();
+    assert.strictEqual(red.K.activeUrl, null, 'RED item 11: the 15 s watchdog tears the layer down');
+    console.log('item 11 load grace: one 25 s window, no second watchdog - OK');
+  }
+
+  // 12. A refused rescue prints its numbers; it never mints a live url.
+  {
+    const setup = (A) => {
+      const K = A.K;
+      K.kickOnDvr = true; K.kickDvrUrl = 'https://dvr.example/fix';
+      K.kickDvrTarget = 400; K.kickDvrDur = 1000; K.kickDvrDurAt = Date.now();
+      K.kickDvrLoadedAt = Date.now(); K.kickDvrRescues = 2;
+      K.kickState = { state: 'Ended', pos: 400, lat: 0, dur: 1000 };
+    };
+    const net = () => {
+      const calls = [];
+      const real = global.fetch;
+      global.fetch = (u) => { calls.push(u); return Promise.resolve({ ok: true, json: () => Promise.resolve({ livestream: { playback_url: 'https://ivs.example/fresh-fix', id: 'f' } }) }); };
+      return { calls, restore: () => { global.fetch = real; } };
+    };
+    const A = mkArm(); setup(A);
+    const f = net(); A.M.kickDvrRescue('ended', 1000); await settle(30); f.restore();
+    assert.strictEqual(A.posts.filter((m) => m && m.t === 'load').length, 0, 'item 12: a spent rescue does not reload');
+    const ref = A.rows('dvr-ended-rescue').filter((r) => r.want === 400 && r.refused === 'rescue-budget');
+    assert.ok(ref.length === 1 && ref[0].rescues === 2 && ref[0].budget === 0 && ref[0].rescueMs === 15000 && ref[0].clock === 'replay-published-clock',
+      `item 12: the refusal prints the numbers that refused it (got ${JSON.stringify(ref)})`);
+    const red = mkArm("  diag('dvr-ended-rescue', {\n    why, want:", "  kickBackToLive(); // RED: every refusal mints\n  diag('dvr-ended-rescue', {\n    why, want:");
+    setup(red); const rf = net(); red.M.kickDvrRescue('ended', 1000); await settle(30); rf.restore();
+    assert.ok(rf.calls.length > 0, 'RED item 12: the pre-fix refusal mints a live url');
+    console.log('item 12 rescue: budget refusal prints numbers, never an implicit mint - OK');
+  }
+
   // ANTI-VACUITY. Every arm above prints one "<label> - OK" line, and a suite
   // whose arms silently stopped running still exits 0 today (that is how a
   // regression gets a green receipt). The expected labels are listed HERE, in
@@ -4188,6 +4457,8 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     'A3f arrow coalesced report', 'A3g arrow delivery',
     'S1 drag-deep', 'S2 drag-edge', 'S3 dvr-ended', 'S4 chip-live', 'S5 dvr-ended-no-duration', 'U2 storage partial-enable',
     'N3 ad park', 'N3d hidden pause',
+    'item 2 dvr target', 'item 3 re-show', 'item 5/6 clocks', 'item 7 force', 'item 8 replay load',
+    'item 9 go-live', 'item 10 frame watchdog', 'item 11 load grace', 'item 12 rescue',
   ];
   const printed = armLog.map((l) => String(l).trim());
   const missing = ARMS.filter((a) => !printed.some((l) => l.startsWith(a)));

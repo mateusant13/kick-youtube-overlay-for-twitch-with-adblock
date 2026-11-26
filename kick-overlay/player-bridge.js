@@ -547,6 +547,21 @@ if (HLS_MODE) {
           if (V.seekable && V.seekable.length) {
             const se = V.seekable.end(V.seekable.length - 1);
             const be = V.buffered && V.buffered.length ? V.buffered.end(V.buffered.length - 1) : 0;
+            // `seekable.end` is the literal unknown sentinel 1073741824 on a
+            // native live element. Deriving `se - LIVE_TARGET_SEC` from it
+            // commanded a seek to 1073741821 and froze the picture. The only
+            // same-origin edge left is the newest buffered frame; when even
+            // that is absent, REFUSE and print the numbers that refused it.
+            const seReal = isFinite(se) && se > 0 && se < 1e6;
+            if (!seReal) {
+              if (isFinite(be) && be > V.currentTime + 0.25) {
+                V.currentTime = be;
+                beacon('seek-edge', { cmd: 'seekToLive', engine: 'hls', src: 'buffered', se: se, limit: 1e6, be: be, pos: V.currentTime });
+              } else {
+                beacon('seek-refused', { cmd: 'seekToLive', engine: 'hls', why: 'unusable-seekable-end', se: se, limit: 1e6, be: be, pos: V.currentTime });
+              }
+              break;
+            }
             // Aim at the newest frame that can PLAY, never at `seekable.end`.
             // `seekable.end` is where the playlist says live is, not data this
             // player holds: seeking there parks the picture until the next
@@ -556,6 +571,8 @@ if (HLS_MODE) {
             // buffered ahead, one sync window behind the edge is.
             const target = be > V.currentTime + 0.25 ? be : Math.max(0, se - LIVE_TARGET_SEC);
             V.currentTime = Math.min(target, Math.max(0, se - 0.2));
+          } else {
+            beacon('seek-refused', { cmd: 'seekToLive', engine: 'hls', why: 'no-seekable', pos: V.currentTime });
           }
         } catch { /* ignore */ }
         break;
@@ -861,6 +878,13 @@ window.addEventListener('message', (ev) => {
           // not move: position reached/approached the target, or a live
           // rewind raised the latency. Same-target retries are harmless.
           const beforeLat = Math.max(0, edge - cur);
+          // A user seek owns the playhead from here on. Invalidating only the
+          // retry generation was not enough: the `load`'s pendingSeek stayed
+          // armed and the NEXT 'st' heartbeat dragged the playhead back to the
+          // old load offset (the owner's "ta brigando comigo no controle do
+          // seek"). One owner, one target.
+          pendingSeek = null;
+          pendingTries = 0;
           const gen = ++seekGen;
           let tries = 0;
           const attempt = () => {
@@ -890,6 +914,8 @@ window.addEventListener('message', (ev) => {
       break;
     case 'seekToLive':
       seekGen++; // a pending ArrowLeft retry must not pull us back again
+      pendingSeek = null; // a go-live command owns the playhead, not the old load
+      pendingTries = 0;
       try {
         // The newest actually-buffered frame is the live edge. getLiveLatency()
         // lags a manual rewind by several seconds, so `pos + getLiveLatency()`

@@ -233,7 +233,7 @@ const HLS_LEVELS = [
   // -> top rung" is a different answer from "695px -> 720p".
   { height: 1080, width: 1920, bitrate: 6000000 },
 ];
-function makeHlsFrame({ source = SOURCE, height = 695 } = {}) {
+function makeHlsFrame({ source = SOURCE, height = 695, seekableEnd = 0 } = {}) {
   const delivered = [];
   const listeners = {};
   const intervals = [];
@@ -241,7 +241,7 @@ function makeHlsFrame({ source = SOURCE, height = 695 } = {}) {
     controls: false, muted: false, readyState: 4, currentTime: 10,
     addEventListener() {}, play() { return Promise.resolve(); }, pause() {},
     getBoundingClientRect: () => ({ x: 0, y: 0, width: 1236, height }),
-    buffered: { length: 0 }, seekable: { length: 0 },
+    buffered: { length: 0 }, seekable: seekableEnd ? { length: 1, start: () => 0, end: () => seekableEnd } : { length: 0 },
   };
   class Loader { load() {} }
   class Hls {
@@ -265,7 +265,8 @@ function makeHlsFrame({ source = SOURCE, height = 695 } = {}) {
   const window = { parent, addEventListener(t, fn) { (listeners[t] = listeners[t] || []).push(fn); }, Hls };
   const document = { getElementById: (id) => (id === 'v' ? video : null) };
   const location = { search: `?m=hls&tw=1&token=${TOKEN}`, href: `chrome-extension://test/player.html?m=hls&tw=1&token=${TOKEN}` };
-  const chrome = { runtime: { getURL: (p) => `chrome-extension://test/${p}`, sendMessage: (_m, cb) => { if (cb) cb(); }, lastError: null } };
+  const diags = [];
+  const chrome = { runtime: { getURL: (p) => `chrome-extension://test/${p}`, sendMessage: (m, cb) => { if (m && m.__koDiag) diags.push(m.__koDiag); if (cb) cb(); }, lastError: null } };
   const run = new Function('window', 'document', 'chrome', 'location', 'performance', 'parent', 'Hls',
     'setInterval', 'setTimeout', 'URLSearchParams', 'Date', source);
   run(window, document, chrome, location, { now: () => 1 }, parent, Hls,
@@ -273,6 +274,12 @@ function makeHlsFrame({ source = SOURCE, height = 695 } = {}) {
   return {
     hls: Hls.last,
     levelRow() { return delivered.map((d) => d.msg && d.msg.__koKick).find((m) => m && m.e === 'standby-level'); },
+    video, diags,
+    receive(payload) {
+      for (const fn of listeners.message || []) fn({
+        data: { __koKick: { ...payload, _koToken: TOKEN } }, origin: YOUTUBE, source: parent,
+      });
+    },
   };
 }
 function startLevelArm(src, height) {
@@ -336,6 +343,45 @@ try {
   // arm refuses (360p for a zero rect), which is what makes the arm a detector.
   ok('RED: without the layout floor a zero rect reproduces the 360p pick',
     red && red.row.d.name === '360p' && red.startLevel === 2 && red.row.d.why === 'rect', JSON.stringify(red));
+}
+
+// ---- Item 1: a user seek disarms the load's pending retry ------------------
+{
+  const f = makeFrame();
+  const seeks = [];
+  f.player.seekTo = (s) => { seeks.push(s); f.player.getPosition = () => s; };
+  f.receive({ t: 'load', url: 'https://ivs.example/live', seekTo: 400 });
+  f.tick();
+  ok('item 1: the pending load seek is applied before the drag', seeks.includes(400), JSON.stringify(seeks));
+  const before = seeks.length;
+  f.receive({ t: 'seek', s: 42 });
+  f.tick();
+  ok('item 1: a user seek owns the playhead, no old load seek after it',
+    seeks.slice(before).length === 1 && !seeks.slice(before).includes(400), JSON.stringify(seeks));
+  const redFrame = makeFrame({ source: SOURCE.replace('          pendingSeek = null;\n          pendingTries = 0;\n', '') });
+  const redSeeks = [];
+  redFrame.player.seekTo = (s) => { redSeeks.push(s); redFrame.player.getPosition = () => s; };
+  redFrame.receive({ t: 'load', url: 'https://ivs.example/live', seekTo: 400 });
+  redFrame.tick();
+  const redBefore = redSeeks.length;
+  redFrame.receive({ t: 'seek', s: 42 });
+  redFrame.tick();
+  ok('RED item 1: without the clear, the next heartbeat drags back to the load offset',
+    redSeeks.slice(redBefore).includes(400), JSON.stringify(redSeeks));
+}
+
+// ---- Item 4: the seekable sentinel is never used as a seek target ----------
+{
+  const f = makeHlsFrame({ seekableEnd: 1073741824 });
+  f.receive({ t: 'seekToLive' });
+  ok('item 4: a sentinel seekable end never moves the playhead', f.video.currentTime === 10, `ct=${f.video.currentTime}`);
+  ok('item 4: the refusal row prints the sentinel and its limit',
+    f.diags.some((d) => d && d.ev === 'seek-refused' && d.data.se === 1073741824 && d.data.limit === 1000000),
+    JSON.stringify(f.diags));
+  const red = makeHlsFrame({ seekableEnd: 1073741824, source: SOURCE.replace('            const seReal = isFinite(se) && se > 0 && se < 1e6;', '            const seReal = isFinite(se) && se > 0;') });
+  red.receive({ t: 'seekToLive' });
+  ok('RED item 4: restoring the pre-fix guard derives 1073741821', red.video.currentTime === 1073741821,
+    `ct=${red.video.currentTime}`);
 }
 
 console.log(`\nRESULT ${failed ? 'FAIL' : 'PASS'} bridge-handshake checks=${checks} failed=${failed}`);

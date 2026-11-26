@@ -3,7 +3,7 @@
   "repo": "kicktwitchyoutube_instagram",
   "git_head": "0d3ddae",
   "generated_at": "2026-11-26T20:36:08Z",
-  "total_tracked_files": 136,
+  "total_tracked_files": 137,
   "feature_count": 2,
   "features": [
     {
@@ -110,6 +110,7 @@
       "files": [
         "kick-overlay/ad-detect-test.cjs",
         "kick-overlay/ad-time-continuity-test.cjs",
+        "kick-overlay/audio-authority-test.cjs",
         "kick-overlay/adblock-bridge.js",
         "kick-overlay/background.js",
         "kick-overlay/bridge-handshake-test.cjs",

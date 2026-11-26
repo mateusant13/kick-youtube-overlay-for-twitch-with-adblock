@@ -1638,6 +1638,25 @@
     "node _tools/ko-census.mjs --gate from the repo root -> `RESULT PASS  guardShaped=111  unexercisedState=31  (budget met)`; kick-overlay/content.js KO_VER and kick-overlay/manifest.json version bumped to 0.8.127"
    ],
    "next": "OWED live half: on the owner's Chrome, `node _tools/ko-adlog-window.mjs 9222 1200 --keep ad-bypass-start,ad-skip,ad-pod-max,ad-pod-end,ad-ui-release,native-handoff` after the next real pod must show (a) every ad-bypass-start carrying ad evidence, never a bare stale adExtinf; (b) one ad-pod-max at or under 60 s, or an earlier named pod end; (c) a later genuine ad opening a new pod after the previous ad-pod-end, not an ad-skip {reason:'cooldown'}."
+  },
+  {
+   "id": "KO-20261127-03",
+   "title": "The seek layer answered with two clocks, two source writers and three loading windows: a drag past the edge became a go-live mint, and a spent DVR rescue re-minted the live url",
+   "state": "fixed",
+   "author": "OverlaySeekTruth",
+   "reported": "2026-11-26",
+   "fixed_in": "0.8.128",
+   "commit": null,
+   "hypothesis": "Twelve defects with one shape: a decision about WHERE the picture comes from was made from a value whose origin was not named. (1) the IVS heartbeat kept `pendingSeek` after a load, so it dragged the playhead back to the previous offset; (2) a drag inside the replay was not recorded, so the first `Ended` reload dropped the user's offset; (3) a re-show seeked to the edge while a user seek was in flight; (4) hls `seekToLive` accepted the 2^30 sentinel as a position; (5/6) `kickBroadcastEdge()` and `kickSrcOffset()` subtracted a session clock from a broadcast clock; (7/8/9) `activeUrl`/`kickOnDvr`/`kickUrlT`/DVR fields had four writers, so a live url could claim a replay; (10/11) the frame-death watchdog used 15 s while the load grace was 25 s, so a DVR switch was rebuilt mid-load; (12) a failed DVR rescue fell through to a live mint instead of refusing inside its own budget.",
+   "falsifier": "Every seek decision must name its clock origin, and a mixed-origin subtraction must be refused with both numbers rather than computed. One writer (`kickSetSource`) owns `activeUrl`, `kickUrlT`, `kickOnDvr`, the DVR fields and `pendingSeek`; one 25 s window (`KICK_GRACE_MS`) governs both the load grace and the frame-death watchdog; a rescue that has spent its budget refuses with `dvr-ended-rescue {refused:'rescue-budget'}` and never mints. Arms in `content-fix-test.cjs` and `bridge-handshake-test.cjs` drive the real `content.js` and the real bridge, each with a RED mutation restoring the pre-fix line (recorded below).",
+   "evidence": [
+    "`cd kick-overlay && node content-fix-test.cjs` -> `ARMS 52/52 present` and `ALL CONTENT.JS FIX CHECKS PASSED` (items 2, 3, 5/6, 7, 8, 9, 10, 11, 12), 2026-11-26",
+    "`node kick-overlay/bridge-handshake-test.cjs` -> `RESULT PASS bridge-handshake checks=30 failed=0` (items 1 and 4, plus `PASS RED item 4: restoring the pre-fix guard derives 1073741821`)",
+    "`node _tools/ko-census.mjs --gate` -> `RESULT PASS  guardShaped=105  unexercisedState=30  (budget met)`; the lane's guarded exits were restructured through a `kickExit` helper, never budgeted (`guardShaped` fell from 111 to 105 while the code grew)",
+    "fix: IVS `seek`/`seekToLive` clear `pendingSeek`/`pendingTries` and bump `seekGen`; `kickStartDvr` records `KO.kickDvrTarget`; `showKickLayer` refuses an edge seek during `KO.seeking` or after a user seek and prints `kick-reshow-refused {why,userSeekAgeMs,pos,target,onDvr}`; hls `seekToLive` refuses the sentinel with `seek-refused {cmd,engine,why,se,limit,be,pos}`; `kickSeekInputs()`/`kickReplayEdge()` name `clock`/`edgeClock`/`posClock`; `kickSetSource()` is the single source writer; `KICK_GRACE_MS` is the single loading window; `kickDvrRescue` refuses at `KICK_DVR_RESCUE_MAX`; version 0.8.128",
+    "RED mutations present in the suites: pre-drag target never recorded; a re-show drags a user seek to the edge; the two clock origins are mixed; a second writer stamps only the url; a live url claims a replay; the grace is ignored; the second 15 s window returns; every refusal mints; the bridge heartbeat drags the playhead back; the sentinel guard removed"
+   ],
+   "next": "OWED live half: on the owner's Chrome with `player=kick` on a channel on air, drag the seek bar inside the DVR and release, then `node _tools/ko-adlog-window.mjs 9222 1200 --keep live_seek,dvr-ended-rescue,seek-refused,kick-reshow-refused,kick-st,overlay-reveal` must show one `live_seek {why:'drag-edge'}` for an edge release, no `kickBackToLive`/mint from a drag, `dvr-ended-rescue {wentLive:false}` on a replay error, and `seek-refused` only with a printed sentinel or mixed origin."
   }
  ]
 }
