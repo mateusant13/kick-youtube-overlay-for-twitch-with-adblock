@@ -1,0 +1,138 @@
+{
+  "schema": "revival.features/v1",
+  "repo": "kicktwitchyoutube_instagram",
+  "git_head": "b05576f",
+  "generated_at": "2026-11-26T19:53:04Z",
+  "total_tracked_files": 102,
+  "feature_count": 2,
+  "features": [
+    {
+      "id": "_tools",
+      "name": " Tools",
+      "status": "active",
+      "files": [
+        "_tools/cdp-daemon.mjs",
+        "_tools/cdp.mjs",
+        "_tools/ko-adlog-verdict.mjs",
+        "_tools/ko-adlog-window.mjs",
+        "_tools/ko-auto-install.ps1",
+        "_tools/ko-cdp.mjs",
+        "_tools/ko-census.mjs",
+        "_tools/ko-click.mjs",
+        "_tools/ko-ctx.mjs",
+        "_tools/ko-eval.mjs",
+        "_tools/ko-gql-probe.mjs",
+        "_tools/ko-guest.mjs",
+        "_tools/ko-harness-check.mjs",
+        "_tools/ko-harness.mjs",
+        "_tools/ko-hook-probe.mjs",
+        "_tools/ko-live-latency-arm.mjs",
+        "_tools/ko-live-watch.mjs",
+        "_tools/ko-load-check.mjs",
+        "_tools/ko-look.mjs",
+        "_tools/ko-orphan-cover-arm.mjs",
+        "_tools/ko-real-arm-d1.mjs",
+        "_tools/ko-real-arm-d2.mjs",
+        "_tools/ko-real-capture.mjs",
+        "_tools/ko-reload-persistent.mjs",
+        "_tools/ko-replica/certs.mjs",
+        "_tools/ko-replica/compare.mjs",
+        "_tools/ko-replica/media.mjs",
+        "_tools/ko-replica/page/index.html",
+        "_tools/ko-replica/page/page.js",
+        "_tools/ko-replica/page/player-worker.js",
+        "_tools/ko-replica/run.mjs",
+        "_tools/ko-replica/server.mjs",
+        "_tools/ko-snapshot.mjs",
+        "_tools/ko-sw-net.mjs",
+        "_tools/ko-twitch-net.mjs",
+        "_tools/ko-verify.mjs",
+        "_tools/ko-yt-net.mjs",
+        "_tools/relay.mjs"
+      ],
+      "file_count": 38,
+      "recent_commit_touches": 116,
+      "recent_commit_subjects": [
+        "fix(ad): end a playlist pod when the ad UI leaves, and stop starting the standby at 360p (0.8.111)",
+        "fix(overlay): native stall watchdog, arrow seek parity, ad standby silence (0.8.110)",
+        "gate: refuse growth of silent decisions (ko-census)",
+        "fix(adblock): the extension saw no ad at all \u2014 measure paint, read the slate, hook SharedWorker (0.8.94)",
+        "verdict: read the squeeze, his gestures and the DVR rescue",
+        "Add the offline Twitch ad-delivery replica and a control arm",
+        "one look instrument, and never a tab on his screen"
+      ],
+      "how_it_works": "Macro subsystem owning 38 tracked code file(s) under `_tools`; recent evolution: fix(ad): end a playlist pod when the ad UI leaves, and stop starting the standby at 360p (0.8.111)",
+      "inputs": [
+        "CLI args / stdin",
+        "Environment variables / config",
+        "IPC / WebSocket events"
+      ],
+      "outputs": [
+        "IPC / UI state updates",
+        "Persisted files / DB state",
+        "Structured stdout / logs"
+      ],
+      "interlinks": [
+        "kick-overlay"
+      ],
+      "verify_cmd": "",
+      "metric_ids": [],
+      "curated": false
+    },
+    {
+      "id": "kick-overlay",
+      "name": "Kick Overlay",
+      "status": "active",
+      "files": [
+        "kick-overlay/ad-detect-test.cjs",
+        "kick-overlay/ad-time-continuity-test.cjs",
+        "kick-overlay/adblock-bridge.js",
+        "kick-overlay/background.js",
+        "kick-overlay/bridge-handshake-test.cjs",
+        "kick-overlay/channel-switch-test.cjs",
+        "kick-overlay/cold-cover-fixture-test.cjs",
+        "kick-overlay/content-fix-test.cjs",
+        "kick-overlay/content.js",
+        "kick-overlay/hls/hls.min.js",
+        "kick-overlay/ivs/amazon-ivs-wasmworker.min.js",
+        "kick-overlay/ivs/index.js",
+        "kick-overlay/ko-audio.js",
+        "kick-overlay/mute-decision-test.cjs",
+        "kick-overlay/player-bridge.js",
+        "kick-overlay/player.html",
+        "kick-overlay/popup.html",
+        "kick-overlay/popup.js",
+        "kick-overlay/route-gate-test.cjs",
+        "kick-overlay/tab-audio-scope-test.cjs",
+        "kick-overlay/twitch-adblock.js",
+        "kick-overlay/youtube-resume-test.cjs",
+        "kick-overlay/yt-route-test.cjs"
+      ],
+      "file_count": 23,
+      "recent_commit_touches": 304,
+      "recent_commit_subjects": [
+        "0.8.125: a rect of zero is not a small player, so the clean picture no longer opens at 360p",
+        "0.8.124: the hand-back wait counts reports, not polls, and a play needs a gesture in the player",
+        "0.8.123: a new pod cancels the hand-back wait instead of losing its own frame",
+        "0.8.122: keep the clean frame on screen until the handed-back native can play forward",
+        "ad-time-continuity: the replacement pod must hand back too, and the stale-warm arm names its own precondition",
+        "fix(harness): poll the reload arms instead of racing the 800 ms delay; 0.8.118"
+      ],
+      "how_it_works": "Macro subsystem owning 23 tracked code file(s) under `kick-overlay`; recent evolution: 0.8.125: a rect of zero is not a small player, so the clean picture no longer opens at 360p",
+      "inputs": [
+        "CLI args / stdin",
+        "HTTP / API requests",
+        "IPC / WebSocket events"
+      ],
+      "outputs": [
+        "HTTP / JSON responses",
+        "IPC / UI state updates",
+        "Structured stdout / logs"
+      ],
+      "interlinks": [],
+      "verify_cmd": "",
+      "metric_ids": [],
+      "curated": false
+    }
+  ]
+}

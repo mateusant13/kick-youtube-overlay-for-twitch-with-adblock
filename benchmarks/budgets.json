@@ -1,0 +1,23 @@
+{
+  "schema": "revival.budgets/v1",
+  "regression_tolerance_pct": 10.0,
+  "metrics": [
+    {
+      "id": "basic.import_or_boot_ms",
+      "tier": "basic",
+      "input_desc": "cold process startup / primary module import",
+      "output_desc": "ready exit 0",
+      "metric_name": "wall_ms",
+      "unit": "ms",
+      "direction": "lower_is_better",
+      "ceiling": 3000.0,
+      "command": "",
+      "parse_mode": "wall_ms",
+      "parse_pattern": "",
+      "owner_paths": [],
+      "blast_radius_callers": [],
+      "red_arm_cmd": "",
+      "note": "Replace empty command with project's real startup/basic I/O probe."
+    }
+  ]
+}

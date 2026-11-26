@@ -1,0 +1,81 @@
+{
+  "schema": "revival.friction/v1",
+  "updated_at": "2026-11-26T19:53:06Z",
+  "default_inner_loop_target_s": 15.0,
+  "frictions": [
+    {
+      "id": "friction.youtube_live_dep",
+      "category": "external_wait",
+      "description": "Live external/page dependency (youtube_live_dep) detected in 5+ file(s).",
+      "evidence_files": [
+        "cookie-extension/src/modules/cookie_bridge.mjs",
+        "kick-overlay/background.js",
+        "kick-overlay/ko-audio.js",
+        "kick-overlay/player-bridge.js",
+        "kick-overlay/popup.js"
+      ],
+      "before_s": null,
+      "target_s": 15.0,
+      "solution_type": "offline_twin",
+      "solution_plan": "Depends on live YouTube page/network; record an offline replayable HTML/JSON/media twin under harness/twins/.",
+      "twin_or_script": "harness/twins/",
+      "verify_cmd": "",
+      "after_s": null,
+      "status": "OPEN"
+    },
+    {
+      "id": "friction.browser_live_wait",
+      "category": "external_wait",
+      "description": "Live external/page dependency (browser_live_wait) detected in 5+ file(s).",
+      "evidence_files": [
+        "kick-overlay/adblock-bridge.js",
+        "_scratch/dump.mjs",
+        "_scratch/probe.mjs",
+        "_scratch/probe2.mjs",
+        "_scratch/probe3.mjs"
+      ],
+      "before_s": null,
+      "target_s": 15.0,
+      "solution_type": "offline_twin",
+      "solution_plan": "Browser/page event wait risk; capture DOM/event/HAR snapshot into harness/twins/ for <5s offline replay.",
+      "twin_or_script": "harness/twins/",
+      "verify_cmd": "",
+      "after_s": null,
+      "status": "OPEN"
+    },
+    {
+      "id": "friction.twitch_live_dep",
+      "category": "external_wait",
+      "description": "Live external/page dependency (twitch_live_dep) detected in 5+ file(s).",
+      "evidence_files": [
+        "cookie-extension/src/background.js",
+        "cookie-extension/src/clip_assist.mjs",
+        "cookie-extension/src/modules/cookie_bridge.mjs",
+        "kick-overlay/ko-audio.js",
+        "kick-overlay/player-bridge.js"
+      ],
+      "before_s": null,
+      "target_s": 15.0,
+      "solution_type": "offline_twin",
+      "solution_plan": "Depends on live streaming platform; capture recorded manifest/chat/HTML twin under harness/twins/.",
+      "twin_or_script": "harness/twins/",
+      "verify_cmd": "",
+      "after_s": null,
+      "status": "OPEN"
+    },
+    {
+      "id": "friction.inner_test_loop",
+      "category": "test",
+      "description": "Primary edit -> test -> verify inner loop must run incrementally/cached in <= 15s with zero owner dependency.",
+      "evidence_files": [],
+      "before_s": null,
+      "target_s": 15.0,
+      "solution_type": "incremental_cache",
+      "solution_plan": "Provide a single cached/filtered fast-loop command in revival/COMMANDS.md and pin its wall time here.",
+      "twin_or_script": "revival/COMMANDS.md",
+      "verify_cmd": "",
+      "after_s": null,
+      "status": "OPEN"
+    }
+  ]
+}

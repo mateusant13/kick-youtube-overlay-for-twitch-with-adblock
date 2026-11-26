@@ -1,0 +1,115 @@
+{
+  "schema": "revival.sliders/v1",
+  "updated_at": "2026-11-26T19:53:04Z",
+  "scale_0_100": [
+    {
+      "id": "delivery_balance",
+      "label": "Delivery Balance (Product vs Meta)",
+      "baseline": 0,
+      "current": 0,
+      "target": 85,
+      "counterpart": "Gate rigor & hygiene",
+      "proof_cmd": "",
+      "evidence": "UNMEASURED"
+    },
+    {
+      "id": "observability",
+      "label": "Observability & Runtime Forensics",
+      "baseline": 0,
+      "current": 0,
+      "target": 90,
+      "counterpart": "Runtime overhead (<2%)",
+      "proof_cmd": "",
+      "evidence": "UNMEASURED"
+    },
+    {
+      "id": "inner_loop_speed",
+      "label": "Agentic Inner-Loop Speed (<15s + Offline Twins)",
+      "baseline": 0,
+      "current": 0,
+      "target": 90,
+      "counterpart": "Live calibration freshness",
+      "proof_cmd": "",
+      "evidence": "UNMEASURED"
+    },
+    {
+      "id": "architecture_coherence",
+      "label": "Architecture & Contradiction Elimination",
+      "baseline": 0,
+      "current": 0,
+      "target": 85,
+      "counterpart": "Migration blast radius",
+      "proof_cmd": "",
+      "evidence": "UNMEASURED"
+    },
+    {
+      "id": "metric_gate_coverage",
+      "label": "Per-I/O Metric Budgets & Blast-Radius Gates",
+      "baseline": 0,
+      "current": 0,
+      "target": 90,
+      "counterpart": "Gate wall time (<60s)",
+      "proof_cmd": "",
+      "evidence": "UNMEASURED"
+    },
+    {
+      "id": "harness_falsifiers",
+      "label": "Feature x Angle Harness Falsifiers (with RED arms)",
+      "baseline": 0,
+      "current": 0,
+      "target": 85,
+      "counterpart": "Maintenance burden",
+      "proof_cmd": "",
+      "evidence": "UNMEASURED"
+    },
+    {
+      "id": "reversibility_safety",
+      "label": "Reversibility (Git Checkpoints + Worktrees + Rollback)",
+      "baseline": 0,
+      "current": 0,
+      "target": 95,
+      "counterpart": "Staging step friction",
+      "proof_cmd": "",
+      "evidence": "UNMEASURED"
+    },
+    {
+      "id": "autonomy_end_to_end",
+      "label": "Zero-Owner-Dependency Autonomy",
+      "baseline": 0,
+      "current": 0,
+      "target": 95,
+      "counterpart": "Safety boundary discipline",
+      "proof_cmd": "",
+      "evidence": "UNMEASURED"
+    }
+  ],
+  "natural_unit_pairs": [
+    {
+      "id": "detectability",
+      "unit": "pct_faults_named",
+      "current": null,
+      "target": 95,
+      "counterpart_metric": "instrument_wall_ms",
+      "counterpart_value": null,
+      "proof_cmd": ""
+    },
+    {
+      "id": "inner_loop_wall",
+      "unit": "seconds",
+      "current": null,
+      "target": 15,
+      "counterpart_metric": "twin_calibration_age_h",
+      "counterpart_value": null,
+      "proof_cmd": ""
+    },
+    {
+      "id": "e2e_correctness",
+      "unit": "pct_golden_pass",
+      "current": null,
+      "target": 100,
+      "counterpart_metric": "e2e_p95_ms",
+      "counterpart_value": null,
+      "proof_cmd": ""
+    }
+  ]
+}

@@ -2724,3 +2724,40 @@ regex it guarded, leaving a dead `const m` in place of a comment that says why e
 **Still a limit, and named:** the `why:"ready"` limb - a native that refills inside the 3000 ms ceiling - is not
 produced here, because a refused edge cannot refill; it needs a live element (or a second stall window that ends
 early, which is a different scenario).
+
+<!-- REVIVAL:WORKFLOW:START -->
+## Universal Problem-Handling Workflow (All Models: Small -> Frontier)
+
+Follow this exact decision tree on **every** user message before touching code:
+
+1. **Classify the Request First (pick ONE primary type):**
+   - **Question / Explanation** (*"how does X work?", "why did Y happen?"*) -> Read `features/INDEX.md` first, then jump directly to the named owning `file:line`. Never scan the whole repo blindly.
+   - **Proposal / Design / Trade-off** -> Read `features/INDEX.md` + `benchmarks/budgets.json` + `benchmarks/sliders.json`. State current behavior, target shape, blast radius, and metric impact before writing code.
+   - **Bug / Defect / Regression** -> Check `features/INDEX.md` (inputs/outputs & interlinks) + `harness/angles.tsv` + `codeintel trace` / runtime logs. Reproduce with a failing RED test or offline twin in `harness/twins/` **before** editing.
+   - **Feature / Improvement** -> Check `features/INDEX.md` + `revival/COMMANDS.md` + `benchmarks/budgets.json`. Plan the smallest vertical slice (`<=400` LOC), isolate in a git worktree, wire into real entrypoints (zero unwired ghosts).
+   - **Performance / Slow Loop / Refactor** -> Run `codeintel health` + `codeintel trace` + `benchmarks/budgets.json` + `revival/FRICTION.json`. Measure BEFORE on the real target, optimize, prove AFTER on the same instrument.
+
+2. **Mandatory Fast-Lookup Order (Save Tokens, Prevent Drift):**
+   1. `features/INDEX.md` — macro architecture, inputs, outputs, and feature interlinks.
+   2. `revival/COMMANDS.md` — verified build, fast-test (`<15s`), offline twin, and gate commands.
+   3. `benchmarks/budgets.json` — required metrics & ceilings (basic -> E2E) that MUST NOT regress.
+   4. `harness/angles.tsv` & `harness/twins/` — falsifiers and offline replayable twins.
+   5. `revival/GOAL.json` & `revival/MILESTONES.json` — durable multi-day goal and active wave.
+
+3. **Execution & Landing Contract (Non-Negotiable):**
+   - Never guess runtime behavior from reading code alone; prove with a runnable command + RED/GREEN arm.
+   - Work in an isolated git worktree for non-trivial edits; snapshot with `git_checkpoint.py` before drastic refactors.
+   - Run the project gate (which runs **metric budgets**, **blast-radius checks**, and **`feature_map_sync.py --gate`**) before claiming done.
+   - Never leave `AGENTS.md` or `features/INDEX.md` stale after adding/renaming a macro feature.
+<!-- REVIVAL:WORKFLOW:END -->
+
+<!-- REVIVAL:FEATURES:START -->
+## Macro Feature Map (Gate-Synced — Details in `features/INDEX.md`)
+
+| Feature | Files | Inputs -> Outputs | Interlinks |
+|---|---:|---|---|
+| `_tools` | 38 | CLI args / stdin, Environment variables / config -> IPC / UI state updates, Persisted files / DB state | kick-overlay |
+| `kick-overlay` | 23 | CLI args / stdin, HTTP / API requests -> HTTP / JSON responses, IPC / UI state updates | - |
+
+Full macro contracts, verify commands, and file ownership live in `features/INDEX.md` and `features/features.json` (enforced on every gate by `feature_map_sync.py --gate`).
+<!-- REVIVAL:FEATURES:END -->
