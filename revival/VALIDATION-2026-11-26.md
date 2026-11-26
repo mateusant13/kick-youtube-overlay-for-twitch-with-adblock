@@ -5,13 +5,16 @@ Lane: SubOrch-Verify (adversarial). Base commit `e66f551`, worktree
 Read-only on product code. Every row below was executed on this machine; commands and outputs are quoted
 verbatim, trimmed only to the field that decides the row.
 
-Scope note: the brief names "the 0.8.127 hand-back wait". No 0.8.127 exists in this tree
-(`jq -r .version kick-overlay/manifest.json` -> `0.8.126`, and `grep -rn "0.8.127"` over the repo -> 0 hits).
-The hand-back wait is the 0.8.122..0.8.126 code in `kick-overlay/twitch-adblock.js:3106-3206`.
+Scope note: the brief names "the 0.8.127 hand-back wait". At the base commit `e66f551` the manifest reads
+`0.8.126` (`jq -r .version kick-overlay/manifest.json`) and no `0.8.127` string exists in that tree; the
+release line stamped a `0.8.127` build afterwards (`_evidence/KO-20261023-01-arms.md:5` and
+`KO-20261026-04-arms.md:5` carry `extension: 0.8.127`) and main is now `0.8.128`. The hand-back wait is the
+code that starts at `kick-overlay/twitch-adblock.js:3106` in `e66f551`; the last section of this file
+re-measures every row's conclusion against `0.8.128` and gives the shifted line numbers.
 
 | # | Claim under test | Test (command) | Result (measured) | Verdict |
 |---|---|---|---|---|
-| A1 | Build `0.8.127` carries the hand-back wait | `jq -r .version kick-overlay/manifest.json`; `grep -rn "0.8.127" .` | `0.8.126`; zero hits for `0.8.127` anywhere | **REFUTED** (label only; the code exists at 0.8.126) |
+| A1 | Build `0.8.127` is the tree under test | `jq -r .version kick-overlay/manifest.json` at `e66f551`; `grep -rn "0.8.127" .` at `e66f551` | `0.8.126`, zero hits in that tree; the `0.8.127` label appears only in later `_evidence/` receipts, and main is `0.8.128` | **REFUTED** (label; the same code is present and behaves identically at 0.8.128, see the last section) |
 | A2 | At a pod end with the native below HAVE_FUTURE_DATA the wait arms, the frame stays mounted and the native is not resumed | probe `hb-probe.cjs` case A (real world from `kick-overlay/mute-decision-test.cjs`, `setNative rs:1` + `pod()` + `bypass {type:'ad-end'}`) | `handback-wait {"rs":1,"cleanLat":3,"capMs":3000}`, `frameMounted:true`, native `{rs:1,paused:true}`, `native-resume:[]` | **SUPPORTED** |
 | A3 | "A pod end never puts a frozen native on screen" (the 0.8.122 defect class) | probe cases B and C: same starved state, pod ended by `bypass {type:'ad-fail'}` and by the 180 s ceiling | B: `frameMounted:false`, `handback-wait:[]`, `native-resume [{"tag":"ad-end","rs":1,"ct":37}]`. C (181 s of a healthy advancing frame): `frameMounted:false`, `handback-wait:[]`, `native-resume [{"tag":"ad-end","rs":1,"ct":30,"selfPaused":180}]` | **REFUTED** — the wait is scoped to `reason === 'ad-end'` (`twitch-adblock.js:3141`); two other pod-end doors hand back `rs:1` |
 | A4 | Those doors are production-reachable, not theoretical | source: `setTimeout(() => stopAdOverlay('timeout'), 180*1000)` armed at reveal (`:3470`); `stopAdOverlay('ad-fail')` with no revealed/rs guard (`:4850-4852`); `ad-fail` producer `postBypass({type:'ad-fail'})` (`:5740`, `:5744`). Owner ring: `AGENTS.md:1863`, `:1878`, `:2234` (`native-handoff {podAgeMs:180008}` / `180012`, two pods that ran the whole ceiling) | the 180 s door is the ceiling the owner's own ring already recorded; the `ad-fail` door has no guard | **SUPPORTED** (reachability) |
@@ -57,3 +60,29 @@ The hand-back wait is the 0.8.122..0.8.126 code in `kick-overlay/twitch-adblock.
   afterwards; the `I:` checkout was never written.
 - `KO_REAL_CLOCK=1` timings (74.6 s, 271.4 s) exceed the 15 s / 60 s budget ceilings by design: they are the
   replay arm, not the inner loop.
+
+## Re-measured at main HEAD `0.8.128` (landed after the table above)
+
+`0.8.128` ("one seek clock, one source writer, one loading window") rewrote parts of the ad path, so every
+row's conclusion was re-checked against it, not carried over from `e66f551`.
+
+| `e66f551` line | `0.8.128` line | site |
+|---|---|---|
+| `:3141` | `:3345` | arm guard, still `reason === 'ad-end'` |
+| `:267` | `:279` | `HANDBACK_WAIT_MS = 3000` |
+| `:3470`, `:4521` | `:3679`, `:4086` | `setTimeout(() => stopAdOverlay('timeout'), 180 * 1000)` |
+| `:4850-4852` | `:5088` | `if (msg.type === 'ad-fail') stopAdOverlay('ad-fail')` |
+| `:5740`, `:5744` | `:6018`, `:6022` | `postBypass({ type: 'ad-fail' })` |
+| `:650` | `:662` | `visibilitychange` handler |
+
+The probe was re-run with its product path pointed at `I:/kicktwitchyoutube_instagram/kick-overlay`:
+
+```
+"label":"A ad-end (control)" "frameMounted":true
+"label":"B ad-fail door"     "frameMounted":false "handback-wait":[] "tag":"ad-end","paused":false,"ct":37,"rs":1
+"label":"C timeout door (181 s of healthy frame)" "frameMounted":false "tag":"ad-end","paused":false,"ct":30,"rs":1
+```
+
+Rows A2, A3 and A4 stand at `0.8.128` with the shifted line numbers. Build labels in this repo move faster
+than the validation table, so the door, not the version, is what a reader should check.
+
