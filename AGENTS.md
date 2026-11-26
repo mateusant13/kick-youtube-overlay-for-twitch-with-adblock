@@ -2425,6 +2425,46 @@ are the only heavy steps this project starts, one at a time; a failure is read, 
 retry chain; `I:` is a slow SMR volume, so its I/O is reduced by deleting, batching, caching and
 async, NEVER by moving stored data off `I:`.
 
+## Wave record - 2026-11-26, 0.8.120: the pod's own ask rode the warm, and a flaky arm was a REAL defect
+
+Owner goal this build serves, verbatim: *"advertisements seem not to exist"* - the seconds a pod
+spends minting its own clean source while a warm source was already 5 ms from resolving.
+
+MEASURED on 0.8.118 in the replica (`dev-preroll-hold` 1795670018437): `standby-prewarm {ok:true,ms:193}`
+at 307 ms while the pod's forced asks were `cold-start` at 284 ms and `worker-playlist` at 303 ms, and
+**zero** `standby-prewarm-used` rows in the whole run. `requestStandby`'s forced door began with
+`consumeStandbyPrewarm()`, which answers `unavailable` for a warm that has not RESOLVED yet, so the ask
+minted beside it and then discarded the warm.
+
+0.8.120 parks instead: a forced ask beside an in-flight warm writes `standby-prewarm-wait {ask}` and is
+served by the resolve in the same task (`standby-prewarm-served` -> `consumeStandbyPrewarm()` ->
+`standby-prewarm-used`), and the warm's own timeout flushes the parked asks
+(`standby-prewarm-timeout-flush`). No new timer: the warm's existing 12 s budget is the only clock.
+
+**A gate-only failure was the product's, not the harness's.** The first gate run failed this arm
+(`a failed warm falls back to the pod mint`) while the same suite passed standalone, and the arm had been
+written as `asks.length === 1`. The cause was real: a warm stuck in flight parked the pod's ONLY ask for
+the warm's whole budget. The park now has a ceiling - `STANDBY_PREWARM_PARK_MS = 1500`, because a warm
+older than a mint is a failure in progress - with its own arm and RED. A flake under load was a defect
+that only starvation exposed; it was fixed, not widened.
+
+Run-verified on 0.8.120 (replica `dev-preroll-hold` 1795677250450, `RESULT PASS checks=12 failed=0
+cannot=0 rows=132`): `standby-prewarm {ok:true,ms:184}`, `standby-prewarm-wait {ask:'worker-playlist',
+ms:269}`, `standby-prewarm-served {ms:290}`, `standby-prewarm-used {ageMs:0,ms:290}`, **no**
+`standby-request {why:'worker-playlist'}`, and the reveal unchanged at `overlay-reveal {ms:1392, lat:3.1,
+q:'720p'}` (0.8.118: 1391 ms).
+
+Gate: `RESULT PASS checks=25 failed=0` (wall 431.07 s), `silent-census guardShaped=111` - the three
+exits the parking inserted were restructured into non-exits, never budgeted. `ad-time-continuity`
+`--prewarm-only` -> `checks=23 failed=0` with `ARMS 18/18`.
+
+The cooldown arm also stopped depending on the caller's cwd (it read `twitch-adblock.js` relatively and
+went `ENOENT` from the repo root): source-text arms resolve via `__dirname`.
+
+**Owed:** the live half needs a pod on 0.8.120 in his Chrome showing `standby-prewarm-used` with no
+`standby-request {why:'cold-start'|'ad-ui-hold'}` beside it. An extension reload does not re-inject, so
+the tab carries it on its next navigation.
+
 ### I: is ONE SMR spindle with 12 GB free (measured 2026-11-24 18:20Z, watcher DM dm-716515cbf460f5257d8f)
 
 The watcher's IOCTL window read `busy 1549%, q_avg 15.49, 123 ops in 906 ms, r=1.36 MB/s, w=0.15 MB/s,

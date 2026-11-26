@@ -1450,16 +1450,19 @@
    "author": "seat",
    "reported": "2026-11-26",
    "fixed_in": "0.8.120",
-   "commit": null,
+   "commit": "d40983a",
    "hypothesis": "`requestStandby`'s forced door began with `if (force && consumeStandbyPrewarm()) return;`, and `consumeStandbyPrewarm()` answers `unavailable` whenever the page-load warm has not RESOLVED yet, so an ask that arrived while the warm was in flight fell through to a full `findCleanHlsUrl` mint beside it and then discarded the warm. MEASURED in the replica on 0.8.118 (dev-preroll-hold 1795670018437): `standby-prewarm {ok:true,ms:193}` at 307 ms while the pod's forced asks were `cold-start` at 284 ms and `worker-playlist` at 303 ms, and the whole run had ZERO `standby-prewarm-used` rows - the warm was carried by the worker's own copy, not by this cache.",
    "falsifier": "`ad-time-continuity --prewarm-only` arms 'a forced ask beside an in-flight warm parks and is served by the resolve' (one `standby-prewarm-wait {ask:'ad-ui-hold'}`, zero `standby-request {why:'ad-ui-hold'}`, then `standby-prewarm-served` + `standby-prewarm-used` on the resolve, and the pod still reveals) and 'a timed-out warm flushes its parked ask instead of dropping it' (`standby-prewarm-timeout-flush` then exactly one `standby-request {why:'ad-ui-hold'}`). REDs restore the unguarded door (the pod mints `ad-ui-hold`, no wait row) and the flush removal (the parked ask dies with its warm, only the page's own `cold-start` mint remains).",
    "evidence": [
     "`node kick-overlay/ad-time-continuity-test.cjs --prewarm-only` -> `RESULT PASS ad-time-continuity prewarm-only checks=21 failed=0`",
     "RED 'a forced ask beside an in-flight warm mints a second source' -> `wait:[] asks:[prewarm, ad-ui-hold]` (the pre-fix double mint)",
     "RED 'without the flush a timed-out warm drops the ask that parked on it' -> `flush:[] asks:[prewarm, cold-start]` (the parked ask lost)",
-    "the arm's own gate: no timer was added; the ONLY clock is the warm's existing 12 s budget, shortened for the arm through `stats.setPrewarmWaitMs`"
+    "the arm's own gate: no timer was added; the ONLY clock is the warm's existing 12 s budget, shortened for the arm through `stats.setPrewarmWaitMs`",
+    "replica `dev-preroll-hold` ON 0.8.120 (run 1795677250450, `RESULT PASS checks=12 failed=0 cannot=0 rows=132`): `standby-prewarm {ok:true,ms:184}`, `standby-prewarm-wait {ask:'worker-playlist',ms:269}`, `standby-prewarm-served {ms:290}`, `standby-prewarm-used {ageMs:0,ms:290}` and NO `standby-request {why:'worker-playlist'}` - the pod's own ask was served by the warm instead of minting beside it, and the reveal stayed at `overlay-reveal {ms:1392, lat:3.1, q:'720p'}` (0.8.118: 1391 ms)",
+    "ceiling added after the first gate run failed this arm under load: a warm in flight is parked on only while `now - kickAt <= STANDBY_PREWARM_PARK_MS` (1500 ms), because a warm older than a mint is a failure in progress and a pod must not wait seconds of ad for an optimisation. Arm 'a warm stuck in flight past a mint does not park the pod' + its RED (the ceiling removed parks the pod for the warm's whole budget); `--prewarm-only` -> `RESULT PASS checks=23 failed=0`",
+    "`node _tools/ko-verify.mjs` -> `RESULT PASS checks=25 failed=0` (wall 431.07 s) with `silent-census guardShaped=111` unchanged; the three exits the parking inserted were restructured, never budgeted"
    ],
-   "next": "A replica `dev-preroll-hold` run on 0.8.120 must show `standby-prewarm-used` (the row this build exists to produce) and no `standby-request {why:'ad-ui-hold'|'cold-start'}` in the same window."
+   "next": "LIVE half: a pod on 0.8.120 in his Chrome must show `standby-prewarm-used` (or `standby-prewarm-wait` + `-served` in the same second) and no `standby-request {why:'cold-start'|'ad-ui-hold'}` beside it; an extension reload does not re-inject, so the tab carries it on its next navigation."
   }
  ]
 }
