@@ -2390,7 +2390,20 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   // symptom he reported came from the old file. One reload per version, only
   // while the tab is in the background, recorded so it cannot loop.
   {
+    // Same timing shape as P2q below: the product schedules the reload 800 ms
+    // out, so a fixed 900 ms sleep has 100 ms of margin and can assert before
+    // the timer fires on a loaded box. Poll to a deadline (and settle for the
+    // "must NOT reload" halves) instead of racing one sleep.
     const run = async () => {
+      const reloadCount = async (want) => {
+        const deadline = Date.now() + 4000;
+        while (Date.now() < deadline) {
+          if (reloads.length === want) return reloads.length;
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        return reloads.length;
+      };
+      const settle = async () => { await new Promise((r) => setTimeout(r, 250)); return reloads.length; };
       manifestVersion = '0.8.82'; // same as KO_VER: nothing to do
       reloads.length = 0;
       mountApi.recoverStale();
@@ -2398,15 +2411,12 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
       manifestVersion = '0.9.0';
       mountDoc.hidden = false;
       mountApi.recoverStale();
-      await new Promise((r) => setTimeout(r, 900)); // the reload is scheduled, not immediate
-      assert.strictEqual(reloads.length, 0, 'a VISIBLE page was reloaded under the user');
+      assert.strictEqual(await settle(), 0, 'a VISIBLE page was reloaded under the user');
       mountDoc.hidden = true;
       mountApi.recoverStale();
-      await new Promise((r) => setTimeout(r, 900));
-      assert.strictEqual(reloads.length, 1, 'a stale tab in the background did not reload once');
+      assert.strictEqual(await reloadCount(1), 1, 'a stale tab in the background did not reload once');
       mountApi.recoverStale();
-      await new Promise((r) => setTimeout(r, 900));
-      assert.strictEqual(reloads.length, 1, 'the same version reloaded twice (a loop)');
+      assert.strictEqual(await settle(), 1, 'the same version reloaded twice (a loop)');
       mountDoc.hidden = false;
       manifestVersion = '0.8.82';
       console.log('P2p stale-tab: a background tab heals once per version - OK');
@@ -2422,22 +2432,34 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   // an installed 0.8.106, every heartbeat `hidden:true`. The heartbeat asks the
   // same question, and the RED removes that one call.
   {
+    // A fixed 900 ms sleep against the product's 800 ms reload delay left 100 ms
+    // of margin, and on a loaded box (gate wall 382.9 s) the timer landed after
+    // the assertion: `actual: 0, expected: 1` with the reload still pending. Poll
+    // for the count with a deadline instead of racing one sleep, so the arm still
+    // fails when nothing is ever scheduled (0 reloads after 4 s) and cannot fail
+    // for being early.
     const run = async () => {
+      const reloadCount = async (want) => {
+        const deadline = Date.now() + 4000;
+        while (Date.now() < deadline) {
+          if (reloads.length === want) return reloads.length;
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        return reloads.length;
+      };
+      const settle = async () => { await new Promise((r) => setTimeout(r, 250)); return reloads.length; };
       manifestVersion = '0.9.1';
       reloads.length = 0;
       mountDoc.hidden = true;
       mountApi.koHbTick(); // a tick on a tab hidden BEFORE the update landed
-      await new Promise((r) => setTimeout(r, 900));
-      assert.strictEqual(reloads.length, 1, 'a tab hidden across the update never healed: the heartbeat did not ask');
+      assert.strictEqual(await reloadCount(1), 1, 'a tab hidden across the update never healed: the heartbeat did not ask');
       mountApi.koHbTick();
       mountApi.koHbTick();
-      await new Promise((r) => setTimeout(r, 900));
-      assert.strictEqual(reloads.length, 1, 'the heartbeat reloaded the same version again (a loop)');
+      assert.strictEqual(await settle(), 1, 'the heartbeat reloaded the same version again (a loop)');
       manifestVersion = '0.9.2';
       mountDoc.hidden = false;
       mountApi.koHbTick();
-      await new Promise((r) => setTimeout(r, 900));
-      assert.strictEqual(reloads.length, 1, 'a VISIBLE page was reloaded under the user by the heartbeat');
+      assert.strictEqual(await settle(), 1, 'a VISIBLE page was reloaded under the user by the heartbeat');
       // RED: the same driver against a module without the heartbeat's question.
       // The mutant's own `init()` boots as well, so the BOOT call is neutralized
       // too - otherwise the mutation would be "proved" by a path the arm is not
@@ -2461,7 +2483,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
       manifestVersion = '0.9.3';
       mountDoc.hidden = true;
       noAsk.koHbTick();
-      await new Promise((r) => setTimeout(r, 900));
+      await new Promise((r) => setTimeout(r, 1500)); // absence: past the product's 800 ms delay with margin
       assert.strictEqual(reloads.length, before, 'the RED mutant healed the tab anyway, so the arm proves nothing');
       mountDoc.hidden = false;
       manifestVersion = '0.8.82';
@@ -2489,6 +2511,19 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
       // the count starts so the arm measures its own decisions; a real reload
       // under the pod is scheduled by the call below, well after this mark.
       await new Promise((r) => setTimeout(r, 1000));
+      // The product schedules its reload 800 ms out; a fixed 900 ms sleep has
+      // 100 ms of margin and asserts BEFORE the timer on a loaded box, which is
+      // how this block went red inside ko-verify while green alone. Every
+      // positive count below polls to a deadline; the negative ones settle.
+      const reloadCount = async (want) => {
+        const deadline = Date.now() + 4000;
+        while (Date.now() < deadline) {
+          if (reloads.length === want) return reloads.length;
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        return reloads.length;
+      };
+      const settle = async () => { await new Promise((r) => setTimeout(r, 250)); return reloads.length; };
       manifestVersion = '0.9.4';
       mountDoc.hidden = true;
       sessionStore.clear();
@@ -2496,7 +2531,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
       reloads.length = 0;
       const mark = swCalls.length;
       mountApi.recoverStale();
-      await new Promise((r) => setTimeout(r, 900));
+      await settle();
       const waited = tabRows().filter((d) => d && d.act === 'wait-pod');
       assert.strictEqual(reloads.length, 0, 'a stale tab was reloaded UNDER A POD (the interruption he asked to remove)');
       assert.strictEqual(waited.length, 1, `the deferral was silent: ${JSON.stringify(tabRows())}`);
@@ -2510,9 +2545,8 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
       reloads.length = 0;
       const leakMark = swCalls.length;
       mountApi.recoverStale();
-      await new Promise((r) => setTimeout(r, 900));
+      assert.strictEqual(await reloadCount(1), 1, 'a leaked park blocked the heal forever (the tab would run old code for the life of the page)');
       const leakRows = swCalls.slice(leakMark).filter((m) => m && m.__koDiag && m.__koDiag.ev === 'stale-tab' && m.__koDiag.data && m.__koDiag.data.act === 'wait-pod-stale');
-      assert.strictEqual(reloads.length, 1, 'a leaked park blocked the heal forever (the tab would run old code for the life of the page)');
       assert.strictEqual(leakRows.length, 1, `the leaked park was healed silently: ${JSON.stringify(swCalls.slice(leakMark).filter((m) => m && m.__koDiag))}`);
       assert.strictEqual(sessionStore.get('ko.staleReload'), manifestVersion, 'the leak-healed reload was not marked as ours');
       mountApi.KO.staleParkSince = 0;
@@ -2520,8 +2554,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
       // The same ask, once the pod is over: it heals, and the marker names it.
       mountDoc.documentElement.setAttribute('data-ko-adpark', '0');
       mountApi.recoverStale();
-      await new Promise((r) => setTimeout(r, 900));
-      assert.strictEqual(reloads.length, 1, 'the tab never healed after the pod ended');
+      assert.strictEqual(await reloadCount(1), 1, 'the tab never healed after the pod ended');
       assert.strictEqual(sessionStore.get('ko.staleReload'), manifestVersion, 'the reload was not marked as ours');
       // A boot that follows OUR reload says so; a boot with no marker does not.
       const KO_VER = (src.match(/const KO_VER = '([^']+)'/) || [])[1];
@@ -2548,8 +2581,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
       sessionStore.clear();
       reloads.length = 0;
       red.recoverStale();
-      await new Promise((r) => setTimeout(r, 900));
-      assert.strictEqual(reloads.length, 1, 'P2r RED: the pre-fix heal reloaded a page the pod owned (proves the deferral is load-bearing)');
+      assert.strictEqual(await reloadCount(1), 1, 'P2r RED: the pre-fix heal reloaded a page the pod owned (proves the deferral is load-bearing)');
       mountDoc.documentElement.setAttribute('data-ko-adpark', '0');
       mountDoc.hidden = false;
       manifestVersion = '0.8.82';

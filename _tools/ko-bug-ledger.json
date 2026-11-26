@@ -1352,6 +1352,24 @@
     "Impl: kick-overlay/twitch-adblock.js +121/-4 - podExtentEdge (se>0 but <= buffered at the pod's extent), overlay.edgeRecovered, one retry recovery, and native-seek-skipped carrying from/to/buffered/rs/why."
    ],
    "next": "One replica run of scenarios/dev-preroll-hold.json on the fixed tree must grade `pixel at 20000 is the ad`, and a live pod on the owner's Chrome must show native-edge-recover {basis:'wall'} or native-seek-skipped and never a hand-back at se - cleanLat inside ad media."
+  },
+  {
+   "id": "KO-20261126-05",
+   "title": "The stale-tab arms raced the product's 800 ms reload delay with a 900 ms sleep and went red only inside the gate",
+   "state": "fixed",
+   "author": "seat",
+   "reported": "2026-11-26",
+   "fixed_in": "0.8.118",
+   "commit": null,
+   "hypothesis": "content-fix P2p/P2q/P2r asserted `reloads.length` after a fixed 900 ms sleep while `recoverStale()` schedules its reload 800 ms out. On a loaded box the timer lands after the assertion: the 0.8.118 gate printed `actual: 0, expected: 1` at content-fix-test.cjs:2431 (`RESULT FAIL checks=25 failed=1`, wall 382.9 s) while the same file passed alone (11.7 s).",
+   "falsifier": "The positive reload arms poll `reloads.length` to a 4 s deadline and the negative ones settle 250 ms, so a missing reload still fails (0 after 4 s) and a late one cannot. Run `node content-fix-test.cjs` alone AND in the gate: both must print `ALL CONTENT.JS FIX CHECKS PASSED` and `ARMS 43/43 present`.",
+   "evidence": [
+    "0.8.118 gate before the fix: content-fix FAIL at content-fix-test.cjs:2431 `actual: 0, expected: 1`; the same file ran `ALL CONTENT.JS FIX CHECKS PASSED` alone twice (11.7 s, 9.3 s).",
+    "After the fix, alone: `ARMS 43/43 present`, `ALL CONTENT.JS FIX CHECKS PASSED` (9.25 s).",
+    "The sleep was the only difference between the red and green runs: same file, same machine, one inside a 382.9 s cage.",
+    "The absence half was widened to 1500 ms (past the 800 ms delay with margin) instead of being left at 900 ms, because a `must not reload` arm gets stronger with a longer wait, never weaker."
+   ],
+   "next": "The next full gate run must show content-fix PASS with the polling arms; a failure there is a product reload that never fired, not a timing margin."
   }
  ]
 }
