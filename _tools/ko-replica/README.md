@@ -19,16 +19,15 @@ with `MediaSourceHandle`.
   replica's `se` advances with the element's own clock, so the pod-extent branch can only be proven by
   its unit arm, never by a scenario.
 - **A viewer who watched longer than the pod lasted**, which is the real condition for the same branch.
-- **A native element below `HAVE_FUTURE_DATA` at the pod end while the clean frame is still decoding**,
-  which is the shape the `handback-wait` guard exists for (KO-20261126-12). Attempted and refuted by
-  measurement 2026-11-26: a scenario with `stall:{atMs:13500, ms:6500, on:'all'}` was run on 0.8.122 and
-  produced `ad-ui-release {act:'pod-end', ms:14754}`, `native-seek-skipped {rs:4, podExtent:14}`,
-  `native-resume {rs:1}` 14758 and `video-playing {rs:4}` 14759 - the element reached the pod end with its
-  pod extent buffered, so the wait correctly did not arm (`handback-wait n=0`, one FAIL in the scenario's
-  own `expect` list). The cause is structural: the native and the clean frame read the same segment space,
-  so withholding segments starves both surfaces and the cover disappears with the thing it covers; making
-  only the native starve needs disjoint media per surface, which this fixture does not model, and writing
-  `readyState` from the page would be a fake of the product under test.
+- **A native element below `HAVE_FUTURE_DATA` at the pod end while the clean frame is still
+  decoding** was a limit until 2026-11-26, and is now produced. `dev-handback-wait.json` uses
+  `stall:{on:'native', atMs:0, ms:30000, allowFirst:2}`: the edge serves the init and ONE native
+  segment, then refuses native media (503) while clean_-prefixed segments keep the clean iframe
+  playing a content picture. The native drains to `rs 2` before the 10-24 s midroll, so
+  `handback-wait` arms at pod end with the frame still covering the screen. The earlier refuted
+  attempt (`on:'all'`) starved both surfaces together and produced
+  `native-seek-skipped {rs:4, podExtent:14}` with `handback-wait n=0`; writing `readyState` from
+  the page would fake the product's own input and is still forbidden.
 
 Both are named divergences: a capture that prints `ad-segments=0` is a measurement of the window, not a
 `false`, and a scenario that cannot reach a branch reports it as unreached.
@@ -232,11 +231,20 @@ implemented: it executes the baseline.
 | `dev-preroll-hold.json` | all-ad preroll 0.3–14.3 s | the ad is covered from 4 s, the pod ends, hand-back |
 | `dev-midroll-hold.json` | stitched midroll at 10 s for 14 s | the picture stays the stream, the pod ends, hand-back |
 | `dev-timeline-probe.json` | 16 ct/blue samples at 2 s steps over 32 s, no expectations | fixture sanity: wall-clock paced timeline (`--no-ext`) |
+| `dev-handback-wait.json` | midroll 10-24 s; native-only segment refusal (init + 1 segment, then 503 to 30 s) | `handback-wait {rs:2}` -> `handback-ready {why:'cap'}` with a clean content picture, no reload |
 
 Checks are `row`, `absent`, `within`, `noReload`, `probe`, `pixelBlue`, `pixelNotBlue`, `pixelDark`,
-`rowsAtMost`. A failure is a product finding when the fixture's own preconditions (worker playlist
-observed, standby minted, hold taken) pass; those preconditions are checks of their own so a broken
-fixture cannot read as a broken extension.
+`rowsAtMost`, `rowField` (`op` is `lt`, `in`, or `eq`) and `coverDuring` (a clean, non-blue sample
+within the wait-to-ready window, `at` can be an array). A failure is a product finding when the
+fixture's own preconditions (worker playlist observed, standby minted, hold taken) pass; those
+preconditions are checks of their own so a broken fixture cannot read as a broken extension.
+
+The `stall` knob takes `on:'native' | 'content' | 'all'` (default `all`), `atMs`, `ms`, and
+`allowFirst`. With `on:'native'` the edge answers ONLY the first `allowFirst` native segment
+requests (init + one 2 s fragment in `dev-handback-wait`), then refuses native media with 503 for
+the window. Clean iframe requests use `clean_`-prefixed URIs and are never refused, so the picture
+on screen stays real. `all`/`content` delay responses until the window ends instead. Both surfaces
+are reported separately as `stallNative`/`stallClean` in `/__ko/state`.
 
 `dev-timeline-probe.json` is the permanent fixture-sanity scenario: 16 samples at 2 s steps over
 32 s with `--no-ext` and no expectations. It measures the page's own `<video>` timeline against the

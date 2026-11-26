@@ -1,0 +1,87 @@
+{
+  "name": "dev-handback-wait",
+  "split": "dev",
+  "channel": "replicach",
+  "durationMs": 39000,
+  "tailMs": 4000,
+  "events": [
+    {
+      "at": 10000,
+      "kind": "midroll",
+      "ms": 14000,
+      "ui": "wrapper"
+    }
+  ],
+  "stall": {
+    "atMs": 0,
+    "ms": 30000,
+    "on": "native",
+    "allowFirst": 2
+  },
+  "samples": [
+    { "at": 4000, "pixel": true },
+    { "at": 8000, "pixel": true },
+    { "at": 11500, "pixel": true },
+    { "at": 22000, "pixel": true },
+    { "at": 24200, "pixel": true },
+    { "at": 26000, "pixel": true },
+    { "at": 27500, "pixel": true },
+    { "at": 28500, "pixel": true }
+  ],
+  "expect": [
+    { "type": "row", "ev": "worker-playlist", "min": 1 },
+    { "type": "row", "ev": "ad-ui-hold", "min": 1 },
+    { "type": "row", "ev": "overlay-reveal", "min": 1 },
+    {
+      "type": "probe",
+      "at": 8000,
+      "path": "video.rs",
+      "op": "lt",
+      "value": 3
+    },
+    {
+      "type": "probe",
+      "at": 22000,
+      "path": "video.rs",
+      "op": "lt",
+      "value": 3
+    },
+    { "type": "row", "ev": "handback-wait", "min": 1 },
+    { "type": "rowsAtMost", "ev": "handback-wait", "max": 2 },
+    {
+      "type": "rowField",
+      "ev": "handback-wait",
+      "field": "rs",
+      "op": "lt",
+      "value": 3
+    },
+    { "type": "row", "ev": "handback-ready", "min": 1 },
+    { "type": "rowsAtMost", "ev": "handback-ready", "max": 1 },
+    {
+      "type": "rowField",
+      "ev": "handback-ready",
+      "field": "why",
+      "op": "in",
+      "value": ["ready", "cap"]
+    },
+    {
+      "type": "within",
+      "from": "handback-wait",
+      "to": "handback-ready",
+      "maxMs": 4000
+    },
+    {
+      "type": "coverDuring",
+      "from": "handback-wait",
+      "to": "handback-ready",
+      "at": [26000, 27500, 28500]
+    },
+    { "type": "pixelNotBlue", "at": 26000 },
+    { "type": "pixelNotBlue", "at": 27500 },
+    { "type": "row", "ev": "ad-ui-release", "min": 1 },
+    { "type": "row", "ev": "native-handoff", "min": 1 },
+    { "type": "row", "ev": "native-resume", "min": 1 },
+    { "type": "noReload" }
+  ],
+  "note": "The native edge serves only init + one segment, then refuses native media until 30 s, well past the 10-24 s midroll. Native drains below HAVE_FUTURE_DATA before the pod takes it over; clean_-prefixed segments keep the clean iframe playing a content picture, so the wait protects a real picture. `handback-wait` is the extension reading that native element at pod end, with the CDP probe at 22 s as an independent second reading. The refusal outlasts the 3 s ceiling, so `handback-ready {why:'cap'}` is the honest exit; a release before it would give `why:'ready'`."
+}

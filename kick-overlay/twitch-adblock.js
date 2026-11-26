@@ -3141,7 +3141,21 @@
     if (!opts.noWait && !overlay.handbackWait && reason === 'ad-end' && overlay.frame && overlay.revealed && cleanFrameCanCover()) {
       const wv = overlay.video && overlay.video.isConnected ? overlay.video : mainVideo();
       const wrs = wv ? Number(wv.readyState) || 0 : 0;
-      if (wv && wrs < 3 && !resumeRefusedByUser(wv)) {
+      // A PARKED PLAYER IS NOT A STARVED ONE. `resumeRefusedByUser()` says no for
+      // three different facts, and only one of them belongs here: a hidden tab
+      // (never arm - the owner's background report), a pause he made INSIDE the
+      // pod (`userPausedInPod`, which needs a fresh input), and a pause already
+      // in place at take-over (`pauseBeforeAd`). That last one cannot tell a
+      // click from the page's own stall handling, and a starved element is
+      // exactly what the pause looks like: measured 2026-11-26 in the replica
+      // (`dev-handback-wait` 1795721838098), the native sat `rs:2 paused:true`
+      // for 14 s BEFORE the pod, `pauseBeforeAd` read that as a park, the wait
+      // never armed, and the pod end put the frozen element back on screen
+      // (`native-resume {rs:2, selfPaused:14.2}`, page reload at 29.0 s) - the
+      // defect this guard exists for. He was watching the pod's own picture for
+      // those 14 s, so three more seconds of it is not a new interruption.
+      const waitRefused = (document.visibilityState && document.visibilityState !== 'visible') || !!userPausedInPod;
+      if (wv && wrs < 3 && !waitRefused) {
         const wait = { at: Date.now(), reason, capped: false, timer: 0 };
         overlay.handbackWait = wait;
         const finish = () => {

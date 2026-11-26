@@ -294,6 +294,19 @@ try {
   ok('a frame with no layout yet starts at the top rung, not the lowest bitrate',
     unlaid.row.d.name === '1080p' && unlaid.startLevel === 3 && unlaid.row.d.why === 'no-rect'
     && unlaid.row.d.rectH === 0 && unlaid.row.d.count === 4, JSON.stringify(unlaid));
+  // THE ROW MUST PRINT THE LADDER, not a count of it. A reader holding
+  // `count:2, name:'360p'` cannot tell a geometry-correct pick from a mint that
+  // only ever carried 360p (the seat's 2026-11-26 measurement came back
+  // `count:2, rectH:325, why:'rect'` and could not answer which rungs existed).
+  // `rungs` is the same measurement, printed instead of hidden.
+  ok('the level row prints the ladder, so a 360p pick is readable without a reveal',
+    Array.isArray(unlaid.row.d.rungs) && unlaid.row.d.rungs.length === 4
+    && unlaid.row.d.rungs.includes(1080) && unlaid.row.d.rungs.includes(360)
+    // The contract: `chosen` indexes the printed ladder, so `name` must be that
+    // rung's height. An order-pinned assertion would test the fixture instead.
+    && `${unlaid.row.d.rungs[unlaid.row.d.chosen]}p` === unlaid.row.d.name
+    && `${green.row.d.rungs[green.row.d.chosen]}p` === green.row.d.name,
+    JSON.stringify({ unlaid: unlaid.row.d, green: green.row.d }));
 } catch (e) {
   ok('the start-rung arm ran', false, String(e && e.message));
 }

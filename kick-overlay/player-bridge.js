@@ -373,7 +373,7 @@ if (HLS_MODE) {
         const l = levels[chosen] || {};
         const name = l.height ? `${l.height}p` : (l.width ? `${l.width}w` : String(chosen));
         const bitrate = Number(l.bitrate);
-        post({ t: 'ev', e: 'standby-level', d: { chosen, name, bitrate: Number.isFinite(bitrate) ? bitrate : null, count: levels.length, rectH: Math.round(height), why: rectOk ? 'rect' : 'no-rect' } });
+        post({ t: 'ev', e: 'standby-level', d: { chosen, name, bitrate: Number.isFinite(bitrate) ? bitrate : null, count: levels.length, rungs: levels.map((x) => Number(x && x.height) || 0), rectH: Math.round(height), why: rectOk ? 'rect' : 'no-rect' } });
       }
       standbyLevelLogged = true;
     }

@@ -776,9 +776,48 @@ async function main() {
     assert(page.logsOf('native-resume').some((l) => l.d.tag === 'ad-end'),
       `the capped wait never handed back (resumes=${JSON.stringify(tags)} paused=${page.video.paused} revealed=${page.stats().revealed()} active=${page.stats().adActive()} tail=${JSON.stringify(tail)})`);
   });
+  // A STARVED ELEMENT IS NOT A PARKED ONE. `pauseBeforeAd` records "the native
+  // was paused when the pod took over" and cannot tell his click from the page's
+  // own stall handling, so a live that stalls into a pod used to skip the wait
+  // and put the frozen element back (measured 2026-11-26, replica
+  // `dev-handback-wait` 1795721838098: `rs:2 paused:true` for 14 s before the pod,
+  // no `handback-wait`, `native-resume {rs:2, selfPaused:14.2}`, reload at 29 s).
+  await greenArm('a native that was already starved at take-over still gets the hand-back wait', async () => {
+    const page = makeWorld();
+    setNative(page, { ct: 30, edge: 40, bufferedEnd: 31, rs: 2, paused: true });
+    await pod(page);
+    await liveFrame(page, 2);
+    page.bypass({ type: 'ad-end' });
+    await settle(60);
+    const wait = page.logsOf('handback-wait').pop();
+    assert(wait, `the pod end skipped the wait on a starved element paused=${page.video.paused} rs=${page.video.readyState}`
+      + ` parked=${page.stats().userParked ? page.stats().userParked() : '?'}`);
+    assert(wait.d.rs === 2, `rs ${JSON.stringify(wait.d.rs)}`);
+    assert(page.stats().frameMounted() === true,
+      'the wait armed with the frame already torn down, so the frozen element is what he sees');
+    assert(page.logsOf('native-resume').filter((l) => l.d.tag === 'ad-end').length === 0,
+      'the starved element was resumed before it could play forward');
+  });
+  // RED: the park limb restored in the wait's refusal -> no wait at all.
+  const RED_PARK_SKIPS_WAIT = mutate([[
+    "      const waitRefused = (document.visibilityState && document.visibilityState !== 'visible') || !!userPausedInPod;",
+    "      const waitRefused = (document.visibilityState && document.visibilityState !== 'visible') || !!userPausedInPod || (!!overlay.pauseBeforeAd && !overlay.coldPreroll);",
+  ]]);
+  await redArm('RED: reading a pre-pod pause as a park skips the hand-back wait', RED_PARK_SKIPS_WAIT, async (src) => {
+    const page = makeWorld({ adSource: src });
+    setNative(page, { ct: 30, edge: 40, bufferedEnd: 31, rs: 2, paused: true });
+    await pod(page);
+    await liveFrame(page, 2);
+    page.bypass({ type: 'ad-end' });
+    await settle(60);
+    // The CONTRACT, not the mutant: the wait must exist for a starved element
+    // whatever parked it, so the mutant is the one that fails this.
+    const wait = page.logsOf('handback-wait').pop();
+    assert(wait, 'the mutant put a frozen element on screen at pod end with no wait');
+  });
   // RED: the wait removed -> a frozen element is put on screen immediately.
   const RED_NO_WAIT = mutate([[
-    '      if (wv && wrs < 3 && !resumeRefusedByUser(wv)) {',
+    '      if (wv && wrs < 3 && !waitRefused) {',
     '      if (false) {',
   ]]);
   await redArm('RED: without the wait a frozen native is revealed at pod end', RED_NO_WAIT, async (src) => {
@@ -3632,6 +3671,7 @@ async function main() {
     'two blind reports a report interval apart end the hand-back wait',
     'a click outside the player does not authorize a machine play',
     'a resume from earlier in the pod does not end the hand-back wait',
+    'a native that was already starved at take-over still gets the hand-back wait',
   ];
   const printed = armLog.map((l) => String(l).trim());
   const missing = ARMS.filter((a) => !printed.includes(a));

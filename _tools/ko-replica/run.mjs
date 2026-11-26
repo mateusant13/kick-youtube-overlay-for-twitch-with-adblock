@@ -635,7 +635,13 @@ const firstAfter = (ev, ms) => log.find((e) => e.ev === ev && e.t >= ms) || null
 // ---- vacuity / instrument-reality gates -----------------------------------
 const pageLoaded = evidence.samples.some((s) => s.probe && s.probe.href);
 if (!pageLoaded) unmeasurable('page-loaded', 'no sample saw the replica page');
-const playback = evidence.samples.some((s) => s.probe && s.probe.video && s.probe.video.src && s.probe.replica && s.probe.replica.appended > 0);
+// `appended` is only published after a whole playlist apply succeeds. A
+// scenario that refuses the NEXT segment appends init + one fragment, then
+// throws before posting a tick, so a real decoded picture has appended=0.
+// Frames decoded from the MediaSource handle are the same fact one level
+// closer to the user, so either instrument proves the fixture played.
+const playback = evidence.samples.some((s) => s.probe && s.probe.video && s.probe.video.src && s.probe.replica
+  && (s.probe.replica.appended > 0 || (s.probe.video.vf > 0 && s.probe.video.buf > 0)));
 if (!playback) unmeasurable('fixture-playback', 'the replica video never received an MSE append (fixture did not play)');
 if (!NO_EXT) {
   const sawWorker = E('worker-hook').length > 0 || E('worker-playlist').length > 0;
@@ -661,6 +667,7 @@ function rgbBlue(px) {
 
 const known = new Set([
   'row', 'absent', 'within', 'noReload', 'probe', 'pixelNotBlue', 'pixelBlue', 'pixelDark', 'rowsAtMost',
+  'rowField', 'coverDuring',
 ]);
 for (const exp of scenario.expect || []) {
   if (!known.has(exp.type)) {
@@ -682,6 +689,31 @@ for (const exp of scenario.expect || []) {
     if (!a) check(`within ${exp.from}->${exp.to}`, false, 'from-row missing');
     else if (!b) check(`within ${exp.from}->${exp.to}`, false, 'to-row missing');
     else check(`within ${exp.from}->${exp.to} <= ${exp.maxMs}ms`, b.t - a.t <= exp.maxMs, { ms: b.t - a.t });
+  } else if (exp.type === 'rowField') {
+    const rows = E(exp.ev);
+    const hit = rows.find((r) => {
+      const v = r && r.d ? r.d[exp.field] : undefined;
+      if (exp.op === 'lt') return Number.isFinite(Number(v)) && Number(v) < exp.value;
+      if (exp.op === 'in') return Array.isArray(exp.value) && exp.value.includes(v);
+      return exp.op === 'eq' ? v === exp.value : false;
+    });
+    check(`row ${exp.ev}.${exp.field} ${exp.op} ${JSON.stringify(exp.value)}`, !!hit, {
+      n: rows.length, hit: hit ? { t: hit.t, d: hit.d } : null,
+    });
+  } else if (exp.type === 'coverDuring') {
+    const a = first(exp.from);
+    const b = a ? firstAfter(exp.to, a.t) : null;
+    const ats = Array.isArray(exp.at) ? exp.at : [exp.at];
+    const samples = evidence.samples.filter((x) => ats.includes(x.at));
+    // adlog times are wall-clock epochs; sample wallMs is relative to nav.
+    const hit = samples.find((s) => {
+      const abs = evidence.navEpoch + s.wallMs;
+      return a && b && abs >= a.t && abs <= b.t && s.px && s.px.blue != null && s.px.blue < 0.2;
+    });
+    check(`cover ${exp.from}->${exp.to} at ${JSON.stringify(ats)}`, !!hit, {
+      from: a && a.t, to: b && b.t,
+      samples: samples.map((s) => ({ at: s.at, blue: s.px ? s.px.blue : null })),
+    });
   } else if (exp.type === 'noReload') {
     // The extension writes two boot rows per page load (provenance + state).
     const boots = E('boot').filter((e) => e.d && e.d.href).map((e) => Math.round(e.t / 1000));
@@ -690,7 +722,7 @@ for (const exp of scenario.expect || []) {
   } else if (exp.type === 'probe') {
     const p = probeAt(exp.at || 0);
     const v = exp.path.split('.').reduce((o, k) => (o == null ? o : o[k]), p);
-    check(`probe ${exp.path} ${exp.op} ${JSON.stringify(exp.value)}`, exp.op === 'eq' ? v === exp.value : v, { got: v });
+    check(`probe ${exp.path} ${exp.op} ${JSON.stringify(exp.value)}`, exp.op === 'eq' ? v === exp.value : exp.op === 'lt' ? Number(v) < exp.value : v, { got: v });
   } else if (exp.type === 'pixelNotBlue' || exp.type === 'pixelDark' || exp.type === 'pixelBlue') {
     const s = evidence.samples.find((x) => x.at === exp.at);
     const px = s ? s.px : null;
@@ -728,6 +760,23 @@ if (!NO_EXT) {
   } else {
     console.log('CLEAN no st rows were observed (probe never fired)');
   }
+}
+// The wait's own rows are the evidence: the first is the extension reading the
+// native element's readyState at pod end, the second is why it let go. Print
+// both in ring order, plus an independent CDP probe of the same element, so a
+// claim about `rs < 3` can be checked without reading the source.
+if (!NO_EXT && (E('handback-wait').length || E('handback-ready').length)) {
+  for (const ev of ['handback-wait', 'handback-ready', 'handback-wait-cancelled']) {
+    for (const r of E(ev)) console.log(`HANDBACK ${r.t} ${ev} ${JSON.stringify(r.d)}`);
+  }
+  const w = first('handback-wait');
+  if (w) {
+    const near = evidence.samples.filter((s) => evidence.navEpoch + s.wallMs <= w.t).pop() || evidence.samples[0];
+    const rs = near && near.probe && near.probe.video ? near.probe.video.rs : null;
+    console.log(`NATIVE-AT-POD-END extension handback-wait.rs=${w.d && w.d.rs} at=${w.t}; CDP probe@${near && near.at}ms video.rs=${rs}`);
+  }
+  const srv = await evaluate('fetch("/__ko/state").then((r) => r.json())');
+  if (srv && !srv.error) console.log(`STALL withheld native=${srv.stallNative} clean=${srv.stallClean}`);
 }
 
 // ---- report ---------------------------------------------------------------

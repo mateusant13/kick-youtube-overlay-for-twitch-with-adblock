@@ -10,4 +10,15 @@ kick-overlay/*.html text eol=lf
 kick-overlay/*.css text eol=lf
 _tools/*.mjs text eol=lf
 _tools/*.json text eol=lf
+# `_tools/ko-replica/*` is a second level, and it was left out: measured
+# 2026-11-26, `server.mjs` and `run.mjs` came back from an isolated lane as
+# CRLF while HEAD stores LF, so the next `git checkout` would rewrite them and
+# an exact-text edit would miss. One pattern per level is the bug; globstar is
+# the fix.
+_tools/**/*.mjs text eol=lf
+_tools/**/*.json text eol=lf
 *.md text eol=lf
+# `*.gitattributes` itself is not product code, but the machine's autocrlf had
+# already rewritten it once in this repo; pin it so a checkout cannot split the
+# diff of a one-line rule into every line of the file.
+.gitattributes text eol=lf

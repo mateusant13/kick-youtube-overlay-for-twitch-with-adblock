@@ -79,6 +79,7 @@ function pageLoaded() {
   state.pod = 0;
   state.requests.length = 0;
   state.hits = {};
+  state.nativeSeen = 0;
 }
 
 // ---- playlists ------------------------------------------------------------
@@ -145,12 +146,19 @@ function contentIndex(t) {
 const TARGET_SEC = Number(process.env.KO_REPLICA_TARGET || 6);
 const SESSION_ID = String(Date.now());
 const iso = (ms) => new Date(ms).toISOString();
-function segLine(kind, k, query, dur, v = 720, pdMs = null) {
+// The clean iframe needs its OWN segment URIs. Native and clean used to fetch
+// the same `content_720_000.m4s`, so withholding that file starved both
+// surfaces together and the clean cover vanished with the thing it covered -
+// which made a native-only `handback-wait` unreachable in this fixture.
+// Clean URIs serve the same bytes under a `clean_` prefix, so a scenario can
+// starve the native surface alone and still leave a picture on screen.
+function segLine(kind, k, query, dur, v = 720, pdMs = null, clean = false) {
   const idx = k % (kind === 'content' ? CONTENT_SEGS : AD_SEGS);
   const tag = kind === 'content' ? ',live' : ',';
   const d = Number.isFinite(dur) ? Number(dur).toFixed(3) : `${SEG}.000`;
   const pd = Number.isFinite(pdMs) ? `#EXT-X-PROGRAM-DATE-TIME:${iso(pdMs)}\n` : '';
-  return `${pd}#EXTINF:${d}${tag}\n${EDGE}/v1/segment/${kind}_${v}_${pad(idx)}.m4s${query || ''}`;
+  const name = `${clean ? 'clean_' : ''}${kind}_${v}_${pad(idx)}.m4s`;
+  return `${pd}#EXTINF:${d}${tag}\n${EDGE}/v1/segment/${name}${query || ''}`;
 }
 
 // The three DATERANGE rows Twitch puts at the head of every live playlist. Our
@@ -175,29 +183,30 @@ const AD_WINDOW_BACK = 6;
 function adBase(t, ev) {
   return Math.max(0, Math.floor(Math.max(0, t - ev.at) / (SEG * 1000)));
 }
-function adLines(pod, base, v = 720) {
+function adLines(pod, base, v = 720, clean = false) {
   const last = Math.min(base, AD_SEGS - 1);
   const from = Math.max(0, last - AD_WINDOW_BACK);
   const count = last - from + 1;
+  const pre = clean ? 'clean_' : '';
   const out = [
     '#EXT-X-MEDIA-SEQUENCE:' + from,
     '#EXT-X-DATERANGE:ID="twitch-stitched-ad-' + pod + '",CLASS="twitch-stitched-ad",START-DATE="2026-11-25T00:00:00.000Z",DURATION=' + (count * SEG) + '.000,X-TV-TWITCH-AD-URL="https://ads.example/creative/' + pod + '"',
-    '#EXT-X-TWITCH-PREFETCH:https://video-edge-a.playlist.ttvnw.net/v1/segment/ad_' + v + '_000.m4s',
+    '#EXT-X-TWITCH-PREFETCH:' + EDGE + '/v1/segment/' + pre + 'ad_' + v + '_000.m4s',
     '#EXT-X-DISCONTINUITY',
-    '#EXT-X-MAP:URI="/v1/segment/ad_' + v + '_init.mp4"',
+    '#EXT-X-MAP:URI="/v1/segment/' + pre + 'ad_' + v + '_init.mp4"',
   ];
   // The URI must identify the MEDIA, not the window slot: `&k=` made the same
   // file a new URL on every window step, so the player appended the ad block
   // twelve times over 4 s (measured 2026-11-25: `ct 1.43 -> 24.41` in two
   // seconds, ad blue then content while the pod was still live).
   const wall = Date.now();
-  for (let k = from; k <= last; k++) out.push(segLine('ad', k, `?pod=${pod}`, undefined, v, wall - (last - k) * SEG * 1000));
+  for (let k = from; k <= last; k++) out.push(segLine('ad', k, `?pod=${pod}`, undefined, v, wall - (last - k) * SEG * 1000, clean));
   return { lines: out, from };
 }
 
 // A playlist is a pure function of (clean, token type, wall clock, pod). No
-// per-client state: the native worker and the clean iframe fetch the same URL
-// and each one appends what it has not seen.
+// per-client state: the native worker and the clean iframe fetch the SAME
+// PLAYLIST SHAPE but different segment URIs, so one surface can starve alone.
 function mediaPlaylist({ clean, t, pod, v = 720 }) {
   const ev = activeEvent(t);
   const adOn = !clean && !!ev;
@@ -208,7 +217,7 @@ function mediaPlaylist({ clean, t, pod, v = 720 }) {
 
   if (adOn && ev.kind === 'preroll') {
     // A cold preroll is an ALL-AD playlist: no content segment exists yet.
-    lines.push(...adLines(pod, adBase(t, ev), v).lines);
+    lines.push(...adLines(pod, adBase(t, ev), v, clean).lines);
     return lines.join('\n') + '\n';
   }
 
@@ -230,7 +239,6 @@ function mediaPlaylist({ clean, t, pod, v = 720 }) {
   // gate's cost, and the cost is the owner's report: reveal 11.0 s after the ad
   // was detected, `q:"360p"`, `stall-stop hist:[4/3 4/1.01 4/0.99]`.
   // `KO_REPLICA_EDGE_AHEAD=N` re-adds the cheat as an explicitly labelled knob
-  // for an A/B; measured runs keep it at 0.
   const ahead = Number(process.env.KO_REPLICA_EDGE_AHEAD || 0) || 0;
   // Real Twitch lists FOURTEEN segments per live playlist (measured 2026-11-26:
   // 14 x `#EXTINF:2.000,live` in every one of the 13 media playlists captured).
@@ -250,17 +258,17 @@ function mediaPlaylist({ clean, t, pod, v = 720 }) {
   lines.push(`#EXT-X-TWITCH-LIVE-SEQUENCE:${from}`);
   lines.push(`#EXT-X-TWITCH-ELAPSED-SECS:${(from * SEG).toFixed(3)}`);
   lines.push(`#EXT-X-TWITCH-TOTAL-SECS:${((i + 1) * SEG).toFixed(3)}`);
-  lines.push('#EXT-X-MAP:URI="/v1/segment/content_' + v + '_init.mp4"');
-  for (let k = from; k <= i + ahead; k++) lines.push(segLine('content', k, null, undefined, v, wall - (i - k) * SEG * 1000));
+  lines.push('#EXT-X-MAP:URI="/v1/segment/' + (clean ? 'clean_' : '') + 'content_' + v + '_init.mp4"');
+  for (let k = from; k <= i + ahead; k++) lines.push(segLine('content', k, null, undefined, v, wall - (i - k) * SEG * 1000, clean));
   // Twitch lists the two fragments still being produced (26 PREFETCH rows over
   // 13 playlists) so a player can warm them before the window steps. Ours are
   // the next two content indices; nothing on our side fetches them, and the
   // extension never reads this tag.
   for (let k = i + ahead + 1; k <= i + ahead + 2; k++) {
-    lines.push(`#EXT-X-TWITCH-PREFETCH:${EDGE}/v1/segment/content_${v}_${pad(k % CONTENT_SEGS)}.m4s`);
+    lines.push('#EXT-X-TWITCH-PREFETCH:' + EDGE + '/v1/segment/' + (clean ? 'clean_' : '') + 'content_' + v + '_' + pad(k % CONTENT_SEGS) + '.m4s');
   }
   if (adOn) {
-    lines.push(...adLines(pod, adBase(t, ev), v).lines);
+    lines.push(...adLines(pod, adBase(t, ev), v, clean).lines);
   }
   return lines.join('\n') + '\n';
 }
@@ -318,7 +326,10 @@ function pageStatus() {
     label,
     mutedAtStart: !!scenario.mutedAtStart,
     nativeMuted: typeof ev.nativeMuted === 'boolean' ? ev.nativeMuted : null,
-    durationMs: scenario.durationMs || 45000,
+    // Counts of withheld requests per surface: a scenario that claims a
+    // native-only stall must show native > 0 and clean = 0.
+    stallNative: state.stallNative || 0,
+    stallClean: state.stallClean || 0,
     pods: state.pod,
     // Evidence that the adverse arm fired: a run that declares `stall` and
     // reports 0 here measured a different stream than the one it described.
@@ -479,8 +490,9 @@ const server = https.createServer({ key: readFileSync(key), cert: readFileSync(c
 
   // ---- usher master -----------------------------------------------------
   if (host.startsWith('usher.')) {
-    const m = /^\/api\/v2\/channel\/hls\/([^/]+)\.m3u8$/.exec(path);
-    if (!m) return send(res, 404, 'text/plain', 'no route');
+    // EVERY path under usher answers a master: the extension mints its own usher
+    // URL (token, sig, `p`, `type=any`) and a 404 here reads as "the replica has
+    // no source", which is a fixture failure dressed as a product one.
     let pt = 'site'; let pf = 'web';
     try {
       const tok = JSON.parse(url.searchParams.get('token') || '{}');
@@ -499,7 +511,9 @@ const server = https.createServer({ key: readFileSync(key), cert: readFileSync(c
     }
     const seg = /^\/v1\/segment\/([\w.-]+)$/.exec(path);
     if (seg) {
-      const file = join(MEDIA_DIR, seg[1]);
+      const name = seg[1];
+      const cleanSurface = name.startsWith('clean_');
+      const file = join(MEDIA_DIR, cleanSurface ? name.slice('clean_'.length) : name);
       if (!existsSync(file)) return send(res, 404, 'text/plain', 'no segment');
       const body = readFileSync(file);
       const serve = () => {
@@ -507,21 +521,36 @@ const server = https.createServer({ key: readFileSync(key), cert: readFileSync(c
         res.writeHead(200, { 'content-type': 'video/mp4', 'content-length': body.length });
         res.end(body);
       };
-      // AN EDGE THAT STOPS ANSWERING, because a perfect local file never
-      // starves: the clean frame lives at ~1 s of forward buffer on a real CDN
-      // edge and the extension stall-stops it with `hist:[4/3 4/1.01 4/0.99]`.
-      // A fixture that always answers in 2 ms cannot represent that, so a
-      // scenario declares `stall:{atMs, ms, on}` and the edge withholds content
-      // segments for that window. The delay is bounded by the window itself,
-      // never by a fixed sleep.
+      // AN EDGE THAT STOPS FEEDING ONE SURFACE. `on:'content'|'all'` holds the
+      // response until the window ends (an edge that goes quiet); `on:'native'`
+      // REFUSES the native segment with 503 and returns at once, so the native
+      // worker keeps polling playlists - and the extension keeps detecting the
+      // pod - while the element drains to readyState < 3. Holding the socket
+      // blocks the worker's single poll loop and suppresses its ad-end.
       const st = scenario.stall;
       if (st && st.ms > 0) {
         const want = st.on || 'content';
-        const isContent = /^content_/.test(seg[1]);
+        const isContent = /^(?:clean_)?content_/.test(name);
         const t = now();
-        if ((want === 'all' || isContent) && t >= st.atMs && t < st.atMs + st.ms) {
-          const wait = Math.max(0, st.atMs + st.ms - t);
+        if (t >= st.atMs && t < st.atMs + st.ms
+            && (want === 'all' || (want === 'native' && !cleanSurface) || (want === 'content' && isContent))) {
+          if (want === 'native' && !cleanSurface) {
+            // A native that never received a byte cannot satisfy the runner's
+            // fixture-playback gate. `allowFirst` feeds the init and the first
+            // segment, then refuses everything else, so the player drains
+            // from that one fragment and stays below HAVE_FUTURE_DATA.
+            state.nativeSeen = (state.nativeSeen || 0) + 1;
+            if (st.allowFirst && state.nativeSeen <= st.allowFirst) return serve();
+          }
           state.stalls = (state.stalls || 0) + 1;
+          if (cleanSurface) state.stallClean = (state.stallClean || 0) + 1;
+          else state.stallNative = (state.stallNative || 0) + 1;
+          if (want === 'native') {
+            cors(res);
+            res.writeHead(503, { 'content-type': 'text/plain' });
+            return res.end('replica: native segment refused');
+          }
+          const wait = Math.max(0, st.atMs + st.ms - t);
           return setTimeout(serve, wait);
         }
       }

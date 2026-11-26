@@ -2678,3 +2678,49 @@ is caught at 360p`, `without the layout floor a zero rect reproduces the 360p pi
 **OWED, and it is the discriminator:** `node _tools/ko-adlog-window.mjs 9446 300 --keep standby-level,overlay-reveal`
 in the guest on a 1080p channel. `why:'rect'` with a real `rectH` and still `q:'360p'` means the minted ladder is
 360p-only (`findCleanHlsUrl` tries the `autoplay` token type first), which is the next defect and a different one.
+
+## The replica could not starve one surface, and that was the fixture's bug (2026-11-26)
+
+The `handback-wait` guard (0.8.122-0.8.124) had only unit arms for its `rs < 3` limb, and the first attempt at
+a scenario was REFUTED by measurement: `stall:{atMs:13500, ms:6500, on:'all'}` produced
+`ad-ui-release {act:"pod-end", ms:14754}`, `native-seek-skipped {rs:4, podExtent:14}` and `handback-wait n=0`.
+The reason was structural, not a knob to tighten: the native element and the clean iframe fetched the SAME
+`content_720_000.m4s`, so withholding that file starved the covering picture together with the thing it covers.
+
+`_tools/ko-replica/server.mjs` now serves the clean surface under a `clean_` segment namespace (same bytes, a
+different URI) and takes `stall.on:"native"`: the edge answers the first `allowFirst` native segment requests and
+then REFUSES native media with 503, immediately, so the native worker keeps polling playlists and the extension
+keeps detecting the pod. It REFUSES rather than holds the socket on purpose - holding blocks the worker's single
+poll loop and suppresses its `ad-end`, which is the very row the scenario needs. `readyState` is never written by
+the fixture: the element drains because the edge stopped feeding it.
+
+Measured on 0.8.125 (`dev-handback-wait` 1795721435828, lane run) and again here:
+
+```
+RESULT PASS scenario=dev-handback-wait checks=19 failed=0 cannot=0 rows=128
+STALL withheld native=30 clean=0
+NATIVE-AT-POD-END extension handback-wait.rs=2 at=1795721466636; CDP probe@26000ms video.rs=2
+handback-wait  {"capMs":3000,"ct":1.9,"ms":26101,"rs":2,...}
+handback-ready {"capped":true,"covered":true,"ms":3018,"rs":2,"why":"cap"}
+```
+
+The wait therefore protects a REAL decoded picture for the whole 3018 ms: pixels at 26.0/27.5/28.5 s stay
+non-blue content, the native never reaches HAVE_FUTURE_DATA (it cannot - the edge refuses it until 30 s), and the
+ceiling hands back on schedule. Preroll stays `RESULT PASS scenario=dev-preroll-hold checks=12 failed=0 cannot=0`.
+
+Two instrument repairs in the same change, both from this repo's own lessons: the runner's `fixture-playback`
+gate recognised only `replica.appended > 0`, and a scenario that refuses the NEXT segment appends init + one
+fragment and then throws before posting a tick, so a real decoded picture read as "the fixture never played" -
+decoded frames plus a forward buffer (`vf > 0 && buf > 0`) are the same fact one level closer to the user; and
+`probe` with an operator other than `eq` used to return the VALUE (always truthy, so vacuous) and now evaluates
+`lt`. New expectation types: `rowField` (`lt`/`in`/`eq`) and `coverDuring` (a non-blue sample inside a row
+window, where adlog epochs and sample times are joined through `navEpoch`).
+
+Two harness defects paid for on the way in, both the known shape: the lane's edits arrived CRLF in files HEAD
+stores as LF (`.gitattributes` pinned `_tools/*.mjs`, ONE level, and `_tools/ko-replica/*.mjs` is two -
+`:18-19` now carries the globstar), and the usher master route had its 404 guard removed without removing the
+regex it guarded, leaving a dead `const m` in place of a comment that says why every usher path answers.
+
+**Still a limit, and named:** the `why:"ready"` limb - a native that refills inside the 3000 ms ceiling - is not
+produced here, because a refused edge cannot refill; it needs a live element (or a second stall window that ends
+early, which is a different scenario).
