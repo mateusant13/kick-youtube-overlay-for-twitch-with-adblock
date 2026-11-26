@@ -346,13 +346,22 @@ if (HLS_MODE) {
         // that covers the CSS height, or the largest rung if none does.
         let height = 0;
         try { height = V.getBoundingClientRect ? Math.max(0, V.getBoundingClientRect().height) : 0; } catch { /* no rect yet */ }
+        // A RECT OF ZERO IS NOT A SMALL PLAYER. A standby iframe that has not
+        // been laid out reports height 0, and `lh >= 0` is true for the LOWEST
+        // rung, so the rule above chose 360p for a 1236x695 player and stayed
+        // there until ABR climbed (the owner's `overlay-reveal {q:"360p"}`).
+        // With no usable layout the top rung is the honest pick: a clean picture
+        // that is too sharp for one instant is never a defect, and ABR steps it
+        // down from a real bandwidth sample instead of never stepping up.
+        const MIN_LAYOUT_H = 120;
+        const rectOk = height >= MIN_LAYOUT_H;
         let chosen = 0;
         let bestH = Infinity;
         let topH = -1;
         for (let i = 0; i < levels.length; i++) {
           const lh = Number((levels[i] || {}).height);
           if (!Number.isFinite(lh) || lh <= 0) continue;
-          if (lh >= height && lh < bestH) { bestH = lh; chosen = i; }
+          if (rectOk && lh >= height && lh < bestH) { bestH = lh; chosen = i; }
           if (lh > topH) topH = lh;
         }
         if (bestH === Infinity && topH > 0) {
@@ -364,7 +373,7 @@ if (HLS_MODE) {
         const l = levels[chosen] || {};
         const name = l.height ? `${l.height}p` : (l.width ? `${l.width}w` : String(chosen));
         const bitrate = Number(l.bitrate);
-        post({ t: 'ev', e: 'standby-level', d: { chosen, name, bitrate: Number.isFinite(bitrate) ? bitrate : null, count: levels.length } });
+        post({ t: 'ev', e: 'standby-level', d: { chosen, name, bitrate: Number.isFinite(bitrate) ? bitrate : null, count: levels.length, rectH: Math.round(height), why: rectOk ? 'rect' : 'no-rect' } });
       }
       standbyLevelLogged = true;
     }

@@ -2653,3 +2653,28 @@ Verification: `RESULT PASS ad-time-continuity checks=184 failed=0`, `ARMS 28/28 
 **Owed, and named:** a pod end at rs<3 in the owner's Chrome must show `handback-wait` ->
 `handback-ready {why:'ready'}` and never `cover-lost` from one report, and a chat click during a pod must
 not produce `handback-ready {why:'user-resume'}`.
+
+### 0.8.125, same day: a rect of zero is not a small player
+
+Owner report answered from the code and a fixture, not from a guess: the clean ad picture reveals at 360p on a
+1080p channel. The pick is one hand-written rule in `player-bridge.js` at `MANIFEST_PARSED` - the smallest rung
+whose height covers the clean `<video>` rect, or the largest when none does; hls.js's own
+`capLevelToPlayerSize` is not configured anywhere. A standby iframe that has not been laid out reports height
+**0**, and `lh >= 0` is true for the LOWEST rung, so a 1236x695 player opened at 360p and stayed there until ABR
+climbed.
+
+`MIN_LAYOUT_H = 120` states the difference: below it the rect is not a small player but no layout, and the TOP
+rung is the honest pick (ABR steps down from a real bandwidth sample; a picture too sharp for one instant is
+never a defect). The `standby-level` row now carries `rectH` and `why` (`rect`/`no-rect`), so the next report is
+a decision instead of a join.
+
+The fixture ladder gained a 1080p TOP rung that is deliberately NOT the rung a 695px frame picks, so "no layout
+-> top rung" and "695px -> 720p" are different answers; without that, the arm would pass for the wrong reason.
+Arms: `a frame with no layout yet starts at the top rung, not the lowest bitrate`, plus the existing 695px and
+360px pair; REDs (this suite's shape - the mutant must reproduce the defect): `the pre-fix lowest-bitrate pick
+is caught at 360p`, `without the layout floor a zero rect reproduces the 360p pick`.
+`RESULT PASS bridge-handshake checks=23 failed=0`.
+
+**OWED, and it is the discriminator:** `node _tools/ko-adlog-window.mjs 9446 300 --keep standby-level,overlay-reveal`
+in the guest on a 1080p channel. `why:'rect'` with a real `rectH` and still `q:'360p'` means the minted ladder is
+360p-only (`findCleanHlsUrl` tries the `autoplay` token type first), which is the next defect and a different one.

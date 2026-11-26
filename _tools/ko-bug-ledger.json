@@ -1542,6 +1542,25 @@
     "suite: `RESULT PASS ad-time-continuity checks=184 failed=0`, `ARMS 28/28 present`; census `RESULT PASS guardShaped=111 unexercisedState=32 (budget met)`"
    ],
    "next": "OWED live half: a pod end at rs<3 in the owner's Chrome must show `handback-wait` -> `handback-ready {why:'ready'}` with `handback-wait-blind` never reaching cover-lost on one report, and a chat click during a pod must not produce `handback-ready {why:'user-resume'}`."
+  },
+  {
+   "id": "KO-20261126-15",
+   "title": "A standby iframe with no layout yet was read as a zero-height player, so the clean picture opened at the lowest rung",
+   "state": "fixed",
+   "author": "Reveal360",
+   "reported": "Owner: the clean ad player reveals at 360p on a 1080p channel. Scout traced the pick (2026-11-26): `player-bridge.js` MANIFEST_PARSED rule, no hls.js `capLevelToPlayerSize` config",
+   "fixed_in": "0.8.125",
+   "commit": null,
+   "hypothesis": "The start rung is the smallest level whose height covers the clean `<video>` rect, or the largest when none does. A standby iframe that has not been laid out reports height 0, and `lh >= 0` is true for the LOWEST rung, so the rule chose 360p for a 1236x695 player and the picture stayed there until ABR climbed - the owner's `overlay-reveal {q:\"360p\"}`.",
+   "falsifier": "If a 0-height rect does not choose the lowest rung, the cause is elsewhere: `node kick-overlay/bridge-handshake-test.cjs` with the fixture's 0-rect arm shows `{name:'360p', chosen:2, why:'rect', rectH:0}` on the pre-fix source.",
+   "evidence": [
+    "`MIN_LAYOUT_H = 120`: a rect below it is not a small player but no layout, and the top rung is the pick (ABR steps down from a real bandwidth sample; a picture that is too sharp for one instant is never a defect)",
+    "`standby-level` now carries `rectH` and `why` (`rect`/`no-rect`), so the next report names the decision instead of leaving it to a join",
+    "the fixture ladder gained a 1080p TOP rung that is not the rung a 695px frame picks, so `no layout -> top rung` is a different answer from `695px -> 720p`",
+    "arms: `a frame with no layout yet starts at the top rung, not the lowest bitrate`, plus the existing 695px/360px pair; REDs: `the pre-fix lowest-bitrate pick is caught at 360p` and `without the layout floor a zero rect reproduces the 360p pick`",
+    "`RESULT PASS bridge-handshake checks=23 failed=0`; census `RESULT PASS guardShaped=111 unexercisedState=32 (budget met)`"
+   ],
+   "next": "OWED live half: `node _tools/ko-adlog-window.mjs 9446 300 --keep standby-level,overlay-reveal` in the guest on a 1080p channel must show `standby-level {why:'rect', rectH:<player height>, name:'720p'}` (or the top rung) before a reveal that is no longer `q:'360p'`. If the row says `why:'rect'` and still 360p, the ladder itself is 360p-only (the `autoplay` token type is first in `findCleanHlsUrl`) and that is the next defect."
   }
  ]
 }

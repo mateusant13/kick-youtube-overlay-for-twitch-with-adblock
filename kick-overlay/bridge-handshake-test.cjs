@@ -229,6 +229,9 @@ const HLS_LEVELS = [
   { height: 720, width: 1280, bitrate: 1400000 },
   { height: 480, width: 854, bitrate: 800000 },
   { height: 360, width: 640, bitrate: 450000 },
+  // The TOP rung is deliberately NOT the rung a 695px frame picks, so "no layout
+  // -> top rung" is a different answer from "695px -> 720p".
+  { height: 1080, width: 1920, bitrate: 6000000 },
 ];
 function makeHlsFrame({ source = SOURCE, height = 695 } = {}) {
   const delivered = [];
@@ -284,6 +287,13 @@ try {
   ok('a 695px frame starts at the 720p rung, not the lowest bitrate', green.row.d.name === '720p' && green.startLevel === 0, JSON.stringify(green));
   const small = startLevelArm(SOURCE, 360);
   ok('a 360px frame still starts at 360p', small.row.d.name === '360p' && small.startLevel === 2, JSON.stringify(small));
+  // A RECT OF ZERO IS NOT A SMALL PLAYER: a standby iframe that has not been laid
+  // out reports height 0, and `lh >= 0` is true for the lowest rung - which is
+  // how a 1236x695 player opened at 360p (`overlay-reveal {q:"360p"}`).
+  const unlaid = startLevelArm(SOURCE, 0);
+  ok('a frame with no layout yet starts at the top rung, not the lowest bitrate',
+    unlaid.row.d.name === '1080p' && unlaid.startLevel === 3 && unlaid.row.d.why === 'no-rect'
+    && unlaid.row.d.rectH === 0 && unlaid.row.d.count === 4, JSON.stringify(unlaid));
 } catch (e) {
   ok('the start-rung arm ran', false, String(e && e.message));
 }
@@ -291,13 +301,28 @@ try {
   let red = null;
   try {
     red = startLevelArm(SOURCE.replace(
-      'if (lh >= height && lh < bestH) { bestH = lh; chosen = i; }',
+      'if (rectOk && lh >= height && lh < bestH) { bestH = lh; chosen = i; }',
       'if (Number((levels[i] || {}).bitrate) < bestH) { bestH = Number((levels[i] || {}).bitrate); chosen = i; }',
     ), 695);
   } catch (e) {
     ok('RED mutation applied', false, String(e && e.message));
   }
   ok('RED: the pre-fix lowest-bitrate pick is caught at 360p', red && red.row.d.name === '360p' && red.startLevel === 2, JSON.stringify(red));
+}
+{
+  // RED: the layout floor removed -> a zero rect is read as a zero-height player
+  // and the smallest rung wins. The arm asserts the CONTRACT (top rung), not the
+  // mutant's own row.
+  let red = null;
+  try {
+    red = startLevelArm(SOURCE.replace('const MIN_LAYOUT_H = 120;', 'const MIN_LAYOUT_H = 0;'), 0);
+  } catch (e) {
+    ok('RED mutation applied', false, String(e && e.message));
+  }
+  // Same shape as the RED above: the mutant must reproduce the defect the green
+  // arm refuses (360p for a zero rect), which is what makes the arm a detector.
+  ok('RED: without the layout floor a zero rect reproduces the 360p pick',
+    red && red.row.d.name === '360p' && red.startLevel === 2 && red.row.d.why === 'rect', JSON.stringify(red));
 }
 
 console.log(`\nRESULT ${failed ? 'FAIL' : 'PASS'} bridge-handshake checks=${checks} failed=${failed}`);
