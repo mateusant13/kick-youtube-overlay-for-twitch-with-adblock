@@ -252,6 +252,15 @@
   // deliberately sits liveSyncDuration behind the edge, so the forward buffer
   // OSCILLATES around that target; the gate measures progress instead.
   const HEALTH_BUFFER_SEC = 3;
+  // A POD END IS NOT A LICENCE TO PUT A FROZEN ELEMENT ON SCREEN. Measured in the
+  // replica 2026-11-26 (dev-preroll-hold 1795677985765, 0.8.121): `ad-ui-release
+  // {act:'pod-end'}` at 14743 ms, `native-handoff {ct:0, se:16}` at 14747 and
+  // `native-resume {rs:1}` x4 (15049, 15949, 17248, 18748) - the clean frame was
+  // torn down while it was decoding (`cleanLat:6`) and the user watched a frozen
+  // native for ~4 s. The clean picture stays on screen until the native can
+  // actually play forward, bounded by this ceiling so a native that never
+  // recovers still gets the hand-back it would have had.
+  const HANDBACK_WAIT_MS = 3000;
   // A cold cover holds the picture while the clean source is still minting, so
   // it needs a hard deadline INSIDE the 12 s contract, not equal to it. Equal
   // was unpassable: the timer fired at 12000 ms and the reachability arm
@@ -1044,6 +1053,10 @@
     const v = mainVideo();
     if (!v || !v.isConnected) return null;
     if (userResumedHeld()) return null; // the user unpaused during a DOM hold
+    // A hand-back is waiting for this element to reach HAVE_FUTURE_DATA; pausing
+    // it again would make the wait impossible to satisfy (it is hidden behind
+    // the clean frame for those 3 s, so nothing is audible or visible from it).
+    if (overlay.handbackWait) return null;
     if (v.paused) return null;
     if (resumeRefusedByUser(v)) return null; // a user-parked player stays parked
     markAdPark(true);
@@ -2296,6 +2309,11 @@
   // log row written by a different branch.
   stats.adActive = () => !!overlay.adActive;
   stats.revealed = () => !!overlay.revealed;
+  // The hand-back wait is only worth anything if the PICTURE is still mounted:
+  // the first version of this wait sat after `overlay.frame.remove()` and held
+  // an empty screen, which the arm could not see without this seam.
+  stats.frameMounted = () => !!(overlay.frame && overlay.frame.isConnected !== false);
+  stats.handbackWait = () => (overlay.handbackWait ? { ms: Date.now() - overlay.handbackWait.at, reason: overlay.handbackWait.reason } : null);
   // Diagnostic seam: how many consecutive reports said the clean frame is
   // paused. The stale-standby decision reads it, and an arm that could not read
   // it would have to re-count reports beside the product and pass either way.
@@ -3040,7 +3058,11 @@
     }, ms);
   }
 
-  function stopAdOverlay(reason) {
+  // `opts.noWait` is the wait's own re-entry: a capped wait must hand back on the
+  // SAME element, not arm a second wait on a native that is still at rs 1
+  // (measured: `handback-ready` followed 150 ms later by another `handback-wait`,
+  // i.e. a loop for as long as the pod-end path kept being called).
+  function stopAdOverlay(reason, opts = {}) {
     const revealedAd = adUiHoldTarget();
     if (revealedAd) holdAfterReveal(revealedAd);
     adLayoutRelease();
@@ -3048,7 +3070,53 @@
     // player. Stopping it must not post overlay-stop (that clears the worker's
     // ad state without an ad) and must not resume/seek the native player.
     const wasStandby = !!overlay.standby && !overlay.revealed && !overlay.adActive;
+    if (overlay.handbackWait) {
+      // A second teardown (a source switch, a clean stall, a new pod) ends the
+      // wait and proceeds: the wait exists to protect ONE hand-back, never to
+      // hold a frame that something else has already decided to replace.
+      try { clearTimeout(overlay.handbackWait.timer); } catch { /* ignore */ }
+      adLog('handback-wait-cancelled', { ms: Date.now() - overlay.handbackWait.at, why: String(reason || '') });
+      overlay.handbackWait = null;
+    }
     if (!wasStandby) overlay.lastEndAt = Date.now();
+    // A POD END IS NOT A LICENCE TO PUT A FROZEN ELEMENT ON SCREEN. Measured in
+    // the replica 2026-11-26 (dev-preroll-hold 1795677985765, 0.8.121):
+    // `ad-ui-release {act:'pod-end'}` at 14743 ms, `native-handoff {ct:0, se:16}`
+    // at 14747, `native-resume {rs:1}` x4 (15049, 15949, 17248, 18748) and the
+    // first `display-clock` LIVE at ~19 s - the clean frame was torn down while it
+    // was decoding (`cleanLat:6`) and the user watched a frozen native for ~4 s.
+    // This runs BEFORE the frame, the badge and the audio claim are released:
+    // waiting after `overlay.frame.remove()` would keep nothing on screen.
+    // Only a pod end qualifies; a clean-stall/ad-only teardown has no picture to
+    // wait on. Bounded by HANDBACK_WAIT_MS so a native that never recovers still
+    // gets the hand-back it would have had.
+    if (!opts.noWait && !overlay.handbackWait && reason === 'ad-end' && overlay.frame && overlay.revealed && cleanFrameCanCover()) {
+      const wv = overlay.video && overlay.video.isConnected ? overlay.video : mainVideo();
+      const wrs = wv ? Number(wv.readyState) || 0 : 0;
+      if (wv && wrs < 3 && !resumeRefusedByUser(wv)) {
+        const wait = { at: Date.now(), reason, capped: false, timer: 0 };
+        overlay.handbackWait = wait;
+        const finish = () => {
+          // A cancelled wait clears this timer; `active` keeps a callback that
+          // was already dequeued from tearing down a pod that has moved on.
+          const active = overlay.handbackWait === wait;
+          const nv = active ? (overlay.video && overlay.video.isConnected ? overlay.video : mainVideo()) : null;
+          const nrs = nv ? Number(nv.readyState) || 0 : 0;
+          const ms = Date.now() - wait.at;
+          const capped = ms >= HANDBACK_WAIT_MS;
+          const covered = active && cleanFrameCanCover();
+          if (active && (nrs >= 3 || capped || !covered || !nv)) {
+            overlay.handbackWait = null;
+            adLogState('handback-ready', { ms, rs: nrs, capped, covered });
+            stopAdOverlay(wait.reason, { noWait: true });
+          } else if (active) {
+            wait.timer = setTimeout(finish, 150);
+          }
+        };
+        wait.timer = setTimeout(finish, 150);
+        return adLogState('handback-wait', { rs: wrs, cleanLat: overlay.lastSt ? +Number(overlay.lastSt.lat || 0).toFixed(1) : null, capMs: HANDBACK_WAIT_MS, ct: +Number(wv.currentTime || 0).toFixed(1) });
+      }
+    }
     if (wasStandby) {
       // A standby-only teardown is not a pod end. Consume any take-over stamp
       // left by an earlier episode so a later stop cannot report it as one.

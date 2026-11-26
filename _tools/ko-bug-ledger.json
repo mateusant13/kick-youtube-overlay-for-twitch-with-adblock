@@ -1484,6 +1484,25 @@
     "`node _tools/ko-verify.mjs` -> `RESULT PASS checks=25 failed=0` (wall 360.15 s)"
    ],
    "next": "No live half is owed: the row is produced by the extension's own heartbeat in any browser, and the replica run above is the same code path."
+  },
+  {
+   "id": "KO-20261126-12",
+   "title": "A pod end put a frozen native on screen while the clean frame was still decoding",
+   "state": "fixed",
+   "author": "seat",
+   "reported": "2026-11-26",
+   "fixed_in": "0.8.122",
+   "commit": null,
+   "hypothesis": "`stopAdOverlay()` tore the clean frame down and resumed a native at `readyState 1` in the same tick. MEASURED in the replica (dev-preroll-hold 1795677985765, 0.8.121): `ad-ui-release {act:'pod-end', ms:14743, podAgeMs:14202}`, `native-resume {rs:1, tag:'ad-end', ms:14746}`, `native-handoff {ct:0, se:16, ms:14747}`, `native-edge-recover {basis:'wall', behind:31.7, from:10.3, to:39}` at 15049, then `native-resume` x4 (rs 1/1/4/1) and `display-clock` PAUSED until ~19 s, first LIVE at pos 39.23: the clean frame was decoding (`cleanLat:6`, `cleanPos:35.6`) when it was removed, so the user watched a frozen element for ~4 s. The trigger is `readyState < 3` AT THE POD END, which is the measured 0.8.121 shape (`native-resume {rs:1, tag:'ad-end'}` at 14746); a pod end on a healthy element (`rs:4`, paused) is not waited on, because the hand-back seek then costs one 17 ms dip and no freeze - MEASURED on 0.8.122 in the same scenario (dev-preroll-hold 1795684359549): `ad-ui-release {act:'pod-end', ms:15012}`, `native-seek-skipped {rs:4, from:0, podExtent:14, ms:15014}`, `native-handoff {ms:15016}`, `video-waiting {rs:1}` 15016 -> `video-playing {rs:4}` 15017, `display-clock LIVE pos 39.26` and no PAUSED row after the hand-off.",
+   "falsifier": "A hand-back whose native is below HAVE_FUTURE_DATA must keep the decoding clean frame on screen until the element reports `rs >= 3`, then hand back once; the ceiling must still hand back on the same element. Arms in `ad-time-continuity`: `a hand-back onto a native without HAVE_FUTURE_DATA keeps the picture on screen` (asserts `handback-wait {rs:1, capMs}`, no `native-resume {ad-end}` yet, frame still mounted, then `handback-ready {capped:false}` and the hand-back), `a native that never recovers is handed back at the ceiling, not held forever` (`handback-ready {capped:true}` plus exactly one `native-resume {ad-end}`), and `RED: without the wait a frozen native is revealed at pod end` (mutation `if (wv && wrs < 3 && !resumeRefusedByUser(wv)) -> if (false)`, red with `the mutant revealed a frozen native at pod end with no wait`).",
+   "evidence": [
+    "suite (2026-11-26): `RESULT PASS ad-time-continuity checks=177 failed=0`, `ARMS 21/21 present`",
+    "replica before (0.8.121, dev-preroll-hold 1795677985765): `native-resume {rs:1, tag:'ad-end', ms:14746}` then `display-clock` PAUSED until ~19 s",
+    "the wait runs before every teardown (`frame.remove()`, `audioClaim(false)`, `restoreNativeVideos()`); a first placement after the removal measured `stats.frameMounted() === false` and the arm refused it",
+    "one wait per pod: a capped re-entry (`opts.noWait`) measured `handback-ready` followed by a second `handback-wait`, i.e. a loop, before the flag was added",
+    "replica after (0.8.122, dev-preroll-hold 1795684359549): `RESULT PASS scenario=dev-preroll-hold checks=12 failed=0 cannot=0 rows=140`; the pod ended at `rs:4`, so the wait correctly did not fire and the native was playing 17 ms later (`video-waiting` 15016 -> `video-playing` 15017), first `display-clock` after the hand-off `LIVE pos 39.26`"
+   ],
+   "next": "OWED live half: a pod on 0.8.122 in the owner's Chrome whose native sits at `rs < 3` at the pod end must show `handback-wait {rs, capMs}` -> `handback-ready {capped:false}` and one `native-resume` with `rs >= 3`, instead of the measured 0.8.121 freeze (`native-resume {rs:1}` then PAUSED for ~4 s). Re-arm: `node _tools/ko-adlog-window.mjs 9222 1200 --keep handback-wait,handback-ready,native-handoff,native-resume,display-clock` after the next pod."
   }
  ]
 }

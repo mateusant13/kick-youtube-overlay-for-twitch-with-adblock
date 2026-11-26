@@ -2425,6 +2425,44 @@ are the only heavy steps this project starts, one at a time; a failure is read, 
 retry chain; `I:` is a slow SMR volume, so its I/O is reduced by deleting, batching, caching and
 async, NEVER by moving stored data off `I:`.
 
+## Wave record - 2026-11-26, a pod end put a frozen native on screen while the clean frame was decoding (0.8.122)
+
+Owner-visible class: the ad ended, the clean picture disappeared, and the Twitch player sat frozen for
+seconds. Measured in the replica (`dev-preroll-hold 1795677985765`, 0.8.121) row by row:
+`ad-ui-release {act:'pod-end', ms:14743}` -> `native-resume {rs:1, tag:'ad-end', ms:14746}` ->
+`native-handoff {ct:0, se:16, ms:14747}` -> `native-edge-recover {basis:'wall', behind:31.7, from:10.3,
+to:39, ms:15049}` -> `native-resume` x4 (`rs 1/1/4/1`) and `display-clock` PAUSED until ~19 s, first
+`LIVE` at `pos 39.23`. The clean frame was decoding (`cleanLat:6`, `cleanPos:35.6`) when
+`stopAdOverlay()` removed it in the same tick it resumed a native at `readyState 1`.
+
+**The fix is an ordering, not a timer.** `stopAdOverlay(reason, opts)` now, at a pod end whose native is
+below `HAVE_FUTURE_DATA`, keeps the frame, the badge and the audio claim in place and re-checks every
+150 ms; the teardown proceeds the tick the element reports `rs >= 3` (`handback-ready {rs, capped:false}`)
+or at `HANDBACK_WAIT_MS = 3000` (`capped:true`), because a frame held forever is worse than a frozen
+element the user can pause. The wait is armed BEFORE `audioClaim(false)`, `overlay.frame.remove()` and
+`restoreNativeVideos()` — a first version placed it after the removal and the arm refused it on
+`stats.frameMounted() === false`, which is the falsifier that a "wait" over an already-removed frame is
+nothing. `freezeNativeForPod()` returns null while the wait is live (pausing would make it
+unsatisfiable), and the wait's own re-entry carries `{noWait:true}`: without it a capped wait armed a
+second wait 150 ms later, measured as `handback-ready` followed by a fresh `handback-wait`.
+
+**The trigger is the pod-end readyState, and the run says so.** On 0.8.122 the same scenario ended the
+pod at `rs:4` (`ad-ui-release` 15012, `native-seek-skipped {rs:4, from:0, podExtent:14}` 15014,
+`native-handoff` 15016), so the wait correctly did NOT fire: the hand-back seek cost one 17 ms dip
+(`video-waiting {rs:1}` 15016 -> `video-playing {rs:4}` 15017) and the first `display-clock` after the
+hand-off is `LIVE pos 39.26` with no PAUSED row. The 4 s freeze belongs to the element that is already
+stalled at the pod end, which is the row 0.8.121 wrote.
+
+Arms (`ad-time-continuity`): `a hand-back onto a native without HAVE_FUTURE_DATA keeps the picture on
+screen` (wait row with `capMs`, no `native-resume {ad-end}` yet, frame still mounted,
+`handbackWait() !== null`, then `handback-ready {capped:false}` and the hand-back),
+`a native that never recovers is handed back at the ceiling, not held forever` (`capped:true` plus
+exactly one `native-resume {ad-end}`), and `RED: without the wait a frozen native is revealed at pod
+end` (mutation `if (wv && wrs < 3 && !resumeRefusedByUser(wv)) -> if (false)`, red with `the mutant
+revealed a frozen native at pod end with no wait`). The RED asserts the CONTRACT, not the mutant's own
+behaviour: an earlier version asserted the mutant's rows and passed on both sides, which measures
+nothing.
+
 ## Wave record - 2026-11-26, 0.8.120: the pod's own ask rode the warm, and a flaky arm was a REAL defect
 
 Owner goal this build serves, verbatim: *"advertisements seem not to exist"* - the seconds a pod

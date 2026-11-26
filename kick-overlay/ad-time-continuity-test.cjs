@@ -197,11 +197,14 @@ function mutate(pairs) {
 
 // Native player at a controllable position. `edge` is the live edge, so
 // `edge - ct` is the native's own latency.
-function setNative(page, { ct, edge, bufferedEnd, bufferedStart, paused = false, muted = false }) {
+function setNative(page, { ct, edge, bufferedEnd, bufferedStart, paused = false, muted = false, rs = 4 }) {
   const v = page.video;
   v.currentTime = ct;
   v.paused = paused;
-  v.readyState = 4;
+  // `rs` is a parameter because a hand-back onto an element below
+  // HAVE_FUTURE_DATA is a freeze with a delay on it (the 0.8.122 wait's whole
+  // reason), and an arm that cannot set it measures nothing.
+  v.readyState = rs;
   // The mute must arrive as a USER gesture: ko-audio.js records intent from a
   // volumechange it did not write, and setting `.muted` behind its back leaves
   // the intent untouched (the whole point of the new model).
@@ -694,6 +697,88 @@ async function main() {
         `the mutant did not jump (currentTime ${page.video.currentTime}), so the arm above measures nothing`);
     });
   }
+
+  // ---- 2c. A HAND-BACK ONTO AN ELEMENT THAT CANNOT PLAY FORWARD WAITS -----
+  // Measured in the replica 2026-11-26 (dev-preroll-hold 1795677985765, 0.8.121):
+  // `ad-ui-release {act:'pod-end'}` at 14743 ms, `native-handoff {ct:0, se:16}`
+  // at 14747, `native-resume {rs:1}` x4 (15049, 15949, 17248, 18748) and the
+  // first `display-clock` LIVE at ~19 s. The clean frame was torn down while it
+  // was decoding (`cleanLat:6`) and the user watched a frozen native for ~4 s.
+  //
+  // A REVEALED live frame ADVANCES. `cleanFrameCanCover()` refuses a playhead
+  // that repeats its position across samples more than 2 s apart, so an arm that
+  // sends one sample and then waits measures that guard instead of the wait -
+  // the first version of these arms did exactly that (`covered:false` at 303 ms).
+  async function liveFrame(page, n, startPos = 100) {
+    for (let i = 0; i < n; i += 1) {
+      // 1x, not 3x: `cleanFrameAdvancing` refuses moved > expected*2 + 0.2,
+      // and a pump faster than real time silently marks the frame not-playing.
+      page.frameMsg(healthySt({ pos: startPos + i * 0.28, lat: 3 }));
+      await settle(300);
+    }
+  }
+  await greenArm('a hand-back onto a native without HAVE_FUTURE_DATA keeps the picture on screen', async () => {
+    const page = makeWorld();
+    setNative(page, { ct: 30, edge: 40, bufferedEnd: 40, rs: 1 });
+    await pod(page);
+    await liveFrame(page, 2);
+    page.bypass({ type: 'ad-end' });
+    await settle(60);
+    const wait = page.logsOf('handback-wait').pop();
+    assert(wait, 'the hand-back did not wait on an element at rs=1');
+    assert(wait.d.rs === 1, `rs ${JSON.stringify(wait.d.rs)}`);
+    assert(wait.d.capMs > 0, `no ceiling in the row: ${JSON.stringify(wait.d)}`);
+    assert(page.logsOf('native-resume').filter((l) => l.d.tag === 'ad-end').length === 0,
+      'the native was resumed while it could not play forward');
+    assert(page.logsOf('overlay-reveal').length > 0, 'the clean picture was never revealed, so there is nothing to wait on');
+    assert(page.stats().frameMounted() === true,
+      'the wait armed with the frame already torn down: the user sees the frozen element it was meant to hide');
+    assert(page.stats().handbackWait() !== null, 'the wait is not live, so the timer would never finish');
+    page.video.readyState = 4;
+    await settle(400);
+    const ready = page.logsOf('handback-ready').pop();
+    assert(ready, 'no handback-ready row');
+    assert(ready.d.capped === false && ready.d.rs >= 3, `ready ${JSON.stringify(ready.d)}`);
+    assert(page.logsOf('native-resume').some((l) => l.d.tag === 'ad-end'), 'the native was never handed back');
+  });
+  // The ceiling: a native that never recovers still gets the hand-back it would
+  // have had, because a frame held forever is a worse defect than a frozen
+  // element the user can pause/unpause.
+  await greenArm('a native that never recovers is handed back at the ceiling, not held forever', async () => {
+    const page = makeWorld();
+    setNative(page, { ct: 30, edge: 40, bufferedEnd: 40, rs: 1 });
+    await pod(page);
+    page.bypass({ type: 'ad-end' });
+    await liveFrame(page, 11, 100); // 3.3 s of a healthy, advancing clean picture
+    const ready = page.logsOf('handback-ready').pop();
+    assert(ready, 'no handback-ready row after the ceiling');
+    assert(ready.d.capped === true, `capped=${JSON.stringify(ready.d)}`);
+    const tags = page.logsOf('native-resume').map((l) => l.d.tag + ':' + l.d.rs);
+    const tail = page.logs().slice(-14).map((l) => l.ev);
+    assert(page.logsOf('native-resume').some((l) => l.d.tag === 'ad-end'),
+      `the capped wait never handed back (resumes=${JSON.stringify(tags)} paused=${page.video.paused} revealed=${page.stats().revealed()} active=${page.stats().adActive()} tail=${JSON.stringify(tail)})`);
+  });
+  // RED: the wait removed -> a frozen element is put on screen immediately.
+  const RED_NO_WAIT = mutate([[
+    '      if (wv && wrs < 3 && !resumeRefusedByUser(wv)) {',
+    '      if (false) {',
+  ]]);
+  await redArm('RED: without the wait a frozen native is revealed at pod end', RED_NO_WAIT, async (src) => {
+    const page = makeWorld({ adSource: src });
+    setNative(page, { ct: 30, edge: 40, bufferedEnd: 40, rs: 1 });
+    await pod(page);
+    await liveFrame(page, 2);
+    page.bypass({ type: 'ad-end' });
+    await settle(60);
+    // The arm asserts the CONTRACT, so the mutant breaks it: with the wait
+    // removed the pod end reveals a frozen element (`native-resume {rs:1}`) and
+    // no `handback-wait` row exists. Asserting the mutant's own behaviour here
+    // would pass on both sides and measure nothing.
+    const wait = page.logsOf('handback-wait').pop();
+    assert(wait, 'the mutant revealed a frozen native at pod end with no wait');
+    assert(page.logsOf('native-resume').filter((l) => l.d.tag === 'ad-end').length === 0,
+      'the mutant resumed the element while it could not play forward');
+  });
 
   // ---- 3. the user's sound decision wins ----------------------------------
   {
@@ -3313,6 +3398,8 @@ async function main() {
     'a warm stuck in flight past a mint does not park the pod',
     'a timed-out warm flushes its parked ask instead of dropping it',
     'a failed pre-warm is not a precondition: the hold falls back to a mint and reveals',
+    'a hand-back onto a native without HAVE_FUTURE_DATA keeps the picture on screen',
+    'a native that never recovers is handed back at the ceiling, not held forever',
   ];
   const printed = armLog.map((l) => String(l).trim());
   const missing = ARMS.filter((a) => !printed.includes(a));
