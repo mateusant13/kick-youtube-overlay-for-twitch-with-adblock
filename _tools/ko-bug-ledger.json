@@ -1424,6 +1424,24 @@
     "NOT taken in the next replica run: `dev-preroll-hold` 1795672342763 measured `elapsed 13.67` against `se 14`, so `podExtentEdge` was false by 0.08 s and the hand-back used the ordinary edge catch-up. The branch is arm-verified, not run-verified."
    ],
    "next": "A run whose hand-back measures `se <= ct0 + elapsed + 0.25` must show the `basis:'pod-end'` row once and no `basis:'edge'` catch-up on the same hand-back."
+  },
+  {
+   "id": "KO-20261126-09",
+   "title": "The comparison reader called the page's own playlist fetch a divergence, because a ring cannot prove an absence",
+   "state": "fixed",
+   "author": "seat",
+   "reported": "2026-11-26",
+   "fixed_in": "tool: _tools/ko-replica/compare.mjs",
+   "commit": "c216f6f",
+   "hypothesis": "`fetchedBy` was derived from ring rows when the replica side was a `report.json` (`worker-playlist` -> `worker`), and from CDP attribution when the real side was a `capture.json` (`from=both` on every playlist). The extension never emits a page-fetch event, so the report side could only ever answer `worker`: MEASURED on the `shygo` capture (2026-11-26, 117 playlists, 100 samples) `DIVERGE fetchedBy real=both replica=worker` for a page whose page-side fetch the capture itself recorded. That is a divergence of the observer, the same class the reader already refuses for `dom.source=replica-server`.",
+   "falsifier": "`compare.mjs --selftest` case `report-vs-capture` with the real side at `from=both`: with the fix it is `CANNOT-MEASURE` and names the replica side; the RED (restoring the row-derived origins) prints `SELFTEST FAIL report-vs-capture: fetchedBy: want CANNOT-MEASURE, got DIVERGE` (run 2026-11-26 against a mutated copy under `G:/Temp/ko-scratch/compare-red`).",
+   "evidence": [
+    "`node _tools/ko-replica/compare.mjs --selftest` -> `SELFTEST PASS 11/11`",
+    "mutated copy -> `SELFTEST FAIL report-vs-capture: fetchedBy: want CANNOT-MEASURE, got DIVERGE`, rc 1",
+    "`compare --real G:/Temp/ko-replica/real/shygo-20261126-031418/capture.json --replica .../dev-preroll-hold-1795672342763/report.json` -> `RESULT CANNOT-MEASURE 11/12`, zero DIVERGE (was `DIVERGE 1/12`)",
+    "`grep -rn 'page-playlist|fetch-playlist' kick-overlay/*.js` -> no hits, so the ring cannot answer the page side"
+   ],
+   "next": "A replica run WITH `--capture-out` is needed for a full capture-vs-capture pair; every remaining CANNOT-MEASURE there is a missing population (no ad in the window), not a refusal."
   }
  ]
 }

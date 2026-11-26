@@ -72,7 +72,11 @@ includes the player's letterbox bars, which is why a full-screen ad reads 0.56 r
 `RESULT DIVERGE 1/12 (intentional 1, scenario 3)`; the remaining red is the OBSERVER
 (`fetchedBy real=both replica=page`: the replica server sees an HTTP request and cannot attribute it to
 a CDP target, which the reader refuses as `CANNOT-MEASURE` once the capture carries
-`dom.source=replica-server`). Two dimensions are `CANNOT-MEASURE` for the same reason: this window
+`dom.source=replica-server`). A `report.json` side refuses `fetchedBy` too, for a different reason: the
+extension's ring has no page-fetch event (`page-playlist`/`fetch-playlist` exist nowhere in
+`kick-overlay/*.js`), so it can only ever say `worker`, and MEASURED 2026-11-26 that reader reported
+`DIVERGE fetchedBy` (`real=both`, `report=worker`) for a page that fetched exactly what the CDP capture
+showed. Two dimensions are `CANNOT-MEASURE` for the same reason: this window
 served no ad, so `adDiscontinuity` and the pod's own length (`adWindow`) have nothing to compare.
 
 ## Measured against the real page

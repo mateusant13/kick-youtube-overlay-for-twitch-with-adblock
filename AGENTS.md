@@ -84,7 +84,7 @@ owner already applies to the spectacle of a claim being repeated back to him.
 ## Browser: agent-browser default.
 Owner browser: authorized for task-needed authentication; follow this project's access scope.
 ## Herdr panes (mandatory)
-Cap: one visible pane per canonical project across workspaces/worktrees. Create via `python I:/!manager/tools/herdr-visible-pane-budget.py workspace --cwd <root> --label <id>` only; unknown/already-present projects refuse. Reuse main pane; extra workers headless; no raw create/focus/move/close.
+Cap: one visible pane per canonical project across workspaces/worktrees. The pane-admission tool was `I:/!manager/tools/herdr-visible-pane-budget.py` and both that repo and the tool were deleted on 2026-11-26 (seat DM: route and mailbox moved to `I:/!watcher/`), so until the watcher republishes an admission tool under `I:/!watcher/tools/` there is no sanctioned way to CREATE a pane: reuse this project's main pane, keep extra workers headless, and never raw-create, focus, move, resize, close, or kill one. Messaging goes through `python I:/!watcher/tools/herdr-dm.py --target <pane>` (mailbox `I:/!watcher/state/herdr-inbox`).
 
 ## Writing
 

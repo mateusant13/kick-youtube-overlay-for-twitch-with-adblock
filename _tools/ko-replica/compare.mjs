@@ -237,13 +237,18 @@ function normalize(input, side) {
   }
   for (const m of medias) m.tags.forEach((t) => tags.add(t));
 
-  // report.json has no playlist capture, but its ring rows do record a worker
-  // playlist; that is direct evidence for fetchedBy, so use it when present.
-  if (isReport) {
-    const rows = Array.isArray(doc.rows) ? doc.rows : [];
-    if (rows.some((r) => /worker-playlist/i.test(String(r && r.ev)))) origins.add('worker');
-    if (rows.some((r) => /page-playlist|fetch-playlist/i.test(String(r && r.ev)))) origins.add('page');
-  }
+  // report.json carries no playlist capture. Its ring rows do prove that a
+  // worker fetched playlists, but the extension has NO page-fetch event at all
+  // (`grep -c 'page-playlist\|fetch-playlist' kick-overlay/*.js` -> 0), so a
+  // report can never name the page side. MEASURED 2026-11-26: a real capture
+  // says `fetchedBy: both` on every playlist while the same page's report says
+  // `worker`, and comparing those two readers reported `DIVERGE fetchedBy` for
+  // a page that fetched exactly what the capture showed. That is a divergence
+  // of the OBSERVER, so the report side refuses the dimension with its reason
+  // instead of inventing an absence it cannot prove.
+  const reportFetchedNote = isReport
+    ? "the extension's ring records worker playlist fetches only, so it cannot prove the page never fetched"
+    : null;
 
   // master-derived dimensions
   const rungs = [];
@@ -318,9 +323,11 @@ function normalize(input, side) {
   // the two would report a divergence of the OBSERVER as a divergence of the
   // page, so the replica side refuses with that reason.
   const serverObserved = !!(doc.dom && doc.dom.source === 'replica-server');
-  f.fetchedBy = serverObserved
-    ? absent('the replica server cannot attribute a fetch to a CDP target')
-    : origins.size ? value(joinedOrigins(origins)) : absent(playlists.length ? 'no fetch origin recorded' : 'no playlist captured');
+  f.fetchedBy = reportFetchedNote
+    ? absent(reportFetchedNote)
+    : serverObserved
+      ? absent('the replica server cannot attribute a fetch to a CDP target')
+      : origins.size ? value(joinedOrigins(origins)) : absent(playlists.length ? 'no fetch origin recorded' : 'no playlist captured');
 
   // DOM: what the EXTENSION reads, not one snapshot. The ad wrapper is a
   // permanent shell that Twitch reveals by painting an inner node
@@ -565,12 +572,16 @@ function selftest() {
         segments: 'CANNOT-MEASURE', adWindow: 'CANNOT-MEASURE', tokenKeys: 'CANNOT-MEASURE',
         fetchedBy: 'CANNOT-MEASURE', codecsPrefix: 'CANNOT-MEASURE', dom: 'CANNOT-MEASURE',
       })],
-    ['report-vs-capture', capture(), reportOf(),
+    // The measured real shape: every playlist is fetched by BOTH the page and
+    // the player worker (capture on `rodil`/`shygo`, 2026-11-26). The ring can
+    // only ever say `worker`, so this dimension must refuse on the report side
+    // instead of calling the page's own fetch a divergence.
+    ['report-vs-capture', capture({ from: 'both' }), reportOf(),
       expected({
         masterVariants: 'CANNOT-MEASURE', ladder: 'CANNOT-MEASURE', mediaTags: 'CANNOT-MEASURE',
         adStyle: 'CANNOT-MEASURE', adDiscontinuity: 'CANNOT-MEASURE', targetDuration: 'CANNOT-MEASURE',
         segments: 'CANNOT-MEASURE', adWindow: 'CANNOT-MEASURE', tokenKeys: 'CANNOT-MEASURE',
-        codecsPrefix: 'CANNOT-MEASURE',
+        codecsPrefix: 'CANNOT-MEASURE', fetchedBy: 'CANNOT-MEASURE',
         // The report side has no ad media, so its shell's paint state cannot be
         // compared with a capture that served one.
         dom: 'CANNOT-MEASURE',
