@@ -2608,3 +2608,48 @@ deliberately retains, so the declared retention is satisfied and nothing is drop
 This lane's four scratch scripts under `G:/Temp/ko-scratch` were removed by exact path
 (`inspect-twitch.mjs`, `inspect-twitch2.mjs`, `yt-mute-click.mjs`, `yt-trusted-click.mjs`); the root
 remains 2.6 M of suite outputs.
+
+## Wave record - 2026-11-26, 0.8.124: the wait counted polls against a 1 Hz report, and any click minted a takeover
+
+A read-only refutation pass on the 0.8.123 diff found two defects UNDER the ownership fix, both measured
+with instrumented in-memory probes before anything was edited.
+
+**1. `wait.blind` counted 150 ms polls, but the cover it samples is a 1 Hz report.** One transient `Paused`
+heartbeat was re-read by ~6 consecutive polls, so the "two blind samples" guard fired 450 ms after ONE
+report: `POLLS [{151 covered},{302 blind 1},{452 blind 2}]`, `handback-ready {ms:452, why:'cover-lost',
+rs:1}` - the frozen native the wait exists to keep off screen. The counter is now per REPORT
+(`wait.blindStAt` compares `overlay.lastStAt`) and the blindness must survive `HANDBACK_BLIND_MS = 1000`,
+a full report interval, before `coverLost` is believed. A cover that is genuinely gone still ends the wait
+before the ceiling (arm: two blind reports ~1.1 s apart -> `cover-lost` at < 3000 ms).
+
+**2. Any fresh input authorized a takeover.** `userResumedHeld()` accepts a stamp from ANY earlier play in
+the pod, so one user play 12 s before the pod end ended a live wait on its first poll
+(`handback-ready {ms:151, why:'user-resume', covered:true, rs:1}`); and the play author was
+`hasFreshInput()` alone, so a click in CHAT 400 ms before Twitch's ad renderer called `play()` was read as
+the user taking the player back (`ms:310`, same shape). The stamp is now bound to this hand-back
+(`adUiUserResumeAt >= wait.at`) and the author needs a LOCATION: `gestureAuthorizesPlay(v)` accepts a
+pointer only inside the player container (or on our own bar, whose play we already own through
+`ownPlayAt`) and a key only when no field has focus. The guard is merged into the existing
+`hasFreshInput()` exit line, so the census stays at `guardShaped=111` - a refusal that costs a new silent
+exit was restructured, never budgeted.
+
+**A standby is not a new picture.** `startAdOverlay(..., standby)` is the warm-buffer door, and
+`finishAdOverlay` asks for one right after every pod end; cancelling the wait on it would drop the
+hand-back it arrived during and leave the native paused behind a muted standby. `cancelHandbackWait` is
+therefore called only for a non-standby mount, with its own seam (`stats.testStandby`) and arm.
+
+Arms: `one blind cover report does not end the hand-back wait`, `two blind reports a report interval apart
+end the hand-back wait`, `a click outside the player does not authorize a machine play`, `a resume from
+earlier in the pod does not end the hand-back wait`, `a standby buffer arriving during the wait does not
+cancel it`. REDs, each asserting the CONTRACT rather than the mutant's own rows: `a poll-counted blind
+window ends the wait on one report` (`the mutant revealed the frozen native after ONE blind report`) and
+`without the location test any fresh input authorizes a machine play` (`the mutant let a click outside the
+player end the hand-back wait`). The other five gesture arms in the same suite now fire `keydown` instead
+of a target-less `pointerdown`, because a gesture has a location.
+
+Verification: `RESULT PASS ad-time-continuity checks=184 failed=0`, `ARMS 28/28 present`; census
+`RESULT PASS guardShaped=111 unexercisedState=32 (budget met)`.
+
+**Owed, and named:** a pod end at rs<3 in the owner's Chrome must show `handback-wait` ->
+`handback-ready {why:'ready'}` and never `cover-lost` from one report, and a chat click during a pod must
+not produce `handback-ready {why:'user-resume'}`.

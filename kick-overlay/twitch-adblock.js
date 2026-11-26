@@ -260,6 +260,10 @@
   // native for ~4 s. The clean picture stays on screen until the native can
   // actually play forward, bounded by this ceiling so a native that never
   // recovers still gets the hand-back it would have had.
+  // A lost cover must survive a full clean-frame report interval (the frame
+  // publishes `st` at 1 Hz) before the wait believes it, so a single blind
+  // heartbeat cannot reveal the frozen native this wait exists to hide.
+  const HANDBACK_BLIND_MS = 1000;
   const HANDBACK_WAIT_MS = 3000;
   // A cold cover holds the picture while the clean source is still minting, so
   // it needs a hard deadline INSIDE the 12 s contract, not equal to it. Equal
@@ -794,6 +798,9 @@
   // the surface-swap (native visible -> firstframe -> hide native) can be
   // tested without waiting for a real ad. Not used by the ad path.
   stats.testOverlay = (url) => startAdOverlay(url, 'test', false);
+  // Same door with `standby = true`: a warm buffer must be able to arrive during a
+  // hand-back wait without cancelling it (see the guard in `startAdOverlay`).
+  stats.testStandby = (url) => startAdOverlay(url, 'test', false, true);
 
   // ---- live-time alignment helpers ----------------------------------------
   // The live edge of a native <video>. Twitch live reports duration=Infinity,
@@ -1827,6 +1834,24 @@
   // not - which is the defect measured in the owner's ring on 2026-11-26.
   const USER_GESTURE_MS = 1500;
   const hasFreshInput = () => !!lastUserInputAt && Date.now() - lastUserInputAt <= USER_GESTURE_MS;
+  // A pointer counts only inside the player that is playing; a key counts only
+  // when no field has focus. Anything else is somebody typing or clicking
+  // somewhere else while the page (or its ad renderer) starts playback itself.
+  function gestureAuthorizesPlay(v) {
+    if (lastUserInputKind === 'key') {
+      const ae = document.activeElement;
+      return !(ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable));
+    }
+    const el = lastUserInputEl;
+    if (!el) return false;
+    const root = v && typeof v.closest === 'function'
+      ? v.closest('[data-a-target="video-player"], .video-player, .video-player__container, .pbyp-player-instance')
+      : null;
+    if (root && (root === el || (typeof root.contains === 'function' && root.contains(el)))) return true;
+    // Our own bar sits beside the player: a gesture on it is his, and the play
+    // it issues is ours (`ownPlayAt` above already owns that half).
+    return typeof el.closest === 'function' && !!el.closest('#ko-wrap');
+  }
   let userPlayAt = 0;
   let ownPlayAt = 0;
   // A user pause made AFTER this pod took over. Unlike a play, a pause needs
@@ -2148,7 +2173,13 @@
   // the stamp that explains a pause must not outlive his own resume.
   // INPUT CLOCK. Only a play inside a fresh gesture is HIS; Twitch's own ad
   // renderer calls play() too, and that machine play is still ours to freeze.
-  const markUserInput = () => { lastUserInputAt = Date.now(); };
+  let lastUserInputEl = null;
+  let lastUserInputKind = 'pointer';
+  const markUserInput = (e) => {
+    lastUserInputAt = Date.now();
+    lastUserInputKind = e && e.type === 'keydown' ? 'key' : 'pointer';
+    lastUserInputEl = e && e.target && e.target.nodeType === 1 ? e.target : null;
+  };
   try {
     for (const type of ['pointerdown', 'mousedown', 'keydown', 'touchstart', 'click']) {
       for (const target of [window, document]) target.addEventListener(type, markUserInput, true);
@@ -2159,7 +2190,12 @@
       const t = e && e.target;
       if (!t || t.tagName !== 'VIDEO') return;
       if (overlay.selfPausedAt && Date.now() - overlay.selfPausedAt > 250) overlay.selfPausedAt = 0;
-      if (!hasFreshInput()) return; // machine play
+      // WHERE the gesture landed decides whether the play is his, not only
+      // WHEN. Measured on 0.8.123 (refutation pass): a click in chat 400 ms
+      // before Twitch's ad renderer called play() was read as a user takeover -
+      // `handback-ready {ms:310, why:'user-resume', covered:true, rs:1}` - the
+      // exact frozen hand-back the wait exists to prevent.
+      if (!hasFreshInput() || !gestureAuthorizesPlay(t)) return; // machine play
       // Our own resume is not a user takeover, but a gesture AFTER it is.
       if (ownPlayAt && Date.now() - ownPlayAt <= 500 && lastUserInputAt <= ownPlayAt) return;
       userPlayAt = Date.now();
@@ -3116,18 +3152,33 @@
           const nrs = nv ? Number(nv.readyState) || 0 : 0;
           const ms = Date.now() - wait.at;
           const covered = active && cleanFrameCanCover();
-          if (active) wait.blind = covered ? 0 : (wait.blind || 0) + 1;
           // ONE TRANSIENT SAMPLE IS NOT A LOST PICTURE. `cleanFrameCanCover()`
-          // reads the frame's last report, and a single heartbeat whose `pos`
-          // moved less than the advancing floor, or one `Paused` report, says
-          // nothing about the next 150 ms: ending the wait on it reveals the
-          // frozen native this change exists to keep off screen. Two
-          // consecutive blind samples (300 ms) are a lost cover.
-          const coverLost = !covered && (wait.blind || 0) >= 2;
+          // reads the frame's LAST REPORT, so ~6 consecutive 150 ms polls re-read
+          // the same blind heartbeat: counting polls ended the wait 450 ms after
+          // ONE transient `Paused` report, at rs=1 (measured 0.8.123,
+          // `handback-ready {ms:452, why:'cover-lost'}`, refutation pass). The
+          // counter is per REPORT, and the blindness must survive a full report
+          // interval before it is believed.
+          if (active) {
+            const stAt = overlay.lastStAt || 0;
+            if (covered) {
+              wait.blind = 0; wait.blindAt = 0; wait.blindStAt = 0;
+            } else if (!wait.blindAt || wait.blindStAt !== stAt) {
+              wait.blind = (wait.blind || 0) + 1;
+              wait.blindStAt = stAt;
+              if (!wait.blindAt) wait.blindAt = Date.now();
+            }
+          }
+          const coverLost = !covered && (wait.blind || 0) >= 2
+            && Date.now() - (wait.blindAt || 0) >= HANDBACK_BLIND_MS;
           // The user's own takeover ends the wait: a fresh play on the page
           // element is a gesture, and holding OUR picture over a player he just
-          // took back is the 0.8.114 pause fight from the other side.
-          const why = !nv ? 'no-video' : nrs >= 3 ? 'ready' : userResumedHeld() ? 'user-resume'
+          // took back is the 0.8.114 pause fight from the other side. The stamp
+          // must belong to THIS wait: one left by a play earlier in the pod ended
+          // a live wait on its first poll (`handback-ready {ms:151, why:
+          // 'user-resume', covered:true, rs:1}`, same refutation pass).
+          const resumeSinceWait = !!adUiUserResumeAt && adUiUserResumeAt >= wait.at && userResumedHeld();
+          const why = !nv ? 'no-video' : nrs >= 3 ? 'ready' : resumeSinceWait ? 'user-resume'
             : ms >= HANDBACK_WAIT_MS ? 'cap' : coverLost ? 'cover-lost' : '';
           if (active && why) {
             overlay.handbackWait = null;
@@ -3697,8 +3748,12 @@
     if (!url) return;
     // Mounting a frame is the same fact as "the hand-back this wait protected is
     // gone": a switched source nulls `overlay.frame`, which would make the next
-    // 150 ms poll report `cover-lost` and tear the NEW frame down.
-    cancelHandbackWait('start-overlay');
+    // 150 ms poll report `cover-lost` and tear the NEW frame down. A STANDBY is
+    // the exception: it is a warm buffer for a possible next pod, invisible
+    // behind the picture, and `finishAdOverlay` asks for one right after every
+    // pod end - cancelling on it would drop the hand-back it arrived during and
+    // leave the native paused behind a muted standby.
+    if (!standby) cancelHandbackWait('start-overlay');
     if (overlayOwnsPlayback()) {
       if (overlay.adActive || overlay.standby || overlay.frame) stopAdOverlay('overlay-owns');
       return;

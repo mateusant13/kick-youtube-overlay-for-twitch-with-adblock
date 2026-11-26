@@ -802,10 +802,10 @@ async function main() {
       'the new pod handed the page back while it still owned the picture');
     assert(page.stats().frameMounted() === true, 'the new pod has no frame up');
   });
-  // A TRANSIENT BLIND SAMPLE IS NOT A LOST COVER: one heartbeat that repeats its
-  // position (or reports Paused) says nothing about the next 150 ms, and ending
-  // the wait on it is the frozen native this change exists to prevent.
-  await greenArm('one blind cover sample does not end the hand-back wait', async () => {
+  // A WARM STANDBY MAY ARRIVE DURING THE WAIT. `finishAdOverlay` asks for one right
+  // after every pod end, so cancelling on a standby mount would drop the hand-back
+  // it arrived during and leave the native paused behind a muted standby.
+  await greenArm('a standby buffer arriving during the wait does not cancel it', async () => {
     const page = makeWorld();
     setNative(page, { ct: 30, edge: 40, bufferedEnd: 40, rs: 1 });
     await pod(page);
@@ -813,14 +813,75 @@ async function main() {
     page.bypass({ type: 'ad-end' });
     await settle(200);
     assert(page.logsOf('handback-wait').length === 1, 'the wait never armed, so this arm measures nothing');
-    page.frameMsg({ ...healthySt({ pos: 100.3, lat: 3 }), paused: true });
+    page.stats().testStandby('https://clean.example/live.m3u8');
+    await settle(250);
+    assert(page.logsOf('handback-wait-cancelled').length === 0,
+      'a standby mount cancelled the hand-back wait');
+    assert(page.stats().handbackWait() !== null, 'the wait did not survive the standby');
+    page.video.readyState = 4;
+    await settle(400);
+    assert(page.logsOf('native-resume').some((l) => l.d.tag === 'ad-end'), 'the hand-back never completed');
+  });
+  // A TRANSIENT BLIND SAMPLE IS NOT A LOST COVER: one heartbeat that repeats its
+  // position (or reports Paused) says nothing about the next 150 ms, and ending
+  // the wait on it is the frozen native this change exists to prevent.
+  // The cover it samples is a 1 Hz REPORT, so ~6 consecutive 150 ms polls re-read
+  // the same heartbeat: counting polls ended the wait at 452 ms after ONE `Paused`
+  // report, at rs=1 (measured on 0.8.123, `handback-ready {ms:452,
+  // why:'cover-lost'}`, refutation pass) - the frozen native this wait prevents.
+  await greenArm('one blind cover report does not end the hand-back wait', async () => {
+    const page = makeWorld();
+    setNative(page, { ct: 30, edge: 40, bufferedEnd: 40, rs: 1 });
+    await pod(page);
+    await liveFrame(page, 2);
+    page.bypass({ type: 'ad-end' });
     await settle(200);
+    assert(page.logsOf('handback-wait').length === 1, 'the wait never armed, so this arm measures nothing');
+    page.frameMsg(healthySt({ pos: 100.3, lat: 3, paused: true }));
+    await settle(1200); // longer than the report interval and than two poll ticks
     assert(page.logsOf('handback-ready').length === 0,
-      'one blind sample ended the wait and put the frozen native back on screen');
+      'one blind report ended the wait and put the frozen native back on screen');
     await liveFrame(page, 2, 100.6);
     await settle(400);
     assert(page.logsOf('handback-ready').length === 0, 'a recovered cover still ended the wait');
-    assert(page.stats().handbackWait() !== null, 'the wait did not survive the blind sample');
+    assert(page.stats().handbackWait() !== null, 'the wait did not survive the blind report');
+  });
+  // The other direction, so the guard cannot pass by never losing a cover: a frame
+  // that reports itself blind twice, a report interval apart, IS lost.
+  await greenArm('two blind reports a report interval apart end the hand-back wait', async () => {
+    const page = makeWorld();
+    setNative(page, { ct: 30, edge: 40, bufferedEnd: 40, rs: 1 });
+    await pod(page);
+    await liveFrame(page, 2);
+    page.bypass({ type: 'ad-end' });
+    await settle(200);
+    assert(page.logsOf('handback-wait').length === 1, 'the wait never armed, so this arm measures nothing');
+    page.frameMsg(healthySt({ pos: 100.3, lat: 3, paused: true }));
+    await settle(1100);
+    page.frameMsg(healthySt({ pos: 100.4, lat: 3, paused: true }));
+    await settle(500);
+    const ready = page.logsOf('handback-ready').pop();
+    assert(ready, 'a cover that stayed blind across two reports never ended the wait');
+    assert(ready.d.why === 'cover-lost', `the wait ended as ${JSON.stringify(ready.d.why)}`);
+    assert(ready.d.ms < 3000, `the lost cover was only noticed at the ceiling: ${JSON.stringify(ready.d)}`);
+  });
+  // RED: poll counting restored -> one blind report ends the wait.
+  const RED_POLL_BLIND = mutate([
+    ["            } else if (!wait.blindAt || wait.blindStAt !== stAt) {\n", '            } else if (true) {\n'],
+    ["          const coverLost = !covered && (wait.blind || 0) >= 2\n            && Date.now() - (wait.blindAt || 0) >= HANDBACK_BLIND_MS;\n", "          const coverLost = !covered && (wait.blind || 0) >= 2;\n"],
+  ]);
+  await redArm('RED: a poll-counted blind window ends the wait on one report', RED_POLL_BLIND, async (src) => {
+    const page = makeWorld({ adSource: src });
+    setNative(page, { ct: 30, edge: 40, bufferedEnd: 40, rs: 1 });
+    await pod(page);
+    await liveFrame(page, 2);
+    page.bypass({ type: 'ad-end' });
+    await settle(200);
+    assert(page.logsOf('handback-wait').length === 1, 'the wait never armed in the mutant either, so this arm measures nothing');
+    page.frameMsg(healthySt({ pos: 100.3, lat: 3, paused: true }));
+    await settle(1200);
+    assert(page.logsOf('handback-ready').length === 0,
+      'the mutant revealed the frozen native after ONE blind report');
   });
   // THE USER'S OWN PLAY ENDS THE WAIT: holding our picture over a player he just
   // took back is the 0.8.114 pause fight from the other side.
@@ -832,7 +893,7 @@ async function main() {
     page.bypass({ type: 'ad-end' });
     await settle(200);
     assert(page.logsOf('handback-wait').length === 1, 'the wait never armed, so this arm measures nothing');
-    page.document.fire({ type: 'pointerdown' });
+    page.document.fire({ type: 'keydown' });
     page.video.play();
     page.document.fire({ type: 'play', target: page.video });
     await settle(400);
@@ -841,11 +902,68 @@ async function main() {
     assert(ready.d.why === 'user-resume', `the wait ended as ${JSON.stringify(ready.d.why)}, not the user's play`);
     assert(ready.d.capped === false, 'the wait ended as the ceiling, not the gesture');
   });
+  // A GESTURE SOMEWHERE ELSE IS NOT A TAKEOVER. Measured on 0.8.123 (refutation
+  // pass): a click in chat 400 ms before Twitch's ad renderer called play() was
+  // read as the user's, ending the wait at 310 ms with the native at rs=1.
+  await greenArm('a click outside the player does not authorize a machine play', async () => {
+    const page = makeWorld();
+    setNative(page, { ct: 30, edge: 40, bufferedEnd: 40, rs: 1 });
+    await pod(page);
+    await liveFrame(page, 2);
+    page.bypass({ type: 'ad-end' });
+    await settle(200);
+    assert(page.logsOf('handback-wait').length === 1, 'the wait never armed, so this arm measures nothing');
+    page.document.fire({ type: 'pointerdown', target: { tagName: 'DIV', closest: () => null } });
+    page.video.play();
+    page.document.fire({ type: 'play', target: page.video });
+    await settle(400);
+    assert(page.logsOf('handback-ready').length === 0,
+      'a click outside the player authorized the page\'s own play and ended the wait');
+    assert(page.stats().handbackWait() !== null, 'the wait did not survive the unrelated click');
+  });
+  // A play stamp left by an earlier gesture does not belong to THIS wait.
+  await greenArm('a resume from earlier in the pod does not end the hand-back wait', async () => {
+    const page = makeWorld();
+    setNative(page, { ct: 30, edge: 40, bufferedEnd: 40, rs: 1 });
+    await pod(page);
+    page.document.fire({ type: 'keydown' });
+    page.video.play();
+    page.document.fire({ type: 'play', target: page.video });
+    await settle(200);
+    await liveFrame(page, 2);
+    page.bypass({ type: 'ad-end' });
+    await settle(400);
+    assert(page.logsOf('handback-wait').length === 1, 'the wait never armed, so this arm measures nothing');
+    assert(page.logsOf('handback-ready').length === 0,
+      'a play from before the wait ended it (the stamp was not bound to this hand-back)');
+    assert(page.stats().handbackWait() !== null, 'the wait did not survive the older gesture');
+  });
+  // RED: the location test removed -> a click outside the player authorizes the
+  // page's own play.
+  const RED_ANY_INPUT = mutate([[
+    '      if (!hasFreshInput() || !gestureAuthorizesPlay(t)) return; // machine play\n',
+    '      if (!hasFreshInput()) return; // machine play\n',
+  ]]);
+  await redArm('RED: without the location test any fresh input authorizes a machine play', RED_ANY_INPUT, async (src) => {
+    const page = makeWorld({ adSource: src });
+    setNative(page, { ct: 30, edge: 40, bufferedEnd: 40, rs: 1 });
+    await pod(page);
+    await liveFrame(page, 2);
+    page.bypass({ type: 'ad-end' });
+    await settle(200);
+    assert(page.logsOf('handback-wait').length === 1, 'the wait never armed in the mutant either, so this arm measures nothing');
+    page.document.fire({ type: 'pointerdown', target: { tagName: 'DIV', closest: () => null } });
+    page.video.play();
+    page.document.fire({ type: 'play', target: page.video });
+    await settle(400);
+    assert(page.logsOf('handback-ready').length === 0,
+      'the mutant let a click outside the player end the hand-back wait');
+  });
   // RED: both cancels removed -> a switch during the wait tears the replacement
   // frame down 150 ms after it mounted.
   const RED_NO_CANCEL = mutate([
     ["        cancelHandbackWait('ad-start');\n", ''],
-    ["    cancelHandbackWait('start-overlay');\n", ''],
+    ["    if (!standby) cancelHandbackWait('start-overlay');\n", ''],
   ]);
   await redArm('RED: without the cancel a switch during the wait tears the new frame down', RED_NO_CANCEL, async (src) => {
     const page = makeWorld({ adSource: src });
@@ -1636,7 +1754,7 @@ async function main() {
     });
     // 2b. THE GESTURE-BEARING COMPANION. Same play event, but a real input
     // first: the hold releases once and the 500 ms tick never takes it back.
-    page.document.fire({ type: 'pointerdown' });
+    page.document.fire({ type: 'keydown' });
     page.video.play();
     page.document.fire({ type: 'play', target: page.video });
     api.adUiHoldTick();
@@ -1706,7 +1824,7 @@ async function main() {
     setNative(page, { ct: 120, edge: 400, bufferedEnd: 400 });
     await pod(page);
     await settle(300); // OUR take-over pause (`selfPausedAt`) must age out first
-    page.document.fire({ type: 'pointerdown' });
+    page.document.fire({ type: 'keydown' });
     page.video.pause();
     page.document.fire({ type: 'pause', target: page.video });
     await settle(10);
@@ -1756,7 +1874,7 @@ async function main() {
     const api = page.stats();
     api.adUiHold({ kind: 'wrapper', w: 1280, h: 720 });
     await settle(5);
-    page.document.fire({ type: 'pointerdown' });
+    page.document.fire({ type: 'keydown' });
     page.video.play();
     page.document.fire({ type: 'play', target: page.video });
     api.adUiHoldTick();
@@ -2855,7 +2973,7 @@ async function main() {
     await settle(10);
     assert(page.video.paused === true, 'precondition: ad-hold did not pause the native');
     assert(page.stats().adUiHeldAt() === 0, 'precondition: a DOM hold was stamped');
-    page.document.fire({ type: 'pointerdown' }); // a fresh gesture, not a machine play
+    page.document.fire({ type: 'keydown' }); // a fresh gesture, not a machine play
     page.video.play();
     page.document.fire({ type: 'play', target: page.video }); // the REAL play listener
     await settle(600); // at least one real 500 ms tick body
@@ -2881,7 +2999,7 @@ async function main() {
     setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
     await pod(page);
     await settle(300); // let OUR take-over pause stamp age out
-    page.document.fire({ type: 'pointerdown' });
+    page.document.fire({ type: 'keydown' });
     page.video.play();
     page.document.fire({ type: 'play', target: page.video });
     await settle(10);
@@ -3484,8 +3602,12 @@ async function main() {
     'a hand-back onto a native without HAVE_FUTURE_DATA keeps the picture on screen',
     'a native that never recovers is handed back at the ceiling, not held forever',
     'a new pod during the hand-back wait cancels it and keeps a picture up',
-    'one blind cover sample does not end the hand-back wait',
     'a user play during the hand-back wait ends it with its reason',
+    'a standby buffer arriving during the wait does not cancel it',
+    'one blind cover report does not end the hand-back wait',
+    'two blind reports a report interval apart end the hand-back wait',
+    'a click outside the player does not authorize a machine play',
+    'a resume from earlier in the pod does not end the hand-back wait',
   ];
   const printed = armLog.map((l) => String(l).trim());
   const missing = ARMS.filter((a) => !printed.includes(a));

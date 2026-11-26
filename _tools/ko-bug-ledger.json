@@ -1522,6 +1522,26 @@
     "census after the reshaped helper: `RESULT PASS guardShaped=111 unexercisedState=32 (budget met)` - the early `return false` in the first version counted as a new silent exit"
    ],
    "next": "OWED live half: a pod pair inside 3 s in the owner's Chrome must show `handback-wait-cancelled {why:'ad-start'}` and no `handback-ready` from the old pod. Re-arm: `node _tools/ko-adlog-window.mjs 9222 1200 --keep handback-wait,handback-wait-cancelled,handback-ready,native-resume`."
+  },
+  {
+   "id": "KO-20261126-14",
+   "title": "The hand-back wait counted 150 ms polls against a 1 Hz cover report, and any fresh input minted a takeover",
+   "state": "fixed",
+   "author": "ReplicaStarveNative/RefuteHandback123",
+   "reported": "Refutation pass on the 0.8.123 diff (2026-11-26), instrumented in-memory probes, no live ring read",
+   "fixed_in": "0.8.124",
+   "commit": null,
+   "hypothesis": "Two defects under the wait: (1) `wait.blind` incremented per 150 ms poll while `cleanFrameCanCover()` re-reads `overlay.lastSt`, so ONE transient `Paused`/repeated-position report counted as two blind samples 300 ms later and ended the wait at rs=1; (2) the finish predicate asked `userResumedHeld()`, which accepts a stamp from ANY earlier play in the pod, and the play author was `hasFreshInput()` alone, so a click in chat 400 ms before Twitch's ad renderer called `play()` was read as the user taking the player back.",
+   "falsifier": "If a single blind heartbeat does not produce `handback-ready {why:'cover-lost'}` within 1 s, the first half is wrong; if a `standby-start` during the wait logs `handback-wait-cancelled`, the standby guard is wrong (it does not - measured `cancel:[]`). Probe output before the fix: `POLLS [151 covered, 302 blind 1, 452 blind 2 cover-lost]`, `ready [{ms:452, why:'cover-lost', rs:1}]`, and `ready [{ms:310, why:'user-resume', covered:true, rs:1}]` for a chat click beside a machine play.",
+   "evidence": [
+    "blind counter is per REPORT: `wait.blindStAt` compares `overlay.lastStAt`, and `coverLost` additionally needs `Date.now() - wait.blindAt >= HANDBACK_BLIND_MS` (1000), a full clean-frame report interval",
+    "the resume stamp is bound to the wait: `resumeSinceWait = !!adUiUserResumeAt && adUiUserResumeAt >= wait.at && userResumedHeld()`",
+    "the play author needs a location: `gestureAuthorizesPlay(v)` accepts a pointer only inside the player container (or on our own bar) and a key only when no field has focus; the guard is merged into the existing `hasFreshInput()` exit so the census stays at 111",
+    "arms: `one blind cover report does not end the hand-back wait` (holds 1200 ms on one blind report), `two blind reports a report interval apart end the hand-back wait` (the other direction), `a click outside the player does not authorize a machine play`, `a resume from earlier in the pod does not end the hand-back wait`, `a standby buffer arriving during the wait does not cancel it` plus its `stats.testStandby` seam",
+    "REDs, each asserting the contract: `a poll-counted blind window ends the wait on one report` (mutant reveals the frozen native after one report), `without the location test any fresh input authorizes a machine play`",
+    "suite: `RESULT PASS ad-time-continuity checks=184 failed=0`, `ARMS 28/28 present`; census `RESULT PASS guardShaped=111 unexercisedState=32 (budget met)`"
+   ],
+   "next": "OWED live half: a pod end at rs<3 in the owner's Chrome must show `handback-wait` -> `handback-ready {why:'ready'}` with `handback-wait-blind` never reaching cover-lost on one report, and a chat click during a pod must not produce `handback-ready {why:'user-resume'}`."
   }
  ]
 }
