@@ -441,11 +441,14 @@ async function main() {
   });
 
   // The sparse arm must FAIL with the old count-based gate, or it measures
-  // nothing: put the three-tick requirement back and re-run it.
-  const counted = SOURCE.replace(
-    'const need = (overlay.stGapMs || 0) > 1500 ? 1 : 2;',
-    'const need = 3; // pre-fix: count ticks',
-  );
+  // nothing: put the three-tick requirement back and re-run it. The anchor is
+  // the whole `need = …;` line, not its old text: the gate gained a term
+  // (`|| progressed`, 0.8.117) and a literal-string anchor then silently stopped
+  // applying, which is a vacuous arm rather than a red one.
+  const needLine = 'const need = [^;\n]*;';
+  const counted = new RegExp(needLine).test(SOURCE)
+    ? SOURCE.replace(new RegExp(needLine), 'const need = 3; // pre-fix: count ticks')
+    : SOURCE;
   check('the count-based mutation applied', () => {
     assert(counted !== SOURCE, 'the tick-count mutation did not apply');
   });

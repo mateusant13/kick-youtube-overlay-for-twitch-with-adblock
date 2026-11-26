@@ -49,6 +49,11 @@ const GUEST_PORT = process.argv.some((a) => a === '--guest-port' || a.startsWith
   ? Number(argOf('guest-port', 9446))
   : await freePort();
 const REPLICA_PORT = Number(argOf('replica-port', 8443));
+// `--capture-out` makes the replica server write the playlist bodies it served
+// in the same shape `_tools/ko-real-capture.mjs` emits, so `compare.mjs` can
+// diff the offline page against a real capture:
+//   node _tools/ko-replica/compare.mjs --real <real.json> --replica <capture-out>
+const CAPTURE_OUT = argOf('capture-out', '');
 const NO_EXT = flag('no-ext');
 const KEEP_GUEST = flag('keep-guest');
 const SCRATCH = process.env.KO_REPLICA_SCRATCH || 'G:/Temp/ko-replica/runs';
@@ -75,7 +80,9 @@ function unmeasurable(name, detail) {
 
 // ---- replica server -------------------------------------------------------
 const server = spawn(process.execPath, [join(HERE, 'server.mjs'), '--port', String(REPLICA_PORT), '--scenario', SCN], {
-  stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+  stdio: ['ignore', 'pipe', 'pipe'],
+  windowsHide: true,
+  env: CAPTURE_OUT ? { ...process.env, KO_REPLICA_CAPTURE_OUT: CAPTURE_OUT } : process.env,
 });
 let serverReady = false;
 server.stdout.on('data', (d) => {
@@ -84,6 +91,12 @@ server.stdout.on('data', (d) => {
   evidence.notes.push(`server: ${s.trim()}`);
 });
 server.stderr.on('data', (d) => evidence.notes.push(`server-err: ${String(d).trim()}`));
+// The server rewrites its capture file on its own 500 ms timer AND once at exit,
+// so a merge written before it dies is overwritten by a later flush. Measured
+// 2026-11-26: the run printed `capture … playlists=11 samples=6` and the file on
+// disk had `samples: []`, which is why the first comparison reported
+// `dom CANNOT-MEASURE` for a run that sampled the page every second.
+const serverClosed = new Promise((res) => { server.once('exit', res); server.once('error', res); });
 for (let i = 0; i < 80 && !serverReady; i++) await sleep(100);
 if (!serverReady) {
   server.kill();
@@ -385,6 +398,9 @@ const probeExpr = `(() => {
     owner: document.documentElement.getAttribute('data-ko-owner') || '',
     adpark: document.documentElement.getAttribute('data-ko-adpark') || '',
     wrapper: (() => { const w = document.querySelector('[class*="stream-display-ad"]'); return w ? { cls: w.className, w: Math.round(w.getBoundingClientRect().width), h: Math.round(w.getBoundingClientRect().height) } : null; })(),
+    // The compare tool diffs the player rect against a real capture, so the
+    // replica probe reports the same container the real probe measures.
+    player: (() => { const p = document.querySelector('[data-a-target="video-player"]') || document.querySelector('.video-player') || document.getElementById('player'); if (!p) return null; const r = p.getBoundingClientRect(); return { rect: [r.x, r.y, r.width, r.height].map(Math.round) }; })(),
     adtext: (document.getElementById('ko-replica-adtext') || {}).textContent || '',
     frames: Array.from(document.querySelectorAll('iframe')).map((f) => String(f.src).slice(0, 80)),
   };
@@ -731,8 +747,40 @@ evidence.verdict = cannot > 0 ? 'CANNOT-MEASURE' : NO_EXT ? (controlOk ? 'CONTRO
 const report = JSON.stringify(evidence, null, 2);
 writeFileSync(join(runDir, 'report.json'), report);
 if (OUT) writeFileSync(OUT, report);
+// A `--capture-out` file is compared dimension by dimension, and `dom` is one
+// of the dimensions: the server can only write the playlists it served, while
+// the browser samples are what a DOM diff reads. Merge them here so one file
+// answers both questions, instead of leaving `dom` as CANNOT-MEASURE for every
+// replica run. The server has to be GONE first: its own timer and exit flush
+// overwrite this file, and a merge racing them loses the samples (measured
+// above). A missing file is a loud line, never a silent pass.
 console.log(`RESULT ${evidence.verdict} scenario=${scenario.name} checks=${evidence.checks.length} failed=${failures} cannot=${cannot} build=${evidence.build || 'n/a'} rows=${log.length}`);
 console.log(`report ${join(runDir, 'report.json')}`);
 cdp.close();
 stopAll();
+if (CAPTURE_OUT) {
+  await Promise.race([serverClosed, sleep(4000)]);
+  if (!existsSync(CAPTURE_OUT)) {
+    console.error(`capture-missing ${CAPTURE_OUT}: the server wrote no playlist`);
+  } else {
+    try {
+      const cap = JSON.parse(readFileSync(CAPTURE_OUT, 'utf8'));
+      cap.samples = Array.isArray(evidence.samples) ? evidence.samples : [];
+      // `source` marks the observer: the playlists come from the replica server,
+      // which cannot attribute an HTTP request to a CDP target, while the real
+      // capture is taken over CDP. Losing that marker made compare.mjs report
+      // `fetchedBy DIVERGE` for a difference of the instrument.
+      const probe = evidence.dom || (evidence.samples && evidence.samples[0] && evidence.samples[0].probe) || {};
+      cap.dom = { ...probe, source: 'replica-server', merged: 'server-playlists+browser-samples' };
+      cap.sampleCount = Array.isArray(evidence.samples) ? evidence.samples.length : 0;
+      cap.scenario = scenario.name;
+      cap.verdict = evidence.verdict;
+      cap.url = cap.realUrl ? cap.url : (evidence.url || cap.url || '');
+      writeFileSync(CAPTURE_OUT, `${JSON.stringify(cap, null, 1)}\n`);
+      console.log(`capture ${CAPTURE_OUT} playlists=${cap.playlists.length} samples=${cap.samples.length}`);
+    } catch (err) {
+      console.error(`capture-merge-failed ${CAPTURE_OUT}: ${err && err.message}`);
+    }
+  }
+}
 process.exit(evidence.verdict === 'PASS' || evidence.verdict === 'CONTROL-PASS' ? 0 : evidence.verdict === 'FAIL' || evidence.verdict === 'CONTROL-FAIL' ? 1 : 2);

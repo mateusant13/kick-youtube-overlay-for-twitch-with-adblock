@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// ko-replica — a local, deterministic Twitch watch page plus the four HTTP
+// ko-replica - a local, deterministic Twitch watch page plus the four HTTP
 // surfaces the extension actually consumes:
 //
 //   gql.twitch.tv/gql ................ PlaybackAccessToken (value = JSON token)
@@ -26,8 +26,8 @@
 // (MediaSourceHandle) rather than Twitch's exact player. Neither is a signal
 // the extension consumes.
 import https from 'node:https';
-import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { join, dirname } from 'node:path';
 import { ensureCerts } from './certs.mjs';
 import { ensureMedia, RUNGS, PROGRAM_SECONDS } from './media.mjs';
 
@@ -127,11 +127,43 @@ function contentIndex(t) {
 // MAP + discontinuity before EVERY segment made hls.js anchor the live window
 // at its first fragment (pos 0.1, 1.9 s of runway, never healthy), so the seam
 // is declared only where a different program actually starts: the ad block.
-function segLine(kind, k, query, dur, v = 720) {
+// Twitch's live window, measured 2026-11-26 on twitch.tv/buzzyi_ (13 media
+// playlists captured with _tools/ko-real-capture.mjs):
+//   #EXT-X-VERSION:3, #EXT-X-TARGETDURATION:6, segments of 2.000 s titled
+//   `,live` (14 per playlist), one #EXT-X-PROGRAM-DATE-TIME before EVERY
+//   #EXTINF (182 for 182 segments), #EXT-X-TWITCH-LIVE-SEQUENCE /
+//   -ELAPSED-SECS / -TOTAL-SECS, three #EXT-X-DATERANGE rows (timestamp,
+//   twitch-session, twitch-stream-source) and two #EXT-X-TWITCH-PREFETCH rows.
+// The target duration is SIX while the segments are TWO: hls.js derives its
+// live edge, its latency and its stall margins from TARGETDURATION, so a
+// replica that advertises 2 makes `lat` a different quantity from the one the
+// extension measures live. PROGRAM-DATE-TIME is the other half of that number.
+// `KO_REPLICA_TARGET` exists to A/B that number against the fixture, because it
+// is not free on our side: hls.js holds `liveSyncDuration: 3` and treats a
+// target duration longer than its sync target as a slower refresh, which a
+// 26 s window then has to cover.
+const TARGET_SEC = Number(process.env.KO_REPLICA_TARGET || 6);
+const SESSION_ID = String(Date.now());
+const iso = (ms) => new Date(ms).toISOString();
+function segLine(kind, k, query, dur, v = 720, pdMs = null) {
   const idx = k % (kind === 'content' ? CONTENT_SEGS : AD_SEGS);
   const tag = kind === 'content' ? ',live' : ',';
   const d = Number.isFinite(dur) ? Number(dur).toFixed(3) : `${SEG}.000`;
-  return `#EXTINF:${d}${tag}\n${EDGE}/v1/segment/${kind}_${v}_${pad(idx)}.m4s${query || ''}`;
+  const pd = Number.isFinite(pdMs) ? `#EXT-X-PROGRAM-DATE-TIME:${iso(pdMs)}\n` : '';
+  return `${pd}#EXTINF:${d}${tag}\n${EDGE}/v1/segment/${kind}_${v}_${pad(idx)}.m4s${query || ''}`;
+}
+
+// The three DATERANGE rows Twitch puts at the head of every live playlist. Our
+// player ignores them; they are here because a fixture that omits what the real
+// page sends cannot be used to argue that nothing on the page reads it.
+function dateRangeHead(wallMs) {
+  const secs = Math.floor(wallMs / 1000);
+  const at = iso(wallMs);
+  return [
+    `#EXT-X-DATERANGE:ID="playlist-creation-${secs}",CLASS="timestamp",START-DATE="${at}",END-ON-NEXT=YES,X-SERVER-TIME="${(wallMs / 1000).toFixed(2)}"`,
+    `#EXT-X-DATERANGE:ID="playlist-session-${secs}",CLASS="twitch-session",START-DATE="${at}",END-ON-NEXT=YES,X-TV-TWITCH-SESSIONID="${SESSION_ID}"`,
+    `#EXT-X-DATERANGE:ID="source-${secs}",CLASS="twitch-stream-source",START-DATE="${at}",END-ON-NEXT=YES,X-TV-TWITCH-STREAM-SOURCE="live"`,
+  ];
 }
 
 // A live ad window slides like the content one: a static all-ad playlist never
@@ -158,7 +190,8 @@ function adLines(pod, base, v = 720) {
   // file a new URL on every window step, so the player appended the ad block
   // twelve times over 4 s (measured 2026-11-25: `ct 1.43 -> 24.41` in two
   // seconds, ad blue then content while the pod was still live).
-  for (let k = from; k <= last; k++) out.push(segLine('ad', k, `?pod=${pod}`, undefined, v));
+  const wall = Date.now();
+  for (let k = from; k <= last; k++) out.push(segLine('ad', k, `?pod=${pod}`, undefined, v, wall - (last - k) * SEG * 1000));
   return { lines: out, from };
 }
 
@@ -168,8 +201,10 @@ function adLines(pod, base, v = 720) {
 function mediaPlaylist({ clean, t, pod, v = 720 }) {
   const ev = activeEvent(t);
   const adOn = !clean && !!ev;
-  const lines = ['#EXTM3U', '#EXT-X-VERSION:7', `#EXT-X-TARGETDURATION:${SEG}`, '#EXT-X-INDEPENDENT-SEGMENTS'];
+  const lines = ['#EXTM3U', '#EXT-X-VERSION:7', `#EXT-X-TARGETDURATION:${TARGET_SEC}`, '#EXT-X-INDEPENDENT-SEGMENTS'];
   const i = contentIndex(t);
+  const wall = Date.now();
+  lines.push(...dateRangeHead(wall));
 
   if (adOn && ev.kind === 'preroll') {
     // A cold preroll is an ALL-AD playlist: no content segment exists yet.
@@ -197,14 +232,33 @@ function mediaPlaylist({ clean, t, pod, v = 720 }) {
   // `KO_REPLICA_EDGE_AHEAD=N` re-adds the cheat as an explicitly labelled knob
   // for an A/B; measured runs keep it at 0.
   const ahead = Number(process.env.KO_REPLICA_EDGE_AHEAD || 0) || 0;
-  const from = Math.max(0, i - 12);
+  // Real Twitch lists FOURTEEN segments per live playlist (measured 2026-11-26:
+  // 14 x `#EXTINF:2.000,live` in every one of the 13 media playlists captured).
+  // The window length is not cosmetic: hls.js refreshes a live playlist on a
+  // cadence derived from TARGETDURATION (6 s real, so up to 3 s between
+  // refreshes) while the window advances one 2 s segment per 2 s, so the player
+  // reaches the published end whenever the buffer is shorter than the window.
+  // A 13-segment (26 s) window stalled the clean frame there, `hold` 0.04 and
+  // `rs` 2 for two samples, on the way to a 360p reveal. Keep the measured 14.
+  const WINDOW_SEGS = Number(process.env.KO_REPLICA_WINDOW || 14) || 14;
+  const from = Math.max(0, i - (WINDOW_SEGS - 1));
   // A window that still starts at the first segment is an EVENT window (the
   // stream just began) and hls.js starts at its oldest fragment; once it slides
   // it is an ordinary live window.
   if (from === 0) lines.push('#EXT-X-PLAYLIST-TYPE:EVENT');
   lines.push(`#EXT-X-MEDIA-SEQUENCE:${from}`);
+  lines.push(`#EXT-X-TWITCH-LIVE-SEQUENCE:${from}`);
+  lines.push(`#EXT-X-TWITCH-ELAPSED-SECS:${(from * SEG).toFixed(3)}`);
+  lines.push(`#EXT-X-TWITCH-TOTAL-SECS:${((i + 1) * SEG).toFixed(3)}`);
   lines.push('#EXT-X-MAP:URI="/v1/segment/content_' + v + '_init.mp4"');
-  for (let k = from; k <= i + ahead; k++) lines.push(segLine('content', k, null, undefined, v));
+  for (let k = from; k <= i + ahead; k++) lines.push(segLine('content', k, null, undefined, v, wall - (i - k) * SEG * 1000));
+  // Twitch lists the two fragments still being produced (26 PREFETCH rows over
+  // 13 playlists) so a player can warm them before the window steps. Ours are
+  // the next two content indices; nothing on our side fetches them, and the
+  // extension never reads this tag.
+  for (let k = i + ahead + 1; k <= i + ahead + 2; k++) {
+    lines.push(`#EXT-X-TWITCH-PREFETCH:${EDGE}/v1/segment/content_${v}_${pad(k % CONTENT_SEGS)}.m4s`);
+  }
   if (adOn) {
     lines.push(...adLines(pod, adBase(t, ev), v).lines);
   }
@@ -217,9 +271,28 @@ function mediaPlaylist({ clean, t, pod, v = 720 }) {
 function masterFor(playerType, platform) {
   const clean = isCleanToken(playerType, platform) ? 1 : 0;
   const pt = encodeURIComponent(playerType || '');
-  const out = ['#EXTM3U', '#EXT-X-VERSION:7'];
+  // Real master (measured 2026-11-26): NO #EXT-X-VERSION line, a block of
+  // #EXT-X-SESSION-DATA rows, and variants named the way Twitch names them -
+  // `1080p60`/`720p60`/`360p30` with FRAME-RATE, SCORE and STABLE-VARIANT-ID.
+  // Twitch's own player keys a quality pick on those attributes, so a replica
+  // that only sends BANDWIDTH/RESOLUTION cannot represent a wrong pick at all.
+  const wall = Date.now();
+  const out = [
+    '#EXTM3U',
+    `#EXT-X-SESSION-DATA:DATA-ID="NODE",VALUE="${EDGE.replace('https://', '')}"`,
+    `#EXT-X-SESSION-DATA:DATA-ID="MANIFEST-NODE-TYPE",VALUE="weaver_cluster"`,
+    `#EXT-X-SESSION-DATA:DATA-ID="SERVER-TIME",VALUE="${(wall / 1000).toFixed(2)}"`,
+    `#EXT-X-SESSION-DATA:DATA-ID="CLUSTER",VALUE="cloudfront_prod_replica"`,
+    `#EXT-X-SESSION-DATA:DATA-ID="VIDEO-SESSION-ID",VALUE="${SESSION_ID}"`,
+    '#EXT-X-SESSION-DATA:DATA-ID="USER-COUNTRY",VALUE="BR"',
+  ];
   for (const r of RUNGS) {
-    out.push(`#EXT-X-STREAM-INF:BANDWIDTH=${r.bw},RESOLUTION=${r.w}x${r.h},CODECS="avc1.4d401f"`);
+    const fps = r.h >= 720 ? 60 : 30;
+    const score = r.h >= 720 ? (r.h >= 1080 ? 5 : 4) : 3;
+    const name = `${r.h}p${fps}`;
+    out.push(
+      `#EXT-X-STREAM-INF:BANDWIDTH=${r.bw},RESOLUTION=${r.w}x${r.h},CODECS="avc1.4d401f",FRAME-RATE=${fps.toFixed(3)},SCORE=${score}.00,STABLE-VARIANT-ID="${name}",IVS-NAME="${name}",IVS-VARIANT-SOURCE="source"`,
+    );
     out.push(`${EDGE}/v1/playlist/live.m3u8?clean=${clean}&pt=${pt}&v=${r.v}`);
   }
   return out.join('\n') + '\n';
@@ -266,10 +339,107 @@ function cors(res) {
 }
 
 function send(res, status, type, body) {
+  capturePlaylist(res.req, body, status);
   cors(res);
   res.writeHead(status, { 'content-type': type, 'content-length': Buffer.byteLength(body) });
   res.end(body);
 }
+
+// ---- capture --------------------------------------------------------------
+// `KO_REPLICA_CAPTURE_OUT` writes the playlist bodies this replica served in the
+// same shape `_tools/ko-real-capture.mjs` emits, so `compare.mjs` can diff the
+// offline page against a real one with no hand-editing:
+//
+//   node _tools/ko-replica/run.mjs --scenario … --capture-out G:/Temp/…/replica.json
+//   node _tools/ko-replica/compare.mjs --real <capture.json> --replica G:/Temp/…/replica.json
+//
+// It costs nothing on the request path: only bodies that begin with `#EXTM3U`
+// are kept, each `host+path+query` is stored once (a live playlist is fetched
+// dozens of times and the tag set is what a diff reads), the list is capped, and
+// the file is rewritten at most twice a second and once at exit. Segment bytes
+// are never captured.
+const CAPTURE_OUT = process.env.KO_REPLICA_CAPTURE_OUT || '';
+const CAPTURE_MAX = Number(process.env.KO_REPLICA_CAPTURE_MAX || 80) || 80;
+const capture = { url: '', playlists: [], samples: [], dom: { source: 'replica-server' } };
+const captureT0 = Date.now();
+const captureSeen = new Map();
+let captureDirty = false;
+let captureTimer = null;
+// A capture that writes nothing is the silent-green class this repo forbids, and
+// the first pilot proved how easy it is: the parent directory did not exist,
+// writeFileSync threw ENOENT and a bare catch swallowed it, so a full scenario
+// ran to PASS with no capture file. The directory is created here and a write
+// failure is printed once, on the stream run.mjs forwards into the report notes.
+if (CAPTURE_OUT) {
+  try { mkdirSync(dirname(CAPTURE_OUT), { recursive: true }); } catch (err) {
+    console.error(`capture-dir-failed ${CAPTURE_OUT}: ${err && err.message}`);
+  }
+}
+let captureWarned = false;
+function captureFlush() {
+  if (!CAPTURE_OUT || !captureDirty) return;
+  captureDirty = false;
+  try {
+    writeFileSync(CAPTURE_OUT, `${JSON.stringify(capture, null, 1)}\n`);
+  } catch (err) {
+    if (!captureWarned) {
+      captureWarned = true;
+      console.error(`capture-write-failed ${CAPTURE_OUT}: ${err && err.message}`);
+    }
+  }
+}
+function capturePlaylist(req, body, status) {
+  if (!CAPTURE_OUT || capture.playlists.length >= CAPTURE_MAX) return;
+  if (typeof body !== 'string' || !body.startsWith('#EXTM3U')) return;
+  if (!req) return;
+  const host = String(req.headers.host || '').toLowerCase();
+  // A live playlist keeps its URL while its BODY changes from content to a
+  // stitched pod and back. Deduping on the URL alone therefore captured the
+  // pre-pod content playlist and threw the ad program away, which is the one
+  // shape `compare.mjs` cannot reconstruct: the first pilot stored four
+  // playlists and not one of them carried an ad block. The key carries the ad
+  // signature, so a content body and an in-pod body of the same URL are both
+  // kept, and hundreds of refreshes of each still collapse to one.
+  const adSegs = (body.match(/^#EXTINF:[^,\n]*,?(?!live\s*$).*$/gm) || []).length;
+  const key = `${host}${req.url || ''}|ads:${adSegs}`;
+  const seen = captureSeen.get(key);
+  if (seen) {
+    // The LAST body of a key is the steady-state window. Keeping the first one
+    // stored the replica's start-up playlist (`#EXT-X-PLAYLIST-TYPE:EVENT`, one
+    // or two segments) instead of the 14-segment live window the same URL
+    // serves a moment later, and `compare.mjs` reported `segments 5` against
+    // Twitch's 14 for a fixture that does list 14.
+    seen.body = body;
+    seen.status = status;
+    captureDirty = true;
+    if (!captureTimer) {
+      captureTimer = setTimeout(() => { captureTimer = null; captureFlush(); }, 500);
+      captureTimer.unref?.();
+    }
+    return;
+  }
+  const rec = {
+    // `atMs` and the leading `?` match the real capture's record shape, so one
+    // diff tool reads both files without a per-side special case.
+    atMs: Date.now() - captureT0,
+    url: String(req.url || '/'),
+    host,
+    tokenQuery: String(req.url || '').includes('?') ? String(req.url).slice(String(req.url).indexOf('?') + 1) : '',
+    from: /(?:^|[?&])pt=autoplay(?:&|$)/.test(String(req.url || '')) ? 'clean-iframe' : 'page',
+    adSegs,
+    status,
+    body,
+  };
+  captureSeen.set(key, rec);
+  capture.url = capture.url || `https://${host}/`;
+  capture.playlists.push(rec);
+  captureDirty = true;
+  if (!captureTimer) {
+    captureTimer = setTimeout(() => { captureTimer = null; captureFlush(); }, 500);
+    captureTimer.unref?.();
+  }
+}
+process.on('exit', captureFlush);
 
 const { cert, key } = ensureCerts();
 ensureMedia();

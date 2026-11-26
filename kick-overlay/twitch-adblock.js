@@ -358,6 +358,11 @@
     // `native-handoff {ct:30.1, buf:42.4}` -> `native-edge-recover {behind:144.9,
     // to:172}` on an element whose whole downloaded window was 42.4 s.
     timelineReset: false,
+    // ONE wall-clock recovery per pod. A usable edge can still be the pod's own
+    // extent, and a retry can report a deficit the hand-back never saw. Either
+    // may recover once; a second seek is the visible jump the retries were
+    // split out to prevent.
+    edgeRecovered: false,
     pauseBeforeAd: false, // the native was PAUSED when the pod took over
     selfPausedAt: 0, // when WE paused it (a hold is not the user parking it)
     coldPreroll: false, // ...and it had never played (page had just loaded)
@@ -426,6 +431,12 @@
   let standbyRequestTimer = 0;
   let lastStandbyRequestAt = 0;
   let standbyRefusedSig = ''; // one refusal row per reason, cleared by a real request
+  // ONE pod-start bypass of the 4 s mint cooldown. The worker saw the ad
+  // playlist before the page's cold ask aged out (replica: ad-hold 284 ms,
+  // first clean URL 5163 ms) and the DOM hold asks on the same tick. The pod
+  // end clears this; no second pod counter is introduced.
+  let standbyBypassAt = 0;
+  let standbyBypassPod = null;
   const standbyLife = { requestAt: 0, urlAt: 0, frameAt: 0, frameLogged: false, firstStLogged: false, firstDecodedLogged: false, playLogged: false };
   function pageChannel() {
     try {
@@ -433,6 +444,77 @@
     } catch {
       return '';
     }
+  }
+  // ONE page-load clean-source warm, cached with the SHAPE and lifetime the
+  // worker already uses for its standby: `{channel, url, at}` for PREWARM_TTL
+  // (90 s, twitch-adblock.js:5204). A cold pod used to force a fresh GQL mint
+  // inside the hold (3-4 s of ad on screen before the clean picture), even
+  // when a finished prewarm was sitting in the worker. This cache is an
+  // optimisation: every failure ends in the same forced request as before.
+  const STANDBY_PREWARM_TTL_MS = 90000;
+  // One mint/variant probe is bounded at 8-10 s (twitch-adblock.js:5314,
+  // :5253); past 12 s a page-load warm is a failure, not a pending source.
+  const STANDBY_PREWARM_WAIT_MS = 12000;
+  const standbyPrewarm = { kickAt: 0, at: 0, channel: null, url: null, pending: false };
+  let standbyPrewarmTimer = 0;
+  function prewarmResult(ok, why, ms) {
+    adLog('standby-prewarm', { ok: !!ok, ms: Number.isFinite(ms) ? Math.round(ms) : null, why: String(why) });
+    return !!ok;
+  }
+  function cacheStandbyPrewarm(msg) {
+    const ms = standbyPrewarm.kickAt ? Date.now() - standbyPrewarm.kickAt : null;
+    standbyPrewarm.pending = false;
+    try { clearTimeout(standbyPrewarmTimer); } catch { /* ignore */ }
+    standbyPrewarmTimer = 0;
+    const ch = String(msg.channel || '').toLowerCase();
+    if (!msg.url || !ch || ch !== pageChannel().toLowerCase()) {
+      prewarmResult(false, !msg.url ? 'no-url' : 'channel-changed', ms);
+      return false;
+    }
+    standbyPrewarm.channel = ch;
+    standbyPrewarm.url = String(msg.url);
+    standbyPrewarm.at = Date.now();
+    prewarmResult(true, 'resolved', ms);
+    return true;
+  }
+  function consumeStandbyPrewarm() {
+    if (!standbyPrewarm.url) {
+      return prewarmResult(false, 'unavailable', null);
+    }
+    const ageMs = Date.now() - standbyPrewarm.at;
+    const stale = !Number.isFinite(ageMs) || ageMs < 0 || ageMs > STANDBY_PREWARM_TTL_MS;
+    if (stale || standbyPrewarm.channel !== pageChannel().toLowerCase()) {
+      standbyPrewarm.url = null;
+      standbyPrewarm.at = 0;
+      return prewarmResult(false, stale ? 'expired' : 'channel-changed', ageMs);
+    }
+    const url = standbyPrewarm.url;
+    const ch = standbyPrewarm.channel;
+    standbyPrewarm.url = null; // single-use: the next pod must ask again
+    standbyPrewarm.at = 0;
+    standbyPrewarm.pending = false;
+    // The second handle on this channel is how the page reaches its OWN
+    // listener: BroadcastChannel never delivers a post back to its sender.
+    try {
+      playlistBypassChannel.postMessage({ type: 'standby-start', channel: ch, url, src: 'prewarm-cache' });
+    } catch { prewarmResult(false, 'post-failed', ageMs); }
+    adLog('standby-prewarm-used', { ageMs });
+    return true;
+  }
+  function kickStandbyPrewarm() {
+    if (!isChannelPath() || !pageChannel()) {
+      prewarmResult(false, 'no-channel', 0);
+      return;
+    }
+    standbyPrewarm.kickAt = Date.now();
+    standbyPrewarm.pending = true;
+    standbyPrewarmTimer = setTimeout(() => {
+      standbyPrewarmTimer = 0;
+      if (!standbyPrewarm.pending) return;
+      standbyPrewarm.pending = false;
+      prewarmResult(false, 'timeout', Date.now() - standbyPrewarm.kickAt);
+    }, STANDBY_PREWARM_WAIT_MS);
+    requestStandby(0, false, 'prewarm');
   }
   function isChannelPath() {
     try {
@@ -455,14 +537,23 @@
     // A standby that keeps failing (offline channel, bad token) must not turn
     // into a mint/error loop. Normal requests still re-post immediately and
     // do not arm the cooldown, so recovery after an ad is not delayed.
+    if (force && consumeStandbyPrewarm()) return;
+    let bypassWhy = null;
     if (force) {
       const now = Date.now();
-      if (now - lastStandbyRequestAt < 4000) {
+      const throttled = now - lastStandbyRequestAt < 4000;
+      const canBypass = (why === 'worker-playlist' || why === 'ad-ui-hold') && standbyBypassPod === null;
+      if (throttled && !canBypass) {
         if (standbyRefusedSig !== 'throttle') {
           standbyRefusedSig = 'throttle';
           adLog('standby-refused', { why: 'throttle', ask: String(why || 'unspecified'), forMs: delay, sinceMs: now - lastStandbyRequestAt, cooldownMs: 4000 });
         }
         return;
+      }
+      if (throttled && canBypass) {
+        bypassWhy = 'pod-start';
+        standbyBypassAt = now;
+        standbyBypassPod = overlay.playlistPodAt || workerRoutePodAt || adUiHeldAt || now;
       }
       lastStandbyRequestAt = now;
     }
@@ -484,7 +575,7 @@
       standbyLife.firstDecodedLogged = false;
       standbyLife.firstStLogged = false;
       standbyLife.playLogged = false;
-      adLog('standby-request', { why: String(why || 'unspecified'), delay: Number(delay) || 0 });
+      adLog('standby-request', Object.assign({ why: String(why || 'unspecified'), delay: Number(delay) || 0 }, bypassWhy ? { bypass: bypassWhy } : null));
       try {
         bypassChannel?.postMessage({
           type: 'standby-request',
@@ -2140,6 +2231,9 @@
   stats.adUiRelease = adUiRelease;
   // Test/diagnostic seam: drive standby lifecycle rows without a worker round trip.
   stats.requestStandby = requestStandby;
+  stats.standbyBypass = () => ({ at: standbyBypassAt, pod: standbyBypassPod });
+  stats.standbyPrewarm = () => Object.assign({}, standbyPrewarm);
+  stats.ageStandbyPrewarm = (ms) => { if (standbyPrewarm.at) standbyPrewarm.at = Date.now() - ms; };
   stats.adUiHoldTick = adUiHoldTick;
   stats.adHoldWorthy = adHoldWorthy;
   stats.adUiHeldAt = () => adUiHeldAt;
@@ -2436,6 +2530,14 @@
         const elapsed = overlay.holdAt
           ? Math.max(0, (Date.now() - overlay.holdAt - hiddenMs) / 1000)
           : 0;
+        // A USABLE EDGE IS NOT NECESSARILY THE LIVE EDGE. The replica's ad-end
+        // has se 14 with holdCt 0 and 14.3 s elapsed: `se - cleanLat` lands
+        // inside the stitched ad, and its newest frame is the pod's own end.
+        // A real Twitch hand-back has an edge (and a buffer) that advanced
+        // PAST the take-over position plus the pod's wall-clock cost.
+        const podExtentEdge = se > 0 && overlay.holdAt > 0
+          && se <= ct0 + elapsed + 0.25
+          && nativeBufferedEnd(v) <= ct0 + elapsed + 0.25;
         if (hiddenMs > 1000) {
           adLog('native-seek-declined', {
             why: 'hidden-tab', hiddenMs: Math.round(hiddenMs),
@@ -2454,7 +2556,10 @@
         // the wall clock as its clock and LOGS the numbers that decide the
         // recovery (`native-handoff`), instead of inventing a seek between
         // incomparable timelines.
-        if (se <= 0 && overlay.holdAt) {
+        if ((se <= 0 || podExtentEdge) && overlay.holdAt) {
+          // The sentinel branch below is unchanged: it is the only timeline
+          // available there. Here the edge exists but points at the pod, so
+          // the same wall-clock arithmetic applies until content is fed.
           const advanced = from - ct0;
           const behind = elapsed - advanced;
           // A NATIVE THAT WENT BACKWARDS RELOADED, and a reload lands AT THE
@@ -2495,6 +2600,23 @@
             why = 'edge-recover';
             overlay.recoverBehind = +behind.toFixed(1);
             overlay.recoverLat = +cleanLat.toFixed(1);
+            if (podExtentEdge && want <= se) {
+              // The offset the clean player showed is STILL INSIDE THE POD.
+              // Seeking there keeps the ad on screen; refuse with both numbers
+              // instead of silently spending the one recovery on ad media.
+              adLogState('native-seek-skipped', {
+                why: 'inside-pod',
+                from: +from.toFixed(1),
+                to: +want.toFixed(1),
+                buffered: +nativeBufferedEnd(v).toFixed(1),
+                rs: v.readyState,
+                podExtent: +se.toFixed(1),
+              });
+              want = from;
+              why = null;
+              overlay.recoverBehind = 0;
+              overlay.recoverLat = 0;
+            }
           }
         }
         // A DVR POSITION IS THE USER'S. With a sentinel edge the deficit maths
@@ -2598,6 +2720,11 @@
             gap: +(want - from).toFixed(1),
             lat: +(se > 0 ? se - want : -1).toFixed(1),
             edge: se > 0 ? 'seekable' : 'buffered',
+            // The edge source and the RECOVERY source are different questions.
+            // `edge` says where the position came from; `basis` says which
+            // clock decided the seek, so a wall recovery on a seekable edge is
+            // never silently read as a plain edge catch-up.
+            basis: why === 'user-dvr' ? 'dvr' : (why && why.startsWith('edge-recover') ? 'wall' : 'edge'),
             why,
           };
           if (why.startsWith('edge-recover')) payload.behind = overlay.recoverBehind;
@@ -2609,9 +2736,58 @@
             payload.runway = +(runwayEnd - want).toFixed(1);
           }
           overlay.recoverBehind = 0;
+          if (why.startsWith('edge-recover') || why === 'user-dvr') overlay.edgeRecovered = true;
           adLogState(why === 'user-dvr' || why.startsWith('edge-recover') ? 'native-edge-recover' : 'native-catchup', payload);
         }
         overlay.holdAt = 0;
+      }
+      // RETRIES: `holdAt` was consumed by the hand-back and `seek:false` kept
+      // every retry from moving the picture. When the usable edge itself now
+      // reports more than RESUME_GAP_SEC behind, it is the same deficit the
+      // wall clock measured at hand-back: land on the offset the clean player
+      // showed, clamped by the runway rule, ONCE per pod.
+      if (!seek && se > 0 && !overlay.edgeRecovered && !overlay.timelineReset
+          && !overlay.userDvr && overlay.hiddenGapMs <= 0) {
+        const retryBehind = se - from;
+        if (retryBehind > RESUME_GAP_SEC && retryBehind < 3600) {
+          const askedWant = Math.max(0, from + retryBehind - cleanLat);
+          let want = askedWant;
+          let covered = seekCovered(v, want);
+          const runwayEnd = nativeBufferedEnd(v);
+          if (covered && runwayEnd > 0 && want > runwayEnd - HEALTH_BUFFER_SEC) {
+            const land = +(runwayEnd - HEALTH_BUFFER_SEC).toFixed(1);
+            if (land > from + RESUME_GAP_SEC) want = land;
+            else covered = false; // no landing with runway: do not park the element
+          }
+          if (!covered) {
+            adLogState('native-seek-skipped', {
+              why: 'no-landing',
+              from: +from.toFixed(1),
+              to: +want.toFixed(1),
+              buffered: runwayEnd > 0 ? +runwayEnd.toFixed(1) : null,
+              rs: v.readyState,
+            });
+          } else if (want > from + RESUME_GAP_SEC) {
+            v.currentTime = want;
+            seekedNow = true;
+            overlay.edgeRecovered = true;
+            const payload = {
+              from: +from.toFixed(1),
+              to: +want.toFixed(1),
+              gap: +(want - from).toFixed(1),
+              lat: +(se - want).toFixed(1),
+              edge: 'seekable',
+              basis: 'wall',
+              why: 'edge-recover-retry',
+              behind: +retryBehind.toFixed(1),
+            };
+            if (want !== askedWant) {
+              payload.asked = +askedWant.toFixed(1);
+              payload.runway = +(runwayEnd - want).toFixed(1);
+            }
+            adLogState('native-edge-recover', payload);
+          }
+        }
       }
       // readyState 2 with paused=false is still a frozen frame. Nudge behind
       // live and call play() even when the element claims it is not paused.
@@ -2851,6 +3027,8 @@
       overlay.standby = false;
       overlay.adActive = false;
       overlay.playlistPodAt = 0;
+      standbyBypassPod = null;
+      standbyBypassAt = 0;
       // A HOLD THAT NEVER GOT A FRAME STILL PAUSED THE PLAYER. Since the hold no
       // longer waits for the frame, this exit is now reachable WITH the native
       // paused by it — and leaving it paused is the owner's "a live pausou e
@@ -3015,6 +3193,8 @@
     overlay.standby = false;
     overlay.adActive = false;
     overlay.playlistPodAt = 0;
+    standbyBypassPod = null;
+    standbyBypassAt = 0;
     // Tell the worker the overlay is gone so a timeout/player-error can retry
     // on a later ad playlist instead of leaving adBypassActive stuck true.
     // Standby shutdowns are invisible to the ad state machine.
@@ -3960,7 +4140,17 @@
             // hidden standby is still starting); ONE on a sparse one, because
             // a background tab delivers the next sample 10-30s later and the
             // fallback bound would stop a player that is perfectly fine.
-            const need = (overlay.stGapMs || 0) > 1500 ? 1 : 2;
+            // ONE PROGRESSING SAMPLE IS HEALTHY. The playhead moved at least
+            // 0.2 s since the previous report and the decoder still holds a
+            // full HEALTH_BUFFER_SEC landing runway. A stalled frame repeats
+            // its position or has no runway and still needs a second sample
+            // on a dense heartbeat; the sparse-heartbeat rule is unchanged.
+            const progressed = !!overlay.prevSt
+              && typeof overlay.prevSt.pos === 'number'
+              && typeof m.st.pos === 'number'
+              && Number(m.st.pos) - Number(overlay.prevSt.pos) >= 0.2
+              && buffered >= HEALTH_BUFFER_SEC;
+            const need = (overlay.stGapMs || 0) > 1500 || progressed ? 1 : 2;
             if (overlay.healthyTicks < need) return;
             overlay.playing = true;
           }
@@ -4217,6 +4407,7 @@
         overlay.userDvr = overlay.holdBehind > POD_RECOVER_MIN && overlay.holdCt > POD_RECOVER_MIN;
         overlay.hiddenGapMs = 0; // a gap BEFORE the pod is not a freeze
         overlay.timelineReset = false;
+        overlay.edgeRecovered = false;
         overlay.playlistPodAt = overlay.playlistPodAt || overlay.holdAt;
         // A cold preroll is the ONLY case where a paused native is ours to
         // start: it has never played at all, so it sits at the very beginning.
@@ -4356,6 +4547,7 @@
         return;
       }
       if (msg.type === 'standby-start') {
+        if (standbyPrewarm.pending) cacheStandbyPrewarm(msg);
         if (!AD_OVERLAY_ENABLED || !AD_STANDBY_ENABLED) return;
         // Ignore stale handoffs and never start over an ad, another overlay,
         // or a hidden tab. The worker re-posts on the next prewarm.
@@ -4404,6 +4596,11 @@
     setTimeout(() => requestStandby(0, false, 'cold-start'), 1000);
     setTimeout(() => requestStandby(0, false, 'cold-start'), 2500);
     setTimeout(() => requestStandby(0, false, 'cold-start'), 5000);
+    // ONE kick per page load: idle when the browser offers it, otherwise a
+    // 150 ms delay - ahead of the 200 ms cold retries, far inside the measured
+    // 3-4 s cold-preroll window and clear of an existing arm's 60 ms count.
+    if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(() => kickStandbyPrewarm(), { timeout: 1000 });
+    else setTimeout(kickStandbyPrewarm, 150);
   }
 
   // SPA channel switch (owner report 2026-10-27: "it keeps the last stream").

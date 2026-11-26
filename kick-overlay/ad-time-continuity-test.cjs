@@ -32,6 +32,7 @@ const { makeWorld, makePage, settle, healthySt } = require('./mute-decision-test
 // The checkout is CRLF; every mutation below is written LF-only, so the source
 // is normalised once here and handed to the stub DOM already normalised.
 const SOURCE = fs.readFileSync(path.join(__dirname, 'twitch-adblock.js'), 'utf8').replace(/\r\n/g, '\n');
+const PREWARM_ONLY = process.argv.includes('--prewarm-only');
 
 // ---- pre-fix mutations (the shipped 0.8.43 behaviour) ----------------------
 // 0. The ad path had no idea who owned playback: it covered the native (and
@@ -132,6 +133,7 @@ const PRE_FIX_STANDBY_STALE = [[
 ]];
 
 const checks = [];
+const armLog = []; // GREEN arm labels actually printed in this run
 function check(name, fn) {
   try {
     fn();
@@ -165,6 +167,7 @@ async function greenArm(label, fn) {
   try {
     await fn();
     checks.push({ name: label, status: 'PASS' });
+    armLog.push(label);
     console.log(`PASS ${label}`);
   } catch (error) {
     checks.push({ name: label, status: 'FAIL', detail: error.message });
@@ -173,6 +176,15 @@ async function greenArm(label, fn) {
 }
 function assert(cond, msg) {
   if (!cond) throw new Error(msg);
+}
+// An arm can report every property in the GREEN run (each one counted as a
+// check) and still throw on the RED copy of the same source: `record` is the
+// assertion there, and `check` only in the green run.
+function strictRecord(name, cond, msg) {
+  assert(cond, msg);
+}
+function checkRecord(name, cond, msg) {
+  check(name, () => assert(cond, msg));
 }
 function mutate(pairs) {
   let src = SOURCE;
@@ -232,7 +244,124 @@ async function pod(page, { pos = 100, lat = 3, lv, bw } = {}) {
   await settle(10);
 }
 
+// ---- 23. ONE PAGE-LOAD WARM, CONSUMED ONCE BY THE FIRST POD --------------
+// A cold hold used to force a fresh GQL mint even when the worker had already
+// resolved a clean URL (3-4 s of preroll before the picture). These arms drive
+// the page-side cache through the real bypass channel: the worker is a peer,
+// so it only answers a request the page actually posted.
+async function prewarmArms() {
+  const WARM_URL = 'https://clean.example/prewarm.m3u8';
+  const FALLBACK_URL = 'https://clean.example/fallback.m3u8';
+  function warmFrame(page) {
+    page.frameMsg({ t: 'ready' });
+    for (let i = 0; i < 3; i += 1) page.frameMsg(healthySt({ pos: 14.6, lat: 1.4, buffered: 8 }));
+  }
+
+  async function consumedPrewarmArm(src, record = strictRecord) {
+    const page = makePage(src);
+    setNative(page, { ct: 0.4, edge: 16, bufferedEnd: 16 });
+    await settle(260); // the 150 ms kick and the 200 ms cold retry have fired
+    const kick = page.logsOf('standby-request').filter((l) => l.d.why === 'prewarm');
+    record('the page load kicks exactly one clean-source warm', kick.length === 1,
+      `no single page-load warm was posted: ${JSON.stringify(page.logsOf('standby-request'))}`);
+    page.bypass({ type: 'standby-start', url: WARM_URL, channel: 'rodil' });
+    await settle(20);
+    const warm = page.logsOf('standby-prewarm');
+    record('the warm resolve is one transition row with its ms',
+      warm.length === 1 && warm[0].d.ok === true && Number.isFinite(warm[0].d.ms),
+      `the resolve was silent or unnamed: ${JSON.stringify(warm)}`);
+    warmFrame(page);
+    await settle(15);
+    const api = page.stats();
+    const key = api.standbyPrewarm();
+    record('the warm is cached with the standby key and lifetime clock',
+      key.channel === 'rodil' && key.url === WARM_URL && key.at > 0 && key.pending === false,
+      `the warmed URL was not cached: ${JSON.stringify(key)}`);
+    api.adUiHold({ kind: 'wrapper', w: 1280, h: 720 }); // the first pod asks
+    await settle(15);
+    const used = page.logsOf('standby-prewarm-used');
+    record('the first pod consumes the warm source once',
+      used.length === 1 && Number.isFinite(used[0].d.ageMs) && used[0].d.ageMs >= 0,
+      `no single-use consumption row: ${JSON.stringify(used)}`);
+    record('the consumed key is single-use', api.standbyPrewarm().url === null,
+      `the key survived its pod: ${JSON.stringify(api.standbyPrewarm())}`);
+    record('the pod does not repeat its forced mint',
+      page.logsOf('standby-request').filter((l) => l.d.why === 'ad-ui-hold').length === 0,
+      `the pod minted again: ${JSON.stringify(page.logsOf('standby-request'))}`);
+    page.bypass({ type: 'ad-hold' });
+    await settle(25);
+    record('the warm source still covers the pod', page.logsOf('overlay-reveal').length === 1,
+      `the consumed source did not reveal: ${JSON.stringify(page.logsOf('overlay-reveal'))}`);
+  }
+  const RED_CONSUME = mutate([[
+    '    if (force && consumeStandbyPrewarm()) return;',
+    '    if (false && consumeStandbyPrewarm()) return;',
+  ]]);
+  await redArm('RED: a pre-warmed source is re-minted inside the hold', RED_CONSUME, (src) => consumedPrewarmArm(src));
+  await greenArm('a pre-warmed source is consumed by the first pod without a second mint', () => consumedPrewarmArm(SOURCE, checkRecord));
+
+  async function fallbackPrewarmArm(src, record = strictRecord) {
+    const page = makePage(src);
+    setNative(page, { ct: 0.4, edge: 16, bufferedEnd: 16 });
+    await settle(260);
+    // A peer's answer for another channel is a FAILED warm: it must not be
+    // cached and the pod must still ask for its own source.
+    page.bypass({ type: 'standby-start', url: WARM_URL, channel: 'other' });
+    await settle(15);
+    const failed = page.logsOf('standby-prewarm');
+    record('a failed warm is logged, never silent',
+      failed.length === 1 && failed[0].d.ok === false && failed[0].d.why === 'channel-changed',
+      `the failure had no row: ${JSON.stringify(failed)}`);
+    page.stats().adUiHold({ kind: 'wrapper', w: 1280, h: 720 });
+    await settle(15);
+    const asked = page.logsOf('standby-request').filter((l) => l.d.why === 'ad-ui-hold');
+    record('a failed warm falls back to the pod mint', asked.length === 1,
+      `the pod did not ask for a source: ${JSON.stringify(page.logsOf('standby-request'))}`);
+    if (asked.length) page.bypass({ type: 'standby-start', url: FALLBACK_URL, channel: 'rodil' });
+    await settle(15);
+    page.bypass({ type: 'ad-hold' });
+    warmFrame(page);
+    await settle(25);
+    record('the pod still reveals without a warm source', page.logsOf('overlay-reveal').length === 1,
+      `the fallback did not reveal: ${JSON.stringify(page.logsOf('overlay-reveal'))}`);
+
+    // Expiry is the same optimisation: the key is discarded with a row and
+    // the forced ask still runs, without waiting 90 s of wall clock.
+    const stale = makePage(src);
+    setNative(stale, { ct: 0.4, edge: 16, bufferedEnd: 16 });
+    await settle(260);
+    stale.bypass({ type: 'standby-start', url: WARM_URL, channel: 'rodil' });
+    await settle(15);
+    stale.stats().ageStandbyPrewarm(91000);
+    stale.stats().adUiHold({ kind: 'wrapper', w: 1280, h: 720 });
+    await settle(15);
+    const expired = stale.logsOf('standby-prewarm').filter((l) => l.d.why === 'expired');
+    const busy = stale.logsOf('standby-refused').filter((l) => l.d.why === 'busy');
+    stale.bypass({ type: 'ad-hold' });
+    warmFrame(stale);
+    await settle(25);
+    record('an expired warm is named, never consumed, and the pod still reveals',
+      expired.length === 1 && expired[0].d.ok === false && busy.length === 1
+        && stale.logsOf('standby-prewarm-used').length === 0 && stale.logsOf('overlay-reveal').length === 1,
+      `expiry blocked or silenced the fallback: ${JSON.stringify({
+        rows: stale.logsOf('standby-prewarm'), refused: stale.logsOf('standby-refused'), reveal: stale.logsOf('overlay-reveal'),
+      })}`);
+  }
+  const RED_FALLBACK = mutate([[
+    "    requestStandby(0, true, 'ad-ui-hold');",
+    '    void 0; // RED: the fallback mint was removed',
+  ]]);
+  await redArm('RED: without the fallback mint the pod never reveals', RED_FALLBACK, (src) => fallbackPrewarmArm(src));
+  await greenArm('a failed pre-warm is not a precondition: the hold falls back to a mint and reveals', () => fallbackPrewarmArm(SOURCE, checkRecord));
+}
+
 async function main() {
+  if (PREWARM_ONLY) {
+    await prewarmArms();
+    const onlyFailed = checks.filter((c) => c.status === 'FAIL');
+    console.log(`RESULT ${onlyFailed.length ? 'FAIL' : 'PASS'} ad-time-continuity prewarm-only checks=${checks.length} failed=${onlyFailed.length}`);
+    process.exit(onlyFailed.length ? 1 : 0);
+  }
   // ---- 1. a hidden standby is pulled onto the live edge -------------------
   {
     const page = makeWorld();
@@ -2803,6 +2932,218 @@ async function main() {
   await redArm('hold expiry re-resumes the element the pod already handed back', redPodEndExpiry, podEndHoldExpiryArm);
   await greenArm('a pod-end hand-back owns the element over a late hold expiry', () => podEndHoldExpiryArm(SOURCE));
 
+  // ---- 20. A POD OPENING MAY MINT AT ONCE --------------------------------
+  // Replica: `ad-hold` 284 ms, first clean standby URL 5163 ms. The page's own
+  // cold request arms the 4 s cooldown; the pod's first ask was then refused
+  // as `standby-refused {why:'throttle'}` instead of minting its clean source.
+  async function podStartMintArm(src, record = strictRecord) {
+    const page = makePage(src);
+    setNative(page, { ct: 0.4, edge: 16, bufferedEnd: 16 });
+    const api = page.stats();
+    api.requestStandby(0, true, 'visible'); // the page's own cold request
+    await settle(15);
+    const pageRows = page.logsOf('standby-request').filter((l) => l.d.why === 'visible');
+    record('a page request seeds the throttle without a bypass', pageRows.length === 1 && pageRows[0].d.bypass == null,
+      `expected one unmarked page request: ${JSON.stringify(page.logsOf('standby-request'))}`);
+    api.requestStandby(0, true, 'ad-ui-hold'); // the pod opening
+    await settle(15);
+    const mint = page.logsOf('standby-request').filter((l) => l.d.why === 'ad-ui-hold');
+    record('a pod opening is not throttled out of its mint', mint.length === 1 && mint[0].d.bypass === 'pod-start',
+      `the pod did not mint with a bypass row: ${JSON.stringify(page.logsOf('standby-request'))}`);
+    record('the pod start wrote no refusal', page.logsOf('standby-refused').length === 0,
+      `a pod start was refused: ${JSON.stringify(page.logsOf('standby-refused'))}`);
+    api.requestStandby(0, true, 'ad-ui-hold'); // a second ask in the SAME pod
+    await settle(15);
+    const refused = page.logsOf('standby-refused').filter((l) => l.d.why === 'throttle');
+    record('a second bypass in the same pod is still throttled',
+      page.logsOf('standby-request').filter((l) => l.d.why === 'ad-ui-hold').length === 1
+        && refused.length === 1 && refused[0].d.ask === 'ad-ui-hold',
+      `the same pod minted twice or named no refusal: ${JSON.stringify({ req: page.logsOf('standby-request'), refused })}`);
+    api.requestStandby(0, true, 'stale-standby'); // every other caller keeps the guard
+    await settle(15);
+    record('standby-refused semantics are unchanged for other callers',
+      page.logsOf('standby-request').length === 2 && api.standbyBypass().pod !== null,
+      `a non-pod caller crossed the cooldown: ${JSON.stringify(page.logsOf('standby-request'))}`);
+    page.bypass({ type: 'ad-hold' });
+    await settle(20);
+    page.bypass({ type: 'ad-end' });
+    await settle(20);
+    record('a pod end clears the spent bypass', api.standbyBypass().pod === null,
+      `the bypass outlived its pod: ${JSON.stringify(api.standbyBypass())}`);
+    api.requestStandby(0, true, 'ad-ui-hold'); // the next pod
+    await settle(15);
+    record('the next pod gets its own bypass', page.logsOf('standby-request').filter((l) => l.d.bypass === 'pod-start').length === 2,
+      `the next pod did not mint: ${JSON.stringify(page.logsOf('standby-request'))}`);
+  }
+  const RED_POD_START = mutate([[
+    '      if (throttled && !canBypass) {',
+    '      if (throttled) {',
+  ]]);
+  await redArm('RED: a pod start is throttled out of its mint', RED_POD_START, (src) => podStartMintArm(src));
+  await greenArm('a pod start is not throttled out of its mint', () => podStartMintArm(SOURCE, checkRecord));
+
+  // ---- 21. ONE PROGRESSING SAMPLE IS A HEALTHY SAMPLE -------------------
+  // The two-sample rule was written for a 2.86 s drain, not for a frame that
+  // carries its own confirmation: a 0.5 s advance with a full landing runway
+  // does not need a second heartbeat to be believed.
+  async function progressingGateArm(src, record = strictRecord) {
+    function pod() {
+      const p = makePage(src);
+      setNative(p, { ct: 397, edge: 400, bufferedEnd: 400 });
+      p.bypass({ type: 'ad-hold' });
+      p.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
+      return p;
+    }
+    const moving = pod();
+    await settle(20);
+    moving.frameMsg({ t: 'ready' });
+    // rs=2 is NOT healthy: it drains a second later. Only the second sample
+    // is healthy, and it is the one carrying the progress evidence.
+    moving.frameMsg(healthySt({ pos: 30, lat: 3, buffered: 8, rs: 2 }));
+    await settle(20);
+    moving.frameMsg(healthySt({ pos: 30.5, lat: 3, buffered: 8, rs: 4 }));
+    await settle(20);
+    record('one progressing sample reveals on a dense heartbeat', moving.logsOf('overlay-reveal').length === 1,
+      `the progressing sample did not reveal: ${JSON.stringify(moving.logsOf('overlay-reveal'))}`);
+
+    const stalled = pod();
+    await settle(20);
+    stalled.frameMsg({ t: 'ready' });
+    stalled.frameMsg(healthySt({ pos: 15.95, lat: 0.57, buffered: 0.05, rs: 2 }));
+    await settle(600);
+    stalled.frameMsg(healthySt({ pos: 15.95, lat: 0.57, buffered: 0.05, rs: 2 }));
+    await settle(20);
+    record('a stalled sample still needs two dense heartbeats',
+      stalled.logsOf('overlay-reveal').length === 0 && stalled.logsOf('playing-not-healthy').length > 0,
+      `a frozen frame was revealed: ${JSON.stringify(stalled.logsOf('overlay-reveal'))}`);
+
+    const sparse = pod();
+    await settle(20);
+    sparse.frameMsg({ t: 'ready' });
+    sparse.frameMsg(healthySt({ pos: 30, lat: 3, buffered: 1, rs: 2 }));
+    await settle(1600); // > 1500 ms: progress is NOT the reason this reveals
+    sparse.frameMsg(healthySt({ pos: 31.6, lat: 3, buffered: 1, rs: 4 }));
+    await settle(20);
+    record('a sparse heartbeat still reveals on one sample', sparse.logsOf('overlay-reveal').length === 1,
+      `the sparse heartbeat lost its one-sample rule: ${JSON.stringify(sparse.logsOf('overlay-reveal'))}`);
+  }
+  const RED_PROGRESS = mutate([[
+    'const need = (overlay.stGapMs || 0) > 1500 || progressed ? 1 : 2;',
+    'const need = (overlay.stGapMs || 0) > 1500 ? 1 : 2;',
+  ]]);
+  await redArm('RED: a progressing sample needs a second confirmation again', RED_PROGRESS, (src) => progressingGateArm(src));
+  await greenArm('one progressing sample reveals, a stalled one does not', () => progressingGateArm(SOURCE, checkRecord));
+
+  // ---- 22. A USABLE EDGE CAN STILL BE THE POD'S OWN EXTENT ---------------
+  // Replica dev-preroll-hold 1795665925912: ad-ui-release at 14509 ms,
+  // native-handoff ct 0 / se 14 / buf 14 / podAge 14378, then four retries
+  // `behind:27.6..33.4` with the picture inside the stitched ad at 20000 ms.
+  // The buffer grows to 36 only AFTER the hand-back, which is where the one
+  // recovery must land. The 14.3 s pod age is stamped through the existing
+  // adTestClock seam instead of waiting 14 s of wall clock in this suite.
+  async function podExtentEdgeArm(src, record = strictRecord) {
+    const page = makePage(src);
+    setNative(page, { ct: 0, edge: 14, bufferedEnd: 14 });
+    await pod(page, { pos: 35.6, lat: 5.9 });
+    page.stats().adTestClock({ holdAgeMs: 14300 });
+    const seeks = trackSeeks(page);
+    page.bypass({ type: 'ad-end' });
+    await settle(40); // hand-back sees se 14 / buf 14, still inside the ad
+    const handoff = page.logsOf('native-handoff').pop();
+    record('the hand-back reports the pod extent and the wall clock',
+      !!handoff && Math.abs(handoff.d.se - 14) < 0.1 && Math.abs(handoff.d.buf - 14) < 0.1
+        && Math.abs(handoff.d.podAgeMs - 14300) < 500,
+      `hand-back did not carry the reproduced numbers: ${JSON.stringify(handoff && handoff.d)}`);
+    // Content is appended a moment later in the run: se/buffered go 14 -> 36.
+    page.video.seekable = { length: 1, start: () => 0, end: () => 36 };
+    page.video.buffered = { length: 1, start: () => 0, end: () => 36 };
+    await settle(4400); // past all four resume retries
+    const rec = page.logsOf('native-edge-recover');
+    const evidence = JSON.stringify({
+      recover: rec.map((l) => l.d),
+      skips: page.logsOf('native-seek-skipped').map((l) => l.d),
+      seeks,
+      ct: page.video.currentTime,
+      resume: page.logsOf('native-resume').map((l) => ({ tag: l.d.tag, ct: l.d.ct, behind: l.d.behind })),
+    });
+    record('exactly one wall-clock recovery runs on the usable edge',
+      rec.length === 1 && rec[0].d.basis === 'wall' && rec[0].d.why === 'edge-recover-retry'
+        && Math.abs(rec[0].d.behind - 27.9) < 1.5,
+      `expected one wall recovery on se 36: ${evidence}`);
+    record('the landing is on content inside the newly buffered range',
+      rec.length === 1 && rec[0].d.to > 14 && rec[0].d.to <= 33
+        && seeks.length === 2 && seeks[0] < 14 && seeks[1] === rec[0].d.to
+        && page.video.currentTime > 14,
+      `the picture stayed in the ad media or moved more than once: ${evidence}`);
+  }
+  const RED_POD_EXTENT = mutate([
+    [
+      '        if ((se <= 0 || podExtentEdge) && overlay.holdAt) {',
+      '        if (se <= 0 && overlay.holdAt) {',
+    ],
+    [
+      '      if (!seek && se > 0 && !overlay.edgeRecovered && !overlay.timelineReset',
+      '      if (false && !seek && se > 0 && !overlay.edgeRecovered && !overlay.timelineReset',
+    ],
+  ]);
+  await redArm('RED: a usable edge at the pod extent suppresses recovery', RED_POD_EXTENT, (src) => podExtentEdgeArm(src));
+  await greenArm('a pod-extent edge recovers once onto content after the buffer grows', () => podExtentEdgeArm(SOURCE, checkRecord));
+
+  async function refusedPodExtentSeekArm(src, record = strictRecord) {
+    const page = makePage(src);
+    setNative(page, { ct: 0, edge: 14, bufferedEnd: 14 });
+    await pod(page, { pos: 35.6, lat: 5.9 });
+    page.stats().adTestClock({ holdAgeMs: 14300 });
+    const seeks = trackSeeks(page);
+    page.bypass({ type: 'ad-end' });
+    await settle(80);
+    const skips = page.logsOf('native-seek-skipped').filter((l) => l.d.why === 'inside-pod');
+    const evidence = JSON.stringify({
+      skips: page.logsOf('native-seek-skipped').map((l) => l.d),
+      seeks,
+      ct: page.video.currentTime,
+      recover: page.logsOf('native-edge-recover').map((l) => l.d),
+    });
+    record('a refused pod-extent seek names from, to, buffered and why',
+      skips.length === 1 && typeof skips[0].d.from === 'number'
+        && typeof skips[0].d.to === 'number' && typeof skips[0].d.buffered === 'number'
+        && skips[0].d.why === 'inside-pod'
+        && Math.abs(skips[0].d.from) < 0.2 && Math.abs(skips[0].d.to - 8.4) < 0.3
+        && Math.abs(skips[0].d.buffered - 14) < 0.2 && skips[0].d.rs === 4,
+      `the refusal was silent or unnamed: ${evidence}`);
+  }
+  const RED_REFUSAL = mutate([[
+    '            if (podExtentEdge && want <= se) {',
+    '            if (false && podExtentEdge && want <= se) {',
+  ]]);
+  await redArm('RED: a refused pod-extent seek is silent', RED_REFUSAL, (src) => refusedPodExtentSeekArm(src));
+  await greenArm('a refused pod-extent seek is logged with both numbers and a why', () => refusedPodExtentSeekArm(SOURCE, checkRecord));
+
+  await prewarmArms();
+
+  // ANTI-VACUITY. Every GREEN arm above prints its own label; one deleted or
+  // skipped without its label must fail the suite, not quietly shorten it.
+  const ARMS = [
+    'a fresh user play releases a playlist pod and is not re-paused',
+    'a user pause during the pod stays paused across all four hand-back retries',
+    'a real worker ad playlist posts ad-hold with evidence and a clean streak hands back',
+    'a cold-cover pod mounts its clean source and reveals it',
+    'a hold never reports its own pause as a native pause, even after a cold cover',
+    'an expired hold reveals the healthy mounted clean player',
+    'a decoding frame at hold 2.86 is revealed on progress, not buffer size',
+    'a worker-ready message re-asks once, then respects a held pod',
+    'a pod-end hand-back owns the element over a late hold expiry',
+    'a pod start is not throttled out of its mint',
+    'one progressing sample reveals, a stalled one does not',
+    'a pod-extent edge recovers once onto content after the buffer grows',
+    'a refused pod-extent seek is logged with both numbers and a why',
+    'a pre-warmed source is consumed by the first pod without a second mint',
+    'a failed pre-warm is not a precondition: the hold falls back to a mint and reveals',
+  ];
+  const printed = armLog.map((l) => String(l).trim());
+  const missing = ARMS.filter((a) => !printed.includes(a));
+  assert(missing.length === 0, `arms that never printed their PASS line: ${missing.join(', ')}`);
+  console.log(`ARMS ${ARMS.length - missing.length}/${ARMS.length} present`);
   const failed = checks.filter((c) => c.status === 'FAIL');
   console.log('');
   console.log(`RESULT ${failed.length ? 'FAIL' : 'PASS'} ad-time-continuity checks=${checks.length} failed=${failed.length}`);
