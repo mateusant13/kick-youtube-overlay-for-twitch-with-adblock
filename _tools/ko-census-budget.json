@@ -1,9 +1,9 @@
 {
-  "_comment": "Measured 2026-11-20 by `node _tools/ko-census.mjs --json` on build 0.8.107. The gate refuses growth of one class: a DECISION that returns with no row of its own. Every defect this project spent a wave on had that shape (adUiHoldTick bailing out silently while a 62.6 s ad played; three freeze defects behind a green suite). Not every silent exit is a defect - `nativeStallIdle()` is silent by design (nothing happened, so nothing to report) - which is why the tool reports and the budget rules. Counts are a CEILING: lower them as a silent guard gets its row or its arm; never raise one without a ruling in AGENTS.md naming which new silence is acceptable.",
+  "_comment": "Measured 2026-11-20 by `node _tools/ko-census.mjs --json` on build 0.8.107. The gate refuses growth of one class: a DECISION that returns with no row of its own. Every defect this project spent a wave on had that shape (adUiHoldTick bailing out silently while a 62.6 s ad played; three freeze defects behind a green suite). Not every silent exit is a defect - `nativeStallIdle()` is silent by design (nothing happened, so nothing to report) - which is why the tool reports and the budget rules. Counts are a CEILING: lower them as a silent guard gets its row or its arm; never raise one without a ruling in AGENTS.md naming which new silence is acceptable. Tightened to the measured count on 2026-11-26 (content.js 50->44, twitch-adblock.js 63->61, unexercisedState 39->30): a ceiling 6 above the real count accepts 6 new silences without a word, and `--budget-red 1` could only fire on a file whose cap was already below zero.",
   "guardShaped": {
-    "kick-overlay/content.js": 50,
-    "kick-overlay/twitch-adblock.js": 63,
+    "kick-overlay/content.js": 44,
+    "kick-overlay/twitch-adblock.js": 61,
     "kick-overlay/player-bridge.js": 0
   },
-  "unexercisedState": 39
+  "unexercisedState": 30
 }

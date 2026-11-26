@@ -38,7 +38,7 @@
         "_tools/ko-census.mjs"
       ],
       "blast_radius_callers": [],
-      "red_arm_cmd": "",
+      "red_arm_cmd": "node _tools/ko-census.mjs --gate --budget-red 1",
       "note": "MEASURED 383.19 ms warm / 621.24 ms cold at e66f551 (benchmark_history bench-reconcile-20261126T202925Z-final); the two gate readings were 621.24 ms first and 383.19 ms after (1.6x spread, under 4x); a separate probe measured 453.48 ms. Ceiling = 2000.0 ms, ~5.2x the warm after value: this is the per-edit instrument for silent decisions, so it must stay interactive."
     },
     {

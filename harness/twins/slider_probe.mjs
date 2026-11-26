@@ -134,7 +134,27 @@ const cachedValue = (key) => cache.values[key];
 // FAIL in 1.2 s warm). A child that still starves reports its own timeout.
 const getGitLog = () => once('gitLog', () => run('git', ['log', '-n12', '--name-only', '--format=%x00%H'], 8000));
 const getCensus = () => once('census', () => run('node', ['_tools/ko-census.mjs', '--json'], 12000));
-const getFast = () => once('fast', () => runShell(EDIT_LOOP, 14000));
+const getFast = () => once('fast', () => fastLoop());
+
+// The inner loop is a WALL measurement on a box other lanes share. A single
+// sample under contention measured 14 018 ms and scored 0 for two suites that
+// take ~6.4 s together (benchmark_history `after`, direct instrument 467 ms +
+// 5 963 ms), which is the queue printed as a product defect. Best-of-three is
+// the estimator (same rule as `benchmark_history --samples 3` and the friction
+// row's min-of-4); the per-sample cap is the sum of the two suites' own budget
+// ceilings, so a cap can never fire before a ceiling the project already
+// accepted.
+const FAST_SAMPLES = 3;
+const FAST_CAP_MS = 75000;
+async function fastLoop() {
+  const samples = [];
+  for (let i = 0; i < FAST_SAMPLES; i += 1) {
+    const r = await runShell(EDIT_LOOP, FAST_CAP_MS);
+    samples.push(r);
+  }
+  const best = samples.reduce((a, b) => ((b.rc === 0 && !b.timedOut) && (!(a.rc === 0 && !a.timedOut) || b.ms < a.ms) ? b : a), samples[0]);
+  return { ...best, samples: samples.map((s) => round(s.ms, 1)), sampleCount: samples.length };
+}
 const getGate = () => once('gate', () => run('python', [FEATURE_SYNC, '--repo', '.', '--gate'], 14000));
 const getReplay = () => once('replay', () => run('node', ['harness/twins/replay.mjs', '--all', '--json'], 12000));
 const getHelp = (sub) => once(`help:${sub || 'top'}`, () => run('python', sub ? [GIT_CHECKPOINT, sub, '--help'] : [GIT_CHECKPOINT, '--help'], 12000));
@@ -185,7 +205,8 @@ function innerLoopSpeed(result) {
   const seconds = result.ms / 1000;
   const score = result.rc === 0 && !result.timedOut ? 100 * (1 - seconds / 15) : 0;
   const detail = result.rc === 0 && !result.timedOut ? '' : flat(result.stderr || result.stdout).slice(0, 120);
-  return measured(score, `rc=${result.rc} wall=${round(result.ms, 1)}ms${result.timedOut ? ' TIMEOUT' : ''}${detail ? ` tail=${detail}` : ''}`, EDIT_LOOP);
+  const spread = Array.isArray(result.samples) ? ` samples=[${result.samples.join(', ')}]ms best-of-${result.sampleCount}` : '';
+  return measured(score, `rc=${result.rc} wall=${round(result.ms, 1)}ms${spread}${result.timedOut ? ' TIMEOUT' : ''}${detail ? ` tail=${detail}` : ''}`, EDIT_LOOP);
 }
 
 function architectureCoherence(result) {

@@ -240,6 +240,20 @@ if (gate) {
     console.error(`NO BUDGET at ${budgetPath}: write it with the measured counts before this gate can pass.`);
     process.exit(1);
   }
+  // `--budget-red N` lowers every cap by N so the gate MUST refuse. It is the
+  // falsifier behind the budget's `red_arm_cmd`: a comparison that cannot fail
+  // is a green light with no wire in it.
+  const redArg = process.argv.indexOf('--budget-red');
+  if (redArg !== -1) {
+    const drop = Number(process.argv[redArg + 1] || 1);
+    for (const key of Object.keys(budget.guardShaped || {})) {
+      const cap = budget.guardShaped[key] || 0;
+      // A cap already at zero is not lowered: `0 > -1` would report a refusal
+      // for a file that has nothing to refuse, which reads as a passing arm.
+      budget.guardShaped[key] = cap > 0 ? cap - drop : cap;
+    }
+    if (budget.unexercisedState != null) budget.unexercisedState -= drop;
+  }
   const problems = [];
   for (const f of files) {
     const cap = budget.guardShaped && budget.guardShaped[f.file];

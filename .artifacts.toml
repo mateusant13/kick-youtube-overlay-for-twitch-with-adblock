@@ -1,0 +1,35 @@
+# Every directory a tool in this repo writes and never reads back declares
+# itself here: root, producer, kind, cap and retention. The project's census
+# (AGENTS.md "Disk: this project measures its own bytes") names the same three
+# stores with --own; this file is the machine-readable form of that statement.
+#
+# Measured 2026-11-26 with `python I:/!watcher/tools/artifact-manifest.py
+# --project .`: ko-harness 945 MiB (profile 326 MiB + manual 381 MiB are live
+# defaults, one timestamped dir is the deliberate previous-run retention),
+# ko-replica holds certs + two generated media programs + one profile per run,
+# ko-scratch is suite output and probe dumps.
+
+[[family]]
+name = "guest-chrome-profiles"
+roots = ["G:/Temp/ko-harness*"]
+producer = "_tools/ko-guest.mjs:pruneProfiles(keep=1) + _tools/ko-harness.mjs:start --fresh"
+kind = "external"
+cap_gib = 2.0
+keep_newest = 2
+
+[[family]]
+name = "offline-replica-store"
+roots = ["G:/Temp/ko-replica*"]
+producer = "_tools/ko-replica/run.mjs (certs, generated media programs, one profile per run)"
+kind = "external"
+cap_gib = 1.5
+keep_days = 14
+
+[[family]]
+name = "scratch-and-suite-output"
+roots = ["G:/Temp/ko-scratch*"]
+producer = "every probe/suite run that redirects output (never on I:, the SMR spindle)"
+kind = "reclaimable"
+cap_gib = 0.5
+keep_newest = 40
+min_age_min = 30

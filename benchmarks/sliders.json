@@ -1,86 +1,86 @@
 {
   "schema": "revival.sliders/v1",
-  "updated_at": "2026-11-26T20:53:48.863Z",
+  "updated_at": "2026-11-26T23:44:31Z",
   "scale_0_100": [
     {
       "id": "delivery_balance",
       "label": "Delivery Balance (Product vs Meta)",
       "baseline": 92,
-      "current": 92,
+      "current": 58.0,
       "target": 85,
       "counterpart": "Gate rigor & hygiene",
       "proof_cmd": "node harness/twins/slider_probe.mjs delivery_balance",
-      "evidence": "MEASURED 92/100 = 100 * product / total over the newest 12 commits: product=11, meta=1, other=0 of total=12 (`git log -n12 --name-only --format=%x00%H`, 2026-11-26T20:53:48Z, tree fbede7d). product = a commit touching kick-overlay/, _tools/, harness/ or benchmarks/; meta = docs/revival/only. Underlying command: git log -n12 --name-only --format=%x00%H"
+      "evidence": "MEASURED 2026-11-26T23:4xZ by node harness/twins/slider_probe.mjs --all --json on git 9fe2352 (build 0.8.129), box BUSY total=64 busiest=100 pinned=8: delivery_balance 58 = 100*product(7)/total(12) of the newest 12 commits; observability 11 = named 75 / exits 654 (census guardShaped=105); inner_loop_speed 48 = 100*(1-7.729/15) on min-of-3 samples [7728.9, 17943.9, 26660.2] ms -- the spread is foreign load, not the suite; architecture_coherence 100 = feature_map_sync --gate PASS unmapped 0/137; metric_gate_coverage 100 = 7/7 metrics carry ceiling+red_arm_cmd+history-in-24h after basic.census_ms got its --budget-red arm; harness_falsifiers 96 = 24/25 qualified angles across 5 families; reversibility_safety 100 = git_checkpoint wt-new/wt-land/rollback all present; autonomy_end_to_end 100 = all 4 friction rows VERIFIED by loop_friction_audit --gate (rc 0)."
     },
     {
       "id": "observability",
       "label": "Observability & Runtime Forensics",
       "baseline": 10,
-      "current": 10,
+      "current": 11.0,
       "target": 90,
       "counterpart": "Runtime overhead (<2%)",
       "proof_cmd": "node harness/twins/slider_probe.mjs observability",
-      "evidence": "MEASURED 10/100 = 100 * named / exits: named=63 of exits=650 decisions log their own row (guardShaped=109 of those are silent exits inside a function that logs elsewhere). The red is the number: 90 of every 100 decision points in content.js, twitch-adblock.js and player-bridge.js still refuse without a row, so a report about them can only be answered by reading the source. Underlying: node _tools/ko-census.mjs --json"
+      "evidence": "MEASURED 2026-11-26T23:4xZ by node harness/twins/slider_probe.mjs --all --json on git 9fe2352 (build 0.8.129), box BUSY total=64 busiest=100 pinned=8: delivery_balance 58 = 100*product(7)/total(12) of the newest 12 commits; observability 11 = named 75 / exits 654 (census guardShaped=105); inner_loop_speed 48 = 100*(1-7.729/15) on min-of-3 samples [7728.9, 17943.9, 26660.2] ms -- the spread is foreign load, not the suite; architecture_coherence 100 = feature_map_sync --gate PASS unmapped 0/137; metric_gate_coverage 100 = 7/7 metrics carry ceiling+red_arm_cmd+history-in-24h after basic.census_ms got its --budget-red arm; harness_falsifiers 96 = 24/25 qualified angles across 5 families; reversibility_safety 100 = git_checkpoint wt-new/wt-land/rollback all present; autonomy_end_to_end 100 = all 4 friction rows VERIFIED by loop_friction_audit --gate (rc 0)."
     },
     {
       "id": "inner_loop_speed",
       "label": "Agentic Inner-Loop Speed (<15s + Offline Twins)",
       "baseline": 45,
-      "current": 45,
+      "current": 48.0,
       "target": 90,
       "counterpart": "Live calibration freshness",
       "proof_cmd": "node harness/twins/slider_probe.mjs inner_loop_speed",
-      "evidence": "MEASURED 45/100 = round(100 * (1 - t/15)) with t=8.281 s: the per-edit loop of record (`node kick-overlay/mute-decision-test.cjs && node kick-overlay/ad-time-continuity-test.cjs`, the same command revival/FRICTION.json names for friction.inner_test_loop) exited 0 in 8 281 ms of the 15 s budget, checks=95 + 193. Four readings today, same tree and same command: 10 323 ms cold, 6 980 ms warm, 11 393 ms under three concurrent lanes (score 24), 8 281 ms on the next quiet run, so this row quotes the proof run behind `proof_cmd` and the score moves 24-53 with the queue rather than with the code. Below target on purpose: 90 needs <=1.5 s, which only an incremental or cached suite reaches. Underlying: node kick-overlay/mute-decision-test.cjs && node kick-overlay/ad-time-continuity-test.cjs"
+      "evidence": "MEASURED 2026-11-26T23:4xZ by node harness/twins/slider_probe.mjs --all --json on git 9fe2352 (build 0.8.129), box BUSY total=64 busiest=100 pinned=8: delivery_balance 58 = 100*product(7)/total(12) of the newest 12 commits; observability 11 = named 75 / exits 654 (census guardShaped=105); inner_loop_speed 48 = 100*(1-7.729/15) on min-of-3 samples [7728.9, 17943.9, 26660.2] ms -- the spread is foreign load, not the suite; architecture_coherence 100 = feature_map_sync --gate PASS unmapped 0/137; metric_gate_coverage 100 = 7/7 metrics carry ceiling+red_arm_cmd+history-in-24h after basic.census_ms got its --budget-red arm; harness_falsifiers 96 = 24/25 qualified angles across 5 families; reversibility_safety 100 = git_checkpoint wt-new/wt-land/rollback all present; autonomy_end_to_end 100 = all 4 friction rows VERIFIED by loop_friction_audit --gate (rc 0)."
     },
     {
       "id": "architecture_coherence",
       "label": "Architecture & Contradiction Elimination",
       "baseline": 99,
-      "current": 99,
+      "current": 100.0,
       "target": 85,
       "counterpart": "Migration blast radius",
       "proof_cmd": "node harness/twins/slider_probe.mjs architecture_coherence",
-      "evidence": "MEASURED 99/100 = 100 * (1 - unmapped/tracked): feature_map_sync.py --repo . --gate reports verdict FAIL with unmapped=1 of tracked=136 (`kick-overlay/audio-authority-test.cjs` has no row in features/features.json). The score stays high because one file is one of 136, and the FAIL is kept in the evidence instead of being averaged away: a gate that refuses is not an architecture pass. Underlying: python C:/Users/Administrador/.agents/skills/project-revival/scripts/feature_map_sync.py --repo . --gate"
+      "evidence": "MEASURED 2026-11-26T23:4xZ by node harness/twins/slider_probe.mjs --all --json on git 9fe2352 (build 0.8.129), box BUSY total=64 busiest=100 pinned=8: delivery_balance 58 = 100*product(7)/total(12) of the newest 12 commits; observability 11 = named 75 / exits 654 (census guardShaped=105); inner_loop_speed 48 = 100*(1-7.729/15) on min-of-3 samples [7728.9, 17943.9, 26660.2] ms -- the spread is foreign load, not the suite; architecture_coherence 100 = feature_map_sync --gate PASS unmapped 0/137; metric_gate_coverage 100 = 7/7 metrics carry ceiling+red_arm_cmd+history-in-24h after basic.census_ms got its --budget-red arm; harness_falsifiers 96 = 24/25 qualified angles across 5 families; reversibility_safety 100 = git_checkpoint wt-new/wt-land/rollback all present; autonomy_end_to_end 100 = all 4 friction rows VERIFIED by loop_friction_audit --gate (rc 0)."
     },
     {
       "id": "metric_gate_coverage",
       "label": "Per-I/O Metric Budgets & Blast-Radius Gates",
       "baseline": 71,
-      "current": 71,
+      "current": 100.0,
       "target": 90,
       "counterpart": "Gate wall time (<60s)",
       "proof_cmd": "node harness/twins/slider_probe.mjs metric_gate_coverage",
-      "evidence": "MEASURED 71/100 = 100 * qualified / total over benchmarks/budgets.json joined to benchmarks/history.jsonl: qualified=5/7. YES for basic.syntax_check_ms, basic.import_or_boot_ms, subsystem.bridge_handshake_ms, subsystem.mute_decision_ms, subsystem.ad_time_continuity_ms. NO for basic.census_ms (ceiling and history row exist, red_arm_cmd is empty) and e2e.gate_wall_ms (no history row in the last 24 h). Underlying: read benchmarks/budgets.json + benchmarks/history.jsonl"
+      "evidence": "MEASURED 2026-11-26T23:4xZ by node harness/twins/slider_probe.mjs --all --json on git 9fe2352 (build 0.8.129), box BUSY total=64 busiest=100 pinned=8: delivery_balance 58 = 100*product(7)/total(12) of the newest 12 commits; observability 11 = named 75 / exits 654 (census guardShaped=105); inner_loop_speed 48 = 100*(1-7.729/15) on min-of-3 samples [7728.9, 17943.9, 26660.2] ms -- the spread is foreign load, not the suite; architecture_coherence 100 = feature_map_sync --gate PASS unmapped 0/137; metric_gate_coverage 100 = 7/7 metrics carry ceiling+red_arm_cmd+history-in-24h after basic.census_ms got its --budget-red arm; harness_falsifiers 96 = 24/25 qualified angles across 5 families; reversibility_safety 100 = git_checkpoint wt-new/wt-land/rollback all present; autonomy_end_to_end 100 = all 4 friction rows VERIFIED by loop_friction_audit --gate (rc 0)."
     },
     {
       "id": "harness_falsifiers",
       "label": "Feature x Angle Harness Falsifiers (with RED arms)",
       "baseline": 96,
-      "current": 96,
+      "current": 96.0,
       "target": 85,
       "counterpart": "Maintenance burden",
       "proof_cmd": "node harness/twins/slider_probe.mjs harness_falsifiers",
-      "evidence": "MEASURED 96/100 = 100 * qualified / rows over harness/angles.tsv: qualified=24 of 25 feature x angle rows carry a non-empty negative arm whose target exists on disk, across 5 families. Dropped: `ad-path/no ad for a whole page load` (its `neg` cell or its command target does not resolve). The probe's own falsifier: blanking one `neg` cell in a temporary copy of the TSV drops the score 96 -> 92 and restoring it returns 96. Underlying: read harness/angles.tsv"
+      "evidence": "MEASURED 2026-11-26T23:4xZ by node harness/twins/slider_probe.mjs --all --json on git 9fe2352 (build 0.8.129), box BUSY total=64 busiest=100 pinned=8: delivery_balance 58 = 100*product(7)/total(12) of the newest 12 commits; observability 11 = named 75 / exits 654 (census guardShaped=105); inner_loop_speed 48 = 100*(1-7.729/15) on min-of-3 samples [7728.9, 17943.9, 26660.2] ms -- the spread is foreign load, not the suite; architecture_coherence 100 = feature_map_sync --gate PASS unmapped 0/137; metric_gate_coverage 100 = 7/7 metrics carry ceiling+red_arm_cmd+history-in-24h after basic.census_ms got its --budget-red arm; harness_falsifiers 96 = 24/25 qualified angles across 5 families; reversibility_safety 100 = git_checkpoint wt-new/wt-land/rollback all present; autonomy_end_to_end 100 = all 4 friction rows VERIFIED by loop_friction_audit --gate (rc 0)."
     },
     {
       "id": "reversibility_safety",
       "label": "Reversibility (Git Checkpoints + Worktrees + Rollback)",
       "baseline": 100,
-      "current": 100,
+      "current": 100.0,
       "target": 95,
       "counterpart": "Staging step friction",
       "proof_cmd": "node harness/twins/slider_probe.mjs reversibility_safety",
-      "evidence": "MEASURED 100/100 = 25 * met of 4 binary capabilities, read from the tools themselves: a parseable row in revival/checkpoints.jsonl (1), `git_checkpoint.py wt-new`, `wt-land --receipt --gate-cmd`, and `rollback --confirm` each present in the tool's own `--help`. Underlying: python C:/Users/Administrador/.agents/skills/project-revival/scripts/git_checkpoint.py --help"
+      "evidence": "MEASURED 2026-11-26T23:4xZ by node harness/twins/slider_probe.mjs --all --json on git 9fe2352 (build 0.8.129), box BUSY total=64 busiest=100 pinned=8: delivery_balance 58 = 100*product(7)/total(12) of the newest 12 commits; observability 11 = named 75 / exits 654 (census guardShaped=105); inner_loop_speed 48 = 100*(1-7.729/15) on min-of-3 samples [7728.9, 17943.9, 26660.2] ms -- the spread is foreign load, not the suite; architecture_coherence 100 = feature_map_sync --gate PASS unmapped 0/137; metric_gate_coverage 100 = 7/7 metrics carry ceiling+red_arm_cmd+history-in-24h after basic.census_ms got its --budget-red arm; harness_falsifiers 96 = 24/25 qualified angles across 5 families; reversibility_safety 100 = git_checkpoint wt-new/wt-land/rollback all present; autonomy_end_to_end 100 = all 4 friction rows VERIFIED by loop_friction_audit --gate (rc 0)."
     },
     {
       "id": "autonomy_end_to_end",
       "label": "Zero-Owner-Dependency Autonomy",
       "baseline": 100,
-      "current": 100,
+      "current": 100.0,
       "target": 95,
       "counterpart": "Safety boundary discipline",
       "proof_cmd": "node harness/twins/slider_probe.mjs autonomy_end_to_end",
-      "evidence": "MEASURED 100/100 = 100 * qualified / total over revival/FRICTION.json: 4 of 4 rows carry a non-empty verify_cmd and status VERIFIED (friction.youtube_live_dep, browser_live_wait, twitch_live_dep, inner_test_loop). The row proves the commands exist and passed the last `loop_friction_audit.py measure --gate`; it does not prove each command is meaningful, which is what harness_falsifiers and the twin graders cover. Underlying: read revival/FRICTION.json"
+      "evidence": "MEASURED 2026-11-26T23:4xZ by node harness/twins/slider_probe.mjs --all --json on git 9fe2352 (build 0.8.129), box BUSY total=64 busiest=100 pinned=8: delivery_balance 58 = 100*product(7)/total(12) of the newest 12 commits; observability 11 = named 75 / exits 654 (census guardShaped=105); inner_loop_speed 48 = 100*(1-7.729/15) on min-of-3 samples [7728.9, 17943.9, 26660.2] ms -- the spread is foreign load, not the suite; architecture_coherence 100 = feature_map_sync --gate PASS unmapped 0/137; metric_gate_coverage 100 = 7/7 metrics carry ceiling+red_arm_cmd+history-in-24h after basic.census_ms got its --budget-red arm; harness_falsifiers 96 = 24/25 qualified angles across 5 families; reversibility_safety 100 = git_checkpoint wt-new/wt-land/rollback all present; autonomy_end_to_end 100 = all 4 friction rows VERIFIED by loop_friction_audit --gate (rc 0)."
     }
   ],
   "natural_unit_pairs": [

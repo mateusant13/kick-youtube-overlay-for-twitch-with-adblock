@@ -1,0 +1,37 @@
+[gate]
+version = 1
+
+[tiers]
+t0_s = 5
+t1_s = 30
+t2_s = 90
+t3_s = 30
+
+[paths]
+# Prefixes whose modification the declared intent must name, or the gate
+# answers UNDECLARED-BOUNDARY (4). `tests/` and `.codeintel/laws.json` are
+# always boundaries; list the project's own sensitive trees here, e.g.
+# high_risk = ["auth", "billing", "migrations"]
+high_risk = []
+
+[twin]
+enabled = false
+captures_dir = ".codeintel/captures"
+calibration_max_age_days = 14
+
+[judge]
+mode = "shadow"
+provider_cmd = ""
+
+[commands]
+# t1: each of these opens the index store, so each is opt-in here. An empty
+# value is published as `skipped: not-configured`, never as a green.
+health_changed = ""
+health_blast_radius = ""
+changed_context = ""
+verify_names = ""
+test_impacted = ""
+# t2
+artifact_gate = ""
+smoke_paired = ""
+audit_anticheat = ""

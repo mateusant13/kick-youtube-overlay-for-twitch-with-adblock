@@ -1,0 +1,6 @@
+#!/bin/sh
+# codeintel quality gate, tier t1 (budget 30 s; measured 6.5 s PASS on 0.8.129).
+# Fail-open ONLY outside a bootstrapped checkout: a worktree without gate.toml
+# cannot be measured, and it says so instead of looking like a pass.
+[ -f gate.toml ] || { echo "codeintel gate: no gate.toml in this checkout, skipped"; exit 0; }
+exec python -m codeintel gate --tier t1
