@@ -1,0 +1,25 @@
+{
+  "name": "dev-reload-preroll-late",
+  "split": "dev",
+  "channel": "replicach",
+  "durationMs": 30000,
+  "tailMs": 0,
+  "reload": { "everyMs": 4000, "forMs": 22000 },
+  "events": [
+    { "at": 3000, "kind": "preroll", "ms": 14000, "ui": "wrapper" }
+  ],
+  "samples": [
+    { "at": 6000, "pixel": true },
+    { "at": 12000, "pixel": true },
+    { "at": 20000, "pixel": true }
+  ],
+  "expect": [
+    { "type": "row", "ev": "worker-playlist", "min": 1 },
+    { "type": "row", "ev": "ad-ui-hold", "min": 1 },
+    { "type": "row", "ev": "overlay-reveal", "min": 1 },
+    { "type": "within", "from": "ad-ui-hold", "to": "overlay-reveal", "maxMs": 8000 },
+    { "type": "pixelNotBlue", "at": 6000 },
+    { "type": "pixelNotBlue", "at": 12000 }
+  ],
+  "note": "The 0.8.115 chain, offline: an ad that is NOT the page's first program. His ring (2026-11-24/25) had ad-hold at 9487 ms, overlay-reveal at 20541 ms (11.0 s, 360p) and a hand-back at 55784 ms with no seek, i.e. the player spent ten seconds behind the pod that was supposed to cover it. This file injects the ad at 3000 ms and reloads the page every 4 s for 22 s, so a pod has to survive (and re-arm after) a navigation that lands mid-break. The 8 s bound is a CEILING on the reveal lead time, measured against his 11.0 s, not a target: it fails if the reveal waits for a segment the way it did before the worker-playlist route. Reloads are the point of this scenario, so noReload is deliberately absent; the reload arm's own counters are printed by run.mjs (live/ad/load seconds per cycle) and are read from the console line, not asserted here."
+}

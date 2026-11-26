@@ -1,0 +1,34 @@
+{
+  "name": "dev-ring-buzzyi",
+  "split": "dev",
+  "channel": "replicach",
+  "durationMs": 78000,
+  "tailMs": 14000,
+  "events": [
+    { "at": 0, "kind": "preroll", "ms": 60000, "ui": "wrapper" }
+  ],
+  "samples": [
+    { "at": 2000, "pixel": true },
+    { "at": 4000, "pixel": true },
+    { "at": 9000, "pixel": true },
+    { "at": 15000, "pixel": true },
+    { "at": 30000, "pixel": true },
+    { "at": 62000, "pixel": true },
+    { "at": 70000, "pixel": true }
+  ],
+  "expect": [
+    { "type": "row", "ev": "worker-playlist", "min": 1 },
+    { "type": "row", "ev": "ad-ui-hold", "min": 1 },
+    { "type": "row", "ev": "standby-level", "min": 1 },
+    { "type": "row", "ev": "overlay-reveal", "min": 1 },
+    { "type": "within", "from": "ad-ui-hold", "to": "overlay-reveal", "maxMs": 6000 },
+    { "type": "pixelNotBlue", "at": 4000 },
+    { "type": "pixelNotBlue", "at": 9000 },
+    { "type": "pixelNotBlue", "at": 15000 },
+    { "type": "row", "ev": "native-handoff", "min": 1 },
+    { "type": "noReload" },
+    { "type": "pixelNotBlue", "at": 70000 },
+    { "type": "probe", "at": 70000, "path": "video.paused", "op": "eq", "value": false }
+  ],
+  "note": "The 2026-11-26 owner ring, reduced to the dimensions this replica owns. Measured there (0.8.116, buzzyi_, episode 2, 414 rows): user-resume at 7.6 s and 9.7 s with nobody at the keyboard, ad-ui-hold {act:'user-pause', pod:'hold', ct:3.4} at 12.4 s, native-handoff {resume:'NEVER', podAgeMs:192096, ct:12.7, buf:17.2, vis:false} at 3m16.7, then FROZEN 5m11.1 at pos 12.65 with ZERO native-stall rows in 1200 entries. What this file asserts offline: the pod starts on the first playlist, the hold to reveal lead time stays under 6 s (his was 11.0 s at 360p), the standby picks a rung and says which (standby-level), the hand-back happens, and the page plays afterwards. IT DOES NOT COVER the two fields that produced his freeze: there is no `scenario.hide` (visibility) capability, so `vis:false` cannot be reproduced here, and a pause the ad path itself stamps (selfPausedAt) is only reachable through the pod's own listener. A later lane that adds `scenario.hide` must add the alt-tab arm on top of this file instead of writing a second golden file. The 60 s event length is AD_POD_MAX_MS on purpose: it is the longest pod the extension allows to close itself, so pod-max is exercised rather than a short break."
+}
