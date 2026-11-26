@@ -456,6 +456,23 @@
   // :5253); past 12 s a page-load warm is a failure, not a pending source.
   const STANDBY_PREWARM_WAIT_MS = 12000;
   const standbyPrewarm = { kickAt: 0, at: 0, channel: null, url: null, pending: false };
+  // Forced asks that arrived while the page-load warm was still IN FLIGHT.
+  // MEASURED 2026-11-26 (replica `dev-preroll-hold`, ledger KO-20261126-06): the
+  // pod's forced asks fired at 284 and 303 ms while the warm resolved at 307 ms,
+  // so `consumeStandbyPrewarm()` saw an empty slot 5 ms early, minted a SECOND
+  // clean source, and every `standby-prewarm-used` row was absent. A parked ask
+  // is served by the resolve that is already on its way - no clock is added;
+  // the ONLY clock is the warm's own 12 s budget, and its timeout flushes the
+  // parked asks instead of dropping them.
+  const standbyPrewarmWaiters = [];
+  let standbyPrewarmWaitMs = STANDBY_PREWARM_WAIT_MS;
+  // How long a forced ask may ride a warm that has NOT resolved yet. MEASURED:
+  // the warm resolves in 193 ms (replica 1795670018437), and one mint/variant
+  // probe is bounded at 8-10 s, so a warm older than this is a failure in
+  // progress, not a source about to arrive: the pod mints its own source as it
+  // always did. Without this ceiling a stuck warm would hold a pod's only ask
+  // for the warm's full 12 s budget - seconds of ad, for an optimisation.
+  const STANDBY_PREWARM_PARK_MS = 1500;
   let standbyPrewarmTimer = 0;
   function prewarmResult(ok, why, ms) {
     adLog('standby-prewarm', { ok: !!ok, ms: Number.isFinite(ms) ? Math.round(ms) : null, why: String(why) });
@@ -468,13 +485,19 @@
     standbyPrewarmTimer = 0;
     const ch = String(msg.channel || '').toLowerCase();
     if (!msg.url || !ch || ch !== pageChannel().toLowerCase()) {
-      prewarmResult(false, !msg.url ? 'no-url' : 'channel-changed', ms);
-      return false;
+      return prewarmResult(false, !msg.url ? 'no-url' : 'channel-changed', ms);
     }
     standbyPrewarm.channel = ch;
     standbyPrewarm.url = String(msg.url);
     standbyPrewarm.at = Date.now();
     prewarmResult(true, 'resolved', ms);
+    // A parked ask waited for exactly this: hand it the source in the same
+    // task the source becomes usable, so the pod never mints a second one.
+    if (standbyPrewarmWaiters.length) {
+      const asks = standbyPrewarmWaiters.splice(0);
+      adLog('standby-prewarm-served', { asks: asks.map(String) });
+      consumeStandbyPrewarm();
+    }
     return true;
   }
   function consumeStandbyPrewarm() {
@@ -502,18 +525,26 @@
     return true;
   }
   function kickStandbyPrewarm() {
-    if (!isChannelPath() || !pageChannel()) {
-      prewarmResult(false, 'no-channel', 0);
-      return;
-    }
+    if (!isChannelPath() || !pageChannel()) return prewarmResult(false, 'no-channel', 0);
     standbyPrewarm.kickAt = Date.now();
     standbyPrewarm.pending = true;
     standbyPrewarmTimer = setTimeout(() => {
       standbyPrewarmTimer = 0;
-      if (!standbyPrewarm.pending) return;
-      standbyPrewarm.pending = false;
-      prewarmResult(false, 'timeout', Date.now() - standbyPrewarm.kickAt);
-    }, STANDBY_PREWARM_WAIT_MS);
+      // A resolve that already landed cleared `pending` AND this timer; a timer
+      // that still runs with `pending` false is either that cleared one or a
+      // replaced warm, and it must not write a timeout for a decided fate.
+      if (standbyPrewarm.pending) {
+        standbyPrewarm.pending = false;
+        prewarmResult(false, 'timeout', Date.now() - standbyPrewarm.kickAt);
+        // A parked ask must not be lost with the warm it was waiting for: it is
+        // re-issued through the ordinary door, once per distinct reason.
+        const asks = standbyPrewarmWaiters.splice(0);
+        if (asks.length) {
+          adLog('standby-prewarm-timeout-flush', { asks: asks.map(String) });
+          requestStandby(0, true, asks[0]);
+        }
+      }
+    }, standbyPrewarmWaitMs);
     requestStandby(0, false, 'prewarm');
   }
   function isChannelPath() {
@@ -537,7 +568,21 @@
     // A standby that keeps failing (offline channel, bad token) must not turn
     // into a mint/error loop. Normal requests still re-post immediately and
     // do not arm the cooldown, so recovery after an ad is not delayed.
-    if (force && consumeStandbyPrewarm()) return;
+    if (force) {
+      if (consumeStandbyPrewarm()) return;
+      // The warm is already in flight: minting now would run a second
+      // `findCleanHlsUrl` beside one that resolves in milliseconds and then
+      // throw the warm away. Park the ask; the resolve (or the warm's own
+      // timeout) serves it. A row per ask, keyed by reason, so the ring can
+      // tell a parked ask from an ask that never happened.
+      const warmAge = standbyPrewarm.kickAt ? Date.now() - standbyPrewarm.kickAt : Infinity;
+      if (standbyPrewarm.pending && warmAge <= STANDBY_PREWARM_PARK_MS) {
+        const ask = String(why || 'unspecified');
+        standbyPrewarmWaiters.push(ask);
+        adLog('standby-prewarm-wait', { ask, pendingMs: standbyPrewarm.kickAt ? Date.now() - standbyPrewarm.kickAt : null, parked: standbyPrewarmWaiters.length });
+        return;
+      }
+    }
     let bypassWhy = null;
     if (force) {
       const now = Date.now();
@@ -2234,6 +2279,15 @@
   stats.standbyBypass = () => ({ at: standbyBypassAt, pod: standbyBypassPod });
   stats.standbyPrewarm = () => Object.assign({}, standbyPrewarm);
   stats.ageStandbyPrewarm = (ms) => { if (standbyPrewarm.at) standbyPrewarm.at = Date.now() - ms; };
+  // The warm's budget is 12 s of wall clock - too long to drive in a suite. The
+  // seam shortens the SAME timer (it is not a second clock) so both outcomes of
+  // a parked ask (served by the resolve, flushed by the timeout) are reachable.
+  stats.setPrewarmWaitMs = (ms) => {
+    const n = Number(ms);
+    if (Number.isFinite(n) && n > 0) standbyPrewarmWaitMs = n;
+  };
+  stats.standbyPrewarmWaiters = () => standbyPrewarmWaiters.slice();
+  stats.ageStandbyPrewarmKick = (ms) => { if (standbyPrewarm.kickAt) standbyPrewarm.kickAt = Date.now() - ms; };
   stats.adUiHoldTick = adUiHoldTick;
   stats.adHoldWorthy = adHoldWorthy;
   stats.adUiHeldAt = () => adUiHeldAt;

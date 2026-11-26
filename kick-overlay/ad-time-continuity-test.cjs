@@ -294,11 +294,108 @@ async function prewarmArms() {
       `the consumed source did not reveal: ${JSON.stringify(page.logsOf('overlay-reveal'))}`);
   }
   const RED_CONSUME = mutate([[
-    '    if (force && consumeStandbyPrewarm()) return;',
-    '    if (false && consumeStandbyPrewarm()) return;',
+    '      if (consumeStandbyPrewarm()) return;',
+    '      if (false && consumeStandbyPrewarm()) return;',
   ]]);
   await redArm('RED: a pre-warmed source is re-minted inside the hold', RED_CONSUME, (src) => consumedPrewarmArm(src));
   await greenArm('a pre-warmed source is consumed by the first pod without a second mint', () => consumedPrewarmArm(SOURCE, checkRecord));
+
+  // The measured 5 ms race (KO-20261126-06): the pod's forced ask lands while
+  // the page-load warm is still in flight, so `consumeStandbyPrewarm()` sees an
+  // empty slot, mints a second clean source and throws the warm away.
+  async function parkedPrewarmArm(src, record = strictRecord) {
+    const page = makePage(src);
+    setNative(page, { ct: 0.4, edge: 16, bufferedEnd: 16 });
+    await settle(160); // the 150 ms warm is in flight and has not resolved
+    const pre = page.stats().standbyPrewarm();
+    record('a page-load warm is in flight when the pod asks',
+      pre.pending === true && !pre.url,
+      `the warm was not pending at the ask: ${JSON.stringify(pre)}`);
+    page.stats().adUiHold({ kind: 'wrapper', w: 1280, h: 720 });
+    await settle(15);
+    const wait = page.logsOf('standby-prewarm-wait');
+    const podsAsk = page.logsOf('standby-request').filter((l) => l.d.why === 'ad-ui-hold');
+    record('a forced ask parks on the in-flight warm instead of minting a second source',
+      wait.length === 1 && wait[0].d.ask === 'ad-ui-hold' && podsAsk.length === 0,
+      `the parked ask was silent or the pod minted anyway: ${JSON.stringify({
+        wait, asks: page.logsOf('standby-request'),
+      })}`);
+    page.bypass({ type: 'standby-start', url: WARM_URL, channel: 'rodil' });
+    await settle(20);
+    const served = page.logsOf('standby-prewarm-served');
+    const used = page.logsOf('standby-prewarm-used');
+    record('the resolve serves the parked ask in the same task it caches the source',
+      served.length === 1 && used.length === 1 && page.stats().standbyPrewarmWaiters().length === 0,
+      `the parked ask outlived its source: ${JSON.stringify({
+        served, used, parked: page.stats().standbyPrewarmWaiters(),
+      })}`);
+    page.bypass({ type: 'ad-hold' });
+    warmFrame(page);
+    await settle(25);
+    record('the served source reveals the pod that parked',
+      page.logsOf('overlay-reveal').length === 1,
+      `the parked pod never revealed: ${JSON.stringify(page.logsOf('overlay-reveal'))}`);
+  }
+  const RED_PARKED = mutate([[
+    "      if (standbyPrewarm.pending && warmAge <= STANDBY_PREWARM_PARK_MS) {\n        const ask = String(why || 'unspecified');",
+    "      if (false) {\n        const ask = String(why || 'unspecified');",
+  ]]);
+  await redArm('RED: a forced ask beside an in-flight warm mints a second source', RED_PARKED, (src) => parkedPrewarmArm(src));
+  await greenArm('a forced ask beside an in-flight warm parks and is served by the resolve', () => parkedPrewarmArm(SOURCE, checkRecord));
+
+  // The park has a ceiling: a warm that has been in flight longer than a mint
+  // would take is a failure in progress, and a pod must not wait seconds of ad
+  // for an optimisation. The pod mints its own source, exactly as before.
+  async function staleWarmArm(src, record = strictRecord) {
+    const page = makePage(src);
+    setNative(page, { ct: 0.4, edge: 16, bufferedEnd: 16 });
+    await settle(160);
+    page.stats().ageStandbyPrewarmKick(3000); // in flight, but far past a mint
+    page.stats().adUiHold({ kind: 'wrapper', w: 1280, h: 720 });
+    await settle(15);
+    const wait = page.logsOf('standby-prewarm-wait');
+    const podsAsk = page.logsOf('standby-request').filter((l) => l.d.why === 'ad-ui-hold');
+    record('a warm older than a mint never parks the pod: it mints its own source',
+      wait.length === 0 && podsAsk.length === 1 && page.stats().standbyPrewarmWaiters().length === 0,
+      `a stuck warm held the pod's only ask: ${JSON.stringify({
+        wait, asks: page.logsOf('standby-request'), parked: page.stats().standbyPrewarmWaiters(),
+      })}`);
+  }
+  const RED_STALE_WARM = mutate([[
+    '      if (standbyPrewarm.pending && warmAge <= STANDBY_PREWARM_PARK_MS) {',
+    '      if (standbyPrewarm.pending) {',
+  ]]);
+  await redArm('RED: without the ceiling a warm stuck in flight parks a pod for its whole budget', RED_STALE_WARM, (src) => staleWarmArm(src));
+  await greenArm('a warm stuck in flight past a mint does not park the pod', () => staleWarmArm(SOURCE, checkRecord));
+
+  // The warm's own budget is the only clock: when it expires, the parked ask
+  // must be re-issued through the ordinary door instead of dying with the warm.
+  async function parkedTimeoutArm(src, record = strictRecord) {
+    const page = makePage(src);
+    page.stats().setPrewarmWaitMs(60);
+    setNative(page, { ct: 0.4, edge: 16, bufferedEnd: 16 });
+    await settle(160);
+    page.stats().adUiHold({ kind: 'wrapper', w: 1280, h: 720 });
+    await settle(10);
+    const wait = page.logsOf('standby-prewarm-wait');
+    record('the parked ask is a row before its warm expires',
+      wait.length === 1 && wait[0].d.ask === 'ad-ui-hold',
+      `the parked ask was silent: ${JSON.stringify(page.logsOf('standby-prewarm-wait'))}`);
+    await settle(120); // the 60 ms budget started with the 150 ms kick
+    const flush = page.logsOf('standby-prewarm-timeout-flush');
+    const podsAsk = page.logsOf('standby-request').filter((l) => l.d.why === 'ad-ui-hold');
+    record('a warm that times out re-issues the parked ask through the ordinary door',
+      flush.length === 1 && flush[0].d.asks[0] === 'ad-ui-hold' && podsAsk.length === 1,
+      `the parked ask died with its warm: ${JSON.stringify({
+        flush, asks: page.logsOf('standby-request'), parked: page.stats().standbyPrewarmWaiters(),
+      })}`);
+  }
+  const RED_PARKED_TIMEOUT = mutate([[
+    "        const asks = standbyPrewarmWaiters.splice(0);\n        if (asks.length) {",
+    "        const asks = standbyPrewarmWaiters.splice(0);\n        if (false) {",
+  ]]);
+  await redArm('RED: without the flush a timed-out warm drops the ask that parked on it', RED_PARKED_TIMEOUT, (src) => parkedTimeoutArm(src));
+  await greenArm('a timed-out warm flushes its parked ask instead of dropping it', () => parkedTimeoutArm(SOURCE, checkRecord));
 
   async function fallbackPrewarmArm(src, record = strictRecord) {
     const page = makePage(src);
@@ -1662,7 +1759,11 @@ async function main() {
     // The cooldown's clause, exactly as shipped: refuse while a pod just ended
     // AND the page does not show a hold-worthy ad right now.
     check('the cooldown reads adHoldWorthy, not a bare adUiDetail()', () => {
-      const src = fs.readFileSync('twitch-adblock.js', 'utf8');
+      // Resolve from the suite's own directory: MEASURED 2026-11-26, this arm
+      // failed with `ENOENT .../kicktwitchyoutube_instagram/twitch-adblock.js`
+      // when the suite was started from the repo root, so it asserted on cwd
+      // instead of on the file it names.
+      const src = fs.readFileSync(path.join(__dirname, 'twitch-adblock.js'), 'utf8');
       // Find the clause by its CONDITION, not by the constant: the comment
       // above it is long enough to eat any fixed-size window.
       const at = src.indexOf('!adHoldWorthy(adUiDetail(), mainVideo())');
@@ -3186,6 +3287,9 @@ async function main() {
     'a refused pod-extent seek is logged with both numbers and a why',
     'a pod-end landing is one seek, at the end of the pod media the element holds',
     'a pre-warmed source is consumed by the first pod without a second mint',
+    'a forced ask beside an in-flight warm parks and is served by the resolve',
+    'a warm stuck in flight past a mint does not park the pod',
+    'a timed-out warm flushes its parked ask instead of dropping it',
     'a failed pre-warm is not a precondition: the hold falls back to a mint and reveals',
   ];
   const printed = armLog.map((l) => String(l).trim());

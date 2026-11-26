@@ -1442,6 +1442,24 @@
     "`grep -rn 'page-playlist|fetch-playlist' kick-overlay/*.js` -> no hits, so the ring cannot answer the page side"
    ],
    "next": "A replica run WITH `--capture-out` is needed for a full capture-vs-capture pair; every remaining CANNOT-MEASURE there is a missing population (no ad in the window), not a refusal."
+  },
+  {
+   "id": "KO-20261126-10",
+   "title": "A forced clean-source ask minted a SECOND source while the page-load warm was 5 ms from resolving",
+   "state": "fixed",
+   "author": "seat",
+   "reported": "2026-11-26",
+   "fixed_in": "0.8.120",
+   "commit": null,
+   "hypothesis": "`requestStandby`'s forced door began with `if (force && consumeStandbyPrewarm()) return;`, and `consumeStandbyPrewarm()` answers `unavailable` whenever the page-load warm has not RESOLVED yet, so an ask that arrived while the warm was in flight fell through to a full `findCleanHlsUrl` mint beside it and then discarded the warm. MEASURED in the replica on 0.8.118 (dev-preroll-hold 1795670018437): `standby-prewarm {ok:true,ms:193}` at 307 ms while the pod's forced asks were `cold-start` at 284 ms and `worker-playlist` at 303 ms, and the whole run had ZERO `standby-prewarm-used` rows - the warm was carried by the worker's own copy, not by this cache.",
+   "falsifier": "`ad-time-continuity --prewarm-only` arms 'a forced ask beside an in-flight warm parks and is served by the resolve' (one `standby-prewarm-wait {ask:'ad-ui-hold'}`, zero `standby-request {why:'ad-ui-hold'}`, then `standby-prewarm-served` + `standby-prewarm-used` on the resolve, and the pod still reveals) and 'a timed-out warm flushes its parked ask instead of dropping it' (`standby-prewarm-timeout-flush` then exactly one `standby-request {why:'ad-ui-hold'}`). REDs restore the unguarded door (the pod mints `ad-ui-hold`, no wait row) and the flush removal (the parked ask dies with its warm, only the page's own `cold-start` mint remains).",
+   "evidence": [
+    "`node kick-overlay/ad-time-continuity-test.cjs --prewarm-only` -> `RESULT PASS ad-time-continuity prewarm-only checks=21 failed=0`",
+    "RED 'a forced ask beside an in-flight warm mints a second source' -> `wait:[] asks:[prewarm, ad-ui-hold]` (the pre-fix double mint)",
+    "RED 'without the flush a timed-out warm drops the ask that parked on it' -> `flush:[] asks:[prewarm, cold-start]` (the parked ask lost)",
+    "the arm's own gate: no timer was added; the ONLY clock is the warm's existing 12 s budget, shortened for the arm through `stats.setPrewarmWaitMs`"
+   ],
+   "next": "A replica `dev-preroll-hold` run on 0.8.120 must show `standby-prewarm-used` (the row this build exists to produce) and no `standby-request {why:'ad-ui-hold'|'cold-start'}` in the same window."
   }
  ]
 }
