@@ -120,6 +120,12 @@ Cap: one visible pane per canonical project across workspaces/worktrees. The pan
 - Install/update: `_tools\ko-auto-install.cmd` (debug profile `C:\ChromeDebugProfile`).
 - Stage files and reload without a window: `node _tools\ko-reload-persistent.mjs --port=9222`. It prints `loaded`, `expected` and `after`; `after` must equal the manifest version. It compares VERSIONS only, so a rebuilt folder that keeps its version reads as current: for the byte-level answer use the shared `chrome-unpacked-extension-deploy` skill (`node <skill>/scripts/deploy.mjs status|reload --port 9222 --dir "<installed copy>"`), which reports `changed-since-last-load` and the loaded path.
 - Reload the content script of an open tab with `_tools\ko-cdp.mjs` + `Page.reload`. A page reload can trigger a Twitch preroll.
+- **The instruments this project runs live OUTSIDE it.** `project-revival/scripts/*.py` (recorder, map
+  sync, blast-radius, sliders) is a shared, untracked tree; a repo-scoped `rg`/`fd`/`git ls-files` cannot
+  prove one of those files absent, and reporting its rc 1 as "not emitted anywhere" cost a seat lane two
+  withdrawn findings on 2026-11-27. Scope the search to the tree that owns the file, and after editing one
+  of them regenerate the artifact from a cleared `__pycache__` and diff, because a stale byte is
+  indistinguishable from a generator that never changed.
 - **The SIM recorder is not in this repo.** `revival/sim.jsonl` is written by the *shared* script
   `C:/Users/Administrador/.agents/skills/project-revival/scripts/sim_memory.py` (`predict` before the
   eval, `observe` after), invoked by `.git/hooks/pre-commit` through that absolute path; `fd` and
