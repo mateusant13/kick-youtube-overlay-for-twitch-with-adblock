@@ -34,9 +34,9 @@ class CDP {
   on(method, cb) { if (!this.handlers.has(method)) this.handlers.set(method, []); this.handlers.get(method).push(cb); }
 }
 
-const version = await (await fetch(`http://127.0.0.1:${PORT}/json/version`)).json();
+const version = await (await fetch(`http://127.0.0.1:${PORT}/json/version`, { signal: AbortSignal.timeout(3000) })).json();
 const cdp = new CDP(version.webSocketDebuggerUrl);
-const pages = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
+const pages = await (await fetch(`http://127.0.0.1:${PORT}/json/list`, { signal: AbortSignal.timeout(3000) })).json();
 const page = pages.find(t => t.type === 'page' && urlRe.test(t.url || ''));
 if (!page) { console.error('page not found; pages:', pages.map(p => p.url)); process.exit(1); }
 const { sessionId } = await cdp.send('Target.attachToTarget', { targetId: page.id, flatten: true });

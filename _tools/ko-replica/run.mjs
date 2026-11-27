@@ -308,7 +308,7 @@ function killOurGuest() {
   const pid = m && m.pid ? Number(m.pid) : null;
   if (pid) {
     if (ownsProfile(pid, m.udd)) {
-      try { spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); } catch { /* gone */ }
+      try { spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { timeout: 20000, killSignal: 'SIGKILL', stdio: 'ignore', windowsHide: true }); } catch { /* gone */ }
     } else {
       evidence.notes.push(`refused to kill pid ${pid}: its own command line does not carry this run's profile ${m.udd}`);
     }
@@ -966,7 +966,7 @@ if (!NO_EXT && (E('handback-wait').length || E('handback-ready').length)) {
     const rs = near && near.probe && near.probe.video ? near.probe.video.rs : null;
     console.log(`NATIVE-AT-POD-END extension handback-wait.rs=${w.d && w.d.rs} at=${w.t}; CDP probe@${near && near.at}ms video.rs=${rs}`);
   }
-  const srv = await evaluate('fetch("/__ko/state").then((r) => r.json())');
+  const srv = await evaluate('fetch("/__ko/state", { signal: AbortSignal.timeout(5000) }).then((r) => r.json())');
   if (srv && !srv.error) console.log(`STALL withheld native=${srv.stallNative} clean=${srv.stallClean}`);
 }
 

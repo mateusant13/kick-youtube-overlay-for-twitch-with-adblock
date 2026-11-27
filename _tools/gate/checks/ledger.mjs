@@ -99,7 +99,7 @@ export const ledgerChecks = [
           ctx.assert(body.trim().toLowerCase() !== 'missing', `${bug.id}: ${rel} contains only "missing"`);
         }
       }
-      const history = spawnSync('git', ['-C', ctx.ROOT, 'log', '-p', '--', 'kick-overlay/manifest.json'], {
+      const history = spawnSync('git', ['-C', ctx.ROOT, 'log', '-p', '--', 'kick-overlay/manifest.json'], { timeout: 120000, killSignal: 'SIGKILL',
         encoding: 'utf8',
         maxBuffer: 8 * 1024 * 1024,
       });

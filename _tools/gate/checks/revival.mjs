@@ -23,7 +23,7 @@ function revivalScript(ctx, name) {
 }
 
 function runRevival(ctx, name, args) {
-  const r = spawnSync('python', [revivalScript(ctx, name), ...args], { cwd: ctx.ROOT, encoding: 'utf8' });
+  const r = spawnSync('python', [revivalScript(ctx, name), ...args], { timeout: 300000, killSignal: 'SIGKILL', cwd: ctx.ROOT, encoding: 'utf8' });
   const out = String(r.stdout || '') + String(r.stderr || '');
   return { rc: r.status, out };
 }
@@ -92,6 +92,29 @@ export const revivalChecks = [
       return starved
         ? `${starved} row(s) CANNOT-MEASURE at load ceiling (${load}); every other row inside target (tree left byte-identical)`
         : 'every friction row has a verify_cmd that runs inside its target (tree left byte-identical)';
+    },
+  },
+  {
+    name: 'revival-failfast',
+    run(ctx) {
+      // The audit's default scope is `scripts/tests/harness/bin/ci`, which in this
+      // repo matches only 12 of 103 code files: a gate built on that scope printed
+      // PASS while 65 unbounded fetches/spawns sat in `_tools/` (measured
+      // 2026-11-27, `0 -> 65` findings once `--all-code` was asked). So the gate
+      // always uses `--all-code`, and it refuses a scan that saw almost nothing
+      // instead of reading a 12-file pass as clean.
+      const MIN_FILES_SCANNED = 60;
+      const { rc, out } = runRevival(ctx, 'fail_fast_audit.py', ['scan', '--repo', ctx.ROOT, '--gate', '--all-code']);
+      let report = null;
+      try { report = JSON.parse(out.slice(out.indexOf('{'))); } catch { /* asserted below */ }
+      ctx.assert(report, `fail-fast audit printed no JSON report:\n${out.trim().slice(-400)}`);
+      ctx.assert(report.total_findings === 0,
+        `${report.total_findings} hang-capable call(s) without a bound: `
+        + `${report.findings.slice(0, 5).map((f) => `${f.file}:${f.line} ${f.rule}`).join(', ')}`);
+      ctx.assert(rc === 0, `fail-fast audit exited ${rc} with ${report.total_findings} finding(s)`);
+      ctx.assert(report.files_scanned >= MIN_FILES_SCANNED,
+        `the scan saw ${report.files_scanned} file(s) < floor ${MIN_FILES_SCANNED}: the scope missed the surface`);
+      return `${report.files_scanned} code file(s) scanned, 0 unbounded fetch/spawn/loop`;
     },
   },
 ];

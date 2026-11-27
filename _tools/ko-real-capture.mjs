@@ -413,7 +413,7 @@ async function main() {
     process.exit(2);
   }
 
-  const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+  const list = await (await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(3000) })).json();
   const page = list.find((t) => t && t.type === 'page' && hostOf(t.url) === requestedHost);
   if (!page) {
     process.stderr.write(`CANNOT-MEASURE no page target for ${requestedHost}\n`);
@@ -421,7 +421,7 @@ async function main() {
   }
 
   const t0 = Date.now();
-  const version = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
+  const version = await (await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(3000) })).json();
   const cdp = new CDP(version.webSocketDebuggerUrl);
 
   const sessionFrom = new Map();

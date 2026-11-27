@@ -125,7 +125,7 @@ async function guestUp(timeout = 1500) {
 // tree sat on the port. `stop` now waits for the port and kills whoever holds
 // it (chrome.exe on the guest's own port only; the owner's browser is 9222).
 function portHolders() {
-  const r = spawnSync('netstat', ['-ano'], { encoding: 'utf8', windowsHide: true });
+  const r = spawnSync('netstat', ['-ano'], { timeout: 60000, killSignal: 'SIGKILL', encoding: 'utf8', windowsHide: true });
   const pids = new Set();
   for (const line of String(r.stdout || '').split(/\r?\n/)) {
     if (!line.includes(`:${PORT} `)) continue;
@@ -138,7 +138,7 @@ function portHolders() {
 
 function commandLineOf(pid) {
   const r = spawnSync('powershell', ['-NoProfile', '-Command',
-    `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`], { encoding: 'utf8', windowsHide: true });
+    `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`], { timeout: 60000, killSignal: 'SIGKILL', encoding: 'utf8', windowsHide: true });
   return String(r.stdout || '');
 }
 
@@ -155,7 +155,7 @@ async function freePort({ quiet = false } = {}) {
     for (const pid of holders) {
       const cl = commandLineOf(pid);
       if (!/chrome\.exe/i.test(cl) || !cl.includes(`--remote-debugging-port=${PORT}`)) continue;
-      spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { encoding: 'utf8', windowsHide: true });
+      spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { timeout: 60000, killSignal: 'SIGKILL', encoding: 'utf8', windowsHide: true });
       if (!quiet) console.log(`[harness] freed port ${PORT} from chrome pid ${pid}`);
       killedAny = true;
       break;
@@ -167,7 +167,7 @@ async function freePort({ quiet = false } = {}) {
 }
 
 async function stopGuest() {
-  const r = spawnSync(process.execPath, [GUEST, 'stop'], { encoding: 'utf8', windowsHide: true });
+  const r = spawnSync(process.execPath, [GUEST, 'stop'], { timeout: 60000, killSignal: 'SIGKILL', encoding: 'utf8', windowsHide: true });
   process.stdout.write((r.stdout || '').trim() + '\n');
   await freePort();
 }
@@ -1679,7 +1679,7 @@ async function main() {
       const headers = { 'Client-ID': CLIENT, 'Content-Type': 'text/plain' };
       if (cookie) headers.Cookie = cookie;
       if (cookie && token) headers.Authorization = 'OAuth ' + token;
-      const r = await fetch('https://gql.twitch.tv/gql', { method: 'POST', headers, body: JSON.stringify({ query }) });
+      const r = await fetch('https://gql.twitch.tv/gql', { signal: AbortSignal.timeout(15000), method: 'POST', headers, body: JSON.stringify({ query }) });
       const text = await r.text();
       let json = null;
       try { json = JSON.parse(text); } catch { /* not json */ }

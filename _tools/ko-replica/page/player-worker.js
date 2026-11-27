@@ -56,7 +56,7 @@ async function appendBytes(bytes) {
 }
 
 async function fetchBytes(uri) {
-  const r = await fetch(uri, { cache: 'no-store' });
+  const r = await fetch(uri, { signal: AbortSignal.timeout(8000), cache: 'no-store' });
   if (!r.ok) throw new Error(`segment ${r.status} ${uri}`);
   return new Uint8Array(await r.arrayBuffer());
 }
@@ -164,7 +164,7 @@ async function poll() {
   let failures = 0;
   while (polling) {
     try {
-      const r = await fetch(mediaUrl, { cache: 'no-store' });
+      const r = await fetch(mediaUrl, { signal: AbortSignal.timeout(15000), cache: 'no-store' });
       if (!r.ok) throw new Error(`playlist ${r.status}`);
       await apply(await r.text());
       failures = 0;

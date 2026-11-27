@@ -33,7 +33,7 @@ export function ensureCerts({ quiet = false } = {}) {
     '-keyout', key, '-out', cert, '-days', '2',
     '-subj', '/CN=www.twitch.tv',
     '-addext', addext,
-  ], { stdio: quiet ? 'ignore' : 'inherit' });
+  ], { timeout: 120000, killSignal: 'SIGKILL', stdio: quiet ? 'ignore' : 'inherit' });
   if (!quiet) console.log(`certs MISS -> ${DIR} (${cn})`);
   return { cert, key };
 }

@@ -54,7 +54,7 @@ export class CDP {
 
 export async function connect(port = 9333) {
   // The browser ws URL includes a per-process UUID; always ask /json/version.
-  const v = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
+  const v = await (await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(3000) })).json();
   const cdp = new CDP(v.webSocketDebuggerUrl);
   cdp.version = v;
   return cdp;

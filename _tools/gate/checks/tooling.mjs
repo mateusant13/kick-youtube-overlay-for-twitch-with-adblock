@@ -10,7 +10,7 @@ import path from 'node:path';
 
 function runToolTest(ctx, check, rel, verdictRe) {
   ctx.assert(existsSync(path.join(ctx.ROOT, rel)), `missing ${rel}`);
-  const r = spawnSync(process.execPath, [path.join(ctx.ROOT, rel)], { cwd: ctx.ROOT, encoding: 'utf8' });
+  const r = spawnSync(process.execPath, [path.join(ctx.ROOT, rel)], { timeout: 120000, killSignal: 'SIGKILL', cwd: ctx.ROOT, encoding: 'utf8' });
   ctx.capture(check, rel, r);
   const out = `${r.stdout || ''}${r.stderr || ''}`;
   ctx.assert(r.status === 0, `${rel}: ${out.trim().slice(-400)}`);

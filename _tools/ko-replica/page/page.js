@@ -78,7 +78,7 @@
 
   async function pollState() {
     try {
-      const r = await fetch('/__ko/state', { cache: 'no-store' });
+      const r = await fetch('/__ko/state', { signal: AbortSignal.timeout(3000), cache: 'no-store' });
       applyState(await r.json());
     } catch (e) {
       stats.errors.push(`state: ${String(e)}`);
@@ -93,6 +93,7 @@
       extensions: { persistedQuery: { version: 1, sha256Hash: 'ed230aa1e33e07eebb8928504583da78a5173989fadfb1ac94be06a04f3cdbe9' } },
     };
     const gql = await fetch(GQL_URL, {
+      signal: AbortSignal.timeout(8000),
       method: 'POST',
       headers: { 'Client-ID': CLIENT_ID, 'Content-Type': 'text/plain;charset=UTF-8' },
       body: JSON.stringify(body),
@@ -107,7 +108,7 @@
     masterUrl.searchParams.set('player', 'twitchweb');
     masterUrl.searchParams.set('type', 'any');
 
-    const master = await fetch(masterUrl, { credentials: 'omit' }).then((r) => r.text());
+    const master = await fetch(masterUrl, { signal: AbortSignal.timeout(8000), credentials: 'omit' }).then((r) => r.text());
     const lines = master.replace(/\r/g, '').split('\n');
     let variant = null;
     for (let i = 0; i < lines.length; i++) {
@@ -122,7 +123,7 @@
     if (!variant) throw new Error('no variant in master');
     const mediaUrl = new URL(variant, masterUrl).toString();
 
-    const workerSrc = await fetch('/__ko/player-worker.js', { cache: 'no-store' }).then((r) => r.text());
+    const workerSrc = await fetch('/__ko/player-worker.js', { signal: AbortSignal.timeout(5000), cache: 'no-store' }).then((r) => r.text());
     const blob = new Blob([workerSrc], { type: 'text/javascript' });
     const url = URL.createObjectURL(blob);
     const worker = new Worker(url);

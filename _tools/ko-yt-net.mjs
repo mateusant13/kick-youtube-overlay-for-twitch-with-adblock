@@ -23,9 +23,9 @@ class CDP {
   }
   on(m, cb) { if (!this.handlers.has(m)) this.handlers.set(m, []); this.handlers.get(m).push(cb); }
 }
-const v = await (await fetch(`http://127.0.0.1:${PORT}/json/version`)).json();
+const v = await (await fetch(`http://127.0.0.1:${PORT}/json/version`, { signal: AbortSignal.timeout(3000) })).json();
 const cdp = new CDP(v.webSocketDebuggerUrl);
-const targets = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
+const targets = await (await fetch(`http://127.0.0.1:${PORT}/json/list`, { signal: AbortSignal.timeout(3000) })).json();
 const page = targets.find(t => t.type === 'page' && /twitch\.tv\/rodil/.test(t.url));
 const yt = targets.find(t => t.type === 'iframe' && /player\.html\?m=hls/.test(t.url));
 if (!page || !yt) { console.log('missing targets', targets.map(t => [t.type, t.url])); process.exit(1); }

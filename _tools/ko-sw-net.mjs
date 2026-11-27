@@ -24,7 +24,7 @@ class CDP {
   }
   on(m, cb) { if (!this.handlers.has(m)) this.handlers.set(m, []); this.handlers.get(m).push(cb); }
 }
-const v = await (await fetch(`http://127.0.0.1:${PORT}/json/version`)).json();
+const v = await (await fetch(`http://127.0.0.1:${PORT}/json/version`, { signal: AbortSignal.timeout(3000) })).json();
 const cdp = new CDP(v.webSocketDebuggerUrl);
 const targets = await cdp.send('Target.getTargets');
 const sw = targets.targetInfos.find((t) => t.type === 'service_worker' && t.url.includes(EXT));

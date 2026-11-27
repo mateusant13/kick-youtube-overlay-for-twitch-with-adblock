@@ -11,7 +11,7 @@ export const syntaxChecks = [
       ctx.assert(PRODUCT_JS.length > 0, 'syntax has no product files to check');
       for (const rel of PRODUCT_JS) {
         ctx.assert(existsSync(path.join(ctx.ROOT, rel)), `missing product file: ${rel}`);
-        const r = spawnSync(process.execPath, ['--check', path.join(ctx.ROOT, rel)], {
+        const r = spawnSync(process.execPath, ['--check', path.join(ctx.ROOT, rel)], { timeout: 120000, killSignal: 'SIGKILL',
           encoding: 'utf8',
         });
         ctx.assert(r.status === 0, `${rel}: ${String(r.stderr || r.stdout || '').trim().slice(0, 240)}`);

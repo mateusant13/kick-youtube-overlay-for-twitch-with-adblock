@@ -13,7 +13,7 @@ import { writeArmArtifacts } from './arms.mjs';
 
 export function prepareReceipt(ctx) {
   const { state, ROOT } = ctx;
-  const head = spawnSync('git', ['-C', ROOT, 'rev-parse', '--short', 'HEAD'], {
+  const head = spawnSync('git', ['-C', ROOT, 'rev-parse', '--short', 'HEAD'], { timeout: 60000, killSignal: 'SIGKILL',
     encoding: 'utf8',
   });
   const gitHead = String(head.stdout || '').trim() || 'unknown';

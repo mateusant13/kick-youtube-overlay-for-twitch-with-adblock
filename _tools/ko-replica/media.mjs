@@ -86,7 +86,9 @@ export function ensureMedia({ quiet = false } = {}) {
         continue;
       }
       if (!quiet) console.log(`${stem} MISS ${key}`);
-      execFileSync(FFMPEG, [
+      // 300 s is the render's HANG ceiling: a wedged encoder must fail the run,
+      // not hold the replica's start forever.
+      const ffArgs = [
         '-y', '-loglevel', 'error',
         '-f', 'lavfi', '-i', p.source,
         '-t', String(p.seconds),
@@ -103,7 +105,8 @@ export function ensureMedia({ quiet = false } = {}) {
         '-hls_fmp4_init_filename', `${stem}_init.mp4`,
         '-hls_segment_filename', `${DIR}/${stem}_%03d.m4s`,
         playlist,
-      ], { stdio: quiet ? 'ignore' : 'inherit' });
+      ];
+      execFileSync(FFMPEG, ffArgs, { timeout: 300000, killSignal: 'SIGKILL', stdio: quiet ? 'ignore' : 'inherit' });
       writeFileSync(keyFile, key);
       out.push({ id: p.id, v: r.v, dir: DIR, playlist, init });
     }

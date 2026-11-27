@@ -324,6 +324,7 @@ export async function runCheck(s, opts = {}) {
     await s.page.cdp.send('Network.enable', {}, s.page.sessionId);
     const login = `ko_probe_${Date.now()}`;
     await s.page.evalMain(`fetch('https://gql.twitch.tv/gql', {
+      signal: AbortSignal.timeout(15000),
       method: 'POST',
       headers: { 'Client-ID': 'kimne78kx3ncx6brgo4mv6wki5h1ko', 'Content-Type': 'text/plain;charset=UTF-8' },
       body: JSON.stringify({

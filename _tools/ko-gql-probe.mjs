@@ -28,7 +28,7 @@ class CDP {
   }
   on(method, cb) { if (!this.handlers.has(method)) this.handlers.set(method, []); this.handlers.get(method).push(cb); }
 }
-const version = await (await fetch(`http://127.0.0.1:${PORT}/json/version`)).json();
+const version = await (await fetch(`http://127.0.0.1:${PORT}/json/version`, { signal: AbortSignal.timeout(3000) })).json();
 const cdp = new CDP(version.webSocketDebuggerUrl);
 const bc = await cdp.send('Target.createBrowserContext', { disposeOnDetach: false });
 const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank', browserContextId: bc.browserContextId });

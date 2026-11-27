@@ -13,9 +13,9 @@ class CDP {
   async send(method,params={},sessionId,timeout=30000){await this.ready;const id=++this.id;return new Promise((resolve,reject)=>{const timer=setTimeout(()=>{this.pending.delete(id);reject(new Error(method+': timeout'));},timeout);this.pending.set(id,{resolve,reject,timer});this.ws.send(JSON.stringify(sessionId?{id,method,params,sessionId}:{id,method,params}));});}
   on(m,cb){if(!this.handlers.has(m))this.handlers.set(m,[]);this.handlers.get(m).push(cb);}
 }
-const v=await (await fetch(`http://127.0.0.1:${PORT}/json/version`)).json();
+const v=await (await fetch(`http://127.0.0.1:${PORT}/json/version`, { signal: AbortSignal.timeout(3000) })).json();
 const cdp=new CDP(v.webSocketDebuggerUrl);
-const pages=await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
+const pages=await (await fetch(`http://127.0.0.1:${PORT}/json/list`, { signal: AbortSignal.timeout(3000) })).json();
 const page=pages.find(t=>t.type==='page'&&/twitch\.tv\/rodil/.test(t.url));
 const {sessionId}=await cdp.send('Target.attachToTarget',{targetId:page.id,flatten:true});
 const ctxs=[];

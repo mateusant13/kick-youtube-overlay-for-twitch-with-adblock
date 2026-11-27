@@ -37,14 +37,14 @@ function runTool(env, args = ['--json']) {
   for (const key of ['KO_LOAD_FIXTURE', 'KO_LOAD_SAMPLE_MS', 'KO_LOAD_MAX_TOTAL', 'KO_LOAD_MAX_CORE']) {
     delete clean[key];
   }
-  return spawnSync(process.execPath, [TOOL, ...args], {
+  return spawnSync(process.execPath, [TOOL, ...args], { timeout: 60000, killSignal: 'SIGKILL',
     encoding: 'utf8', env: { ...clean, ...env }, cwd: os.tmpdir(), windowsHide: true,
   });
 }
 
 function runBash(fixture) {
   const command = `"${NODE_SH}" "${TOOL_SH}" --gate && echo LEFT-SIDE-RAN`;
-  return spawnSync('bash', ['-c', command], {
+  return spawnSync('bash', ['-c', command], { timeout: 60000, killSignal: 'SIGKILL',
     encoding: 'utf8',
     env: { ...process.env, KO_LOAD_FIXTURE: fixture, KO_LOAD_SAMPLE_MS: '50' },
     cwd: os.tmpdir(),

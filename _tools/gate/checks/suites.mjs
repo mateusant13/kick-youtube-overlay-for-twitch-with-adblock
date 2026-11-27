@@ -14,7 +14,9 @@ function runSuite(ctx, check, rel, { maxBuffer } = {}) {
   ctx.assert(existsSync(path.join(ctx.ROOT, rel)), `missing ${rel}`);
   const opts = { cwd: path.join(ctx.ROOT, 'kick-overlay'), encoding: 'utf8' };
   if (maxBuffer) opts.maxBuffer = maxBuffer;
-  const r = spawnSync(process.execPath, [path.join(ctx.ROOT, rel)], opts);
+  // 300 s is a HANG ceiling, never a performance bound: a suite that runs longer
+  // than this has a wedged child, and the gate must refuse instead of waiting.
+  const r = spawnSync(process.execPath, [path.join(ctx.ROOT, rel)], { timeout: 300000, killSignal: 'SIGKILL', ...opts });
   ctx.capture(check, rel, r);
   return r;
 }

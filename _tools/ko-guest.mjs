@@ -46,7 +46,7 @@ function killTree(port = PORT) {
     // allocates a NEW console, and Windows presents it as a real window that
     // takes focus (owner report 2026-11-07: a terminal popped up on his screen
     // while this kill ran). The flag belongs on every level of the chain.
-    spawnSync('powershell', ['-NoProfile', '-Command', ps], { stdio: 'ignore', windowsHide: true });
+    spawnSync('powershell', ['-NoProfile', '-Command', ps], { timeout: 60000, killSignal: 'SIGKILL', stdio: 'ignore', windowsHide: true });
   } catch {}
   for (const f of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
     try { rmSync(`${UDD}/${f}`, { force: true }); } catch {}
@@ -86,7 +86,7 @@ if (process.argv[2] === 'status') {
   try {
     const r = await fetch(`http://127.0.0.1:${PORT}/json/version`, { signal: AbortSignal.timeout(3000) });
     const j = await r.json();
-    const list = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();
+    const list = await (await fetch(`http://127.0.0.1:${PORT}/json/list`, { signal: AbortSignal.timeout(3000) })).json();
     console.log(JSON.stringify({ up: true, browser: j.Browser, targets: list.map(t => ({ type: t.type, url: (t.url || '').slice(0, 100), id: t.id })) }, null, 2));
   } catch (e) {
     console.log(JSON.stringify({ up: false, error: String(e) }));

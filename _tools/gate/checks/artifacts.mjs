@@ -51,7 +51,7 @@ export const verifiedArtifacts = {
       for (const rel of srcLines) {
         let committed = commitCache.get(rel);
         if (committed === undefined) {
-          const log = spawnSync('git', ['-C', ROOT, 'log', '-1', '--format=%ct', '--', rel], { encoding: 'utf8' });
+          const log = spawnSync('git', ['-C', ROOT, 'log', '-1', '--format=%ct', '--', rel], { timeout: 60000, killSignal: 'SIGKILL', encoding: 'utf8' });
           committed = Number(String(log.stdout || '').trim());
           commitCache.set(rel, committed);
         }

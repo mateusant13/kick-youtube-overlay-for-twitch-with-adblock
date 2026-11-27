@@ -18,7 +18,7 @@ export const instrumentChecks = [
     run(ctx) {
       const tool = path.join(ctx.ROOT, '_tools/ko-census.mjs');
       ctx.assert(existsSync(tool), 'missing _tools/ko-census.mjs');
-      const r = spawnSync(process.execPath, [tool, '--gate'], {
+      const r = spawnSync(process.execPath, [tool, '--gate'], { timeout: 120000, killSignal: 'SIGKILL',
         cwd: ctx.ROOT,
         encoding: 'utf8',
       });
