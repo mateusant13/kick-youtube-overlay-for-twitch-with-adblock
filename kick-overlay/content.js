@@ -1031,7 +1031,7 @@ const NOT_CHANNEL = new Set([
 
 // Build marker for the diag stream — lets us tell which code a tab runs
 // (content scripts of pre-reload tabs survive extension reloads).
-const KO_VER = '0.8.138';
+const KO_VER = '0.8.139';
 // How long a lost picture may last before the native player is allowed to
 // reclaim the screen (owner 2026-11-11: an ad and the player fighting).
 const OWNER_GRACE_MS = 6000;
@@ -1431,14 +1431,23 @@ function kickLog(ev, d) {
 // shaped row from every caller (poll, go-live, reconnect) so the ring can tell
 // "nobody answered" from "the channel is offline". The row names the endpoints
 // that refused and the real error; it never claims anything about the stream.
-function kickRefusal(k) {
+function kickRefusalKey(k) {
+  const n = Array.isArray(k && k.refusals) ? k.refusals.length : 0;
+  return n ? `ref:${n}` : 'ok';
+}
+function kickRefusal(k, opts) {
   const refusals = Array.isArray(k && k.refusals) ? k.refusals : [];
   // NOTHING TO REFUSE IS THE ORDINARY CASE, NOT A DECISION. Written as an early
   // `return false` this was counted as a fourth guard-shaped silent exit in a
   // file whose ceiling is three (`ko-census`, 2026-11-27): the census cannot see
   // that the no-refusal path is the hot one, and a row per successful probe is
   // the per-heartbeat sampling this ring already paid for. One exit instead.
-  if (refusals.length) {
+  //
+  // `opts.log === false` exists because the 20 s poll is a SAMPLE, not an event:
+  // a ten-minute outage used to write the same `kick-probe-refused` row thirty
+  // times and evict the ad chronology (the defect the `kick_probe` dedupe was
+  // built for). The caller owns the transition; this function owns the text.
+  if (refusals.length && (!opts || opts.log !== false)) {
     const why = refusals
       .map((r) => `${String(r.url).replace(/^https:\/\/kick\.com\/api\//, '')}: ${r.why}`)
       .join(' | ');
@@ -4021,12 +4030,26 @@ async function probeKickLayer() {
     return;
   }
   const k = await kickPlaybackUrl(KO.kickSlug);
+  // The poll runs every 20 s, so an unchanged outcome is stable state, not
+  // news: `kick_probe {at:"poll"}` + `kick_offline` repeated 114 times each in
+  // the owner's 2026-11-16 ring and evicted the ad chronology. One row per
+  // transition; a channel that goes offline -> live -> offline logs all three.
+  //
+  // The signature is computed BEFORE the refusal branch, because a refusal is
+  // one of the outcomes being compared: it used to return first, so the ring
+  // never saw "refused -> answered" and a sustained refusal wrote its row every
+  // 20 s (the per-heartbeat sampling this dedupe exists to prevent). `ref:N` is
+  // in the key so a refusal of two endpoints and a conclusive "offline" are not
+  // the same state.
+  const pollSig = `${KO.kickSlug}|${k.live ? 1 : 0}|${k.url ? 1 : 0}|${kickRefusalKey(k)}|${KO.kickMintSig || ''}`;
+  const pollChanged = pollSig !== KO.kickPollSig;
+  KO.kickPollSig = pollSig;
   // A probe that reached no endpoint is a REFUSAL, not an offline verdict. Every
   // fetch/JSON error used to be swallowed and the caller published `kick_offline`
   // for a network or parse failure, which is the same false answer the ring
   // exists to prevent. The row names the endpoints that refused, so "channel
   // offline" can never again be printed for something nobody measured.
-  if (!k.live && kickRefusal(k)) {
+  if (!k.live && kickRefusal(k, { log: pollChanged })) {
     setBadge(KO.ytHlsFailed ? 'YT' : 'KICK', '#6b7280');
     // Same teardown as a conclusive offline: nothing will play behind the wrap,
     // so the keep-up clock stops and the empty box is hidden.
@@ -4034,13 +4057,6 @@ async function probeKickLayer() {
     if (KO.wrap) hideWrap();
     return;
   }
-  // The poll runs every 20 s, so an unchanged outcome is stable state, not
-  // news: `kick_probe {at:"poll"}` + `kick_offline` repeated 114 times each in
-  // the owner's 2026-11-16 ring and evicted the ad chronology. One row per
-  // transition; a channel that goes offline -> live -> offline logs all three.
-  const pollSig = `${KO.kickSlug}|${k.live ? 1 : 0}|${k.url ? 1 : 0}|${KO.kickMintSig || ''}`;
-  const pollChanged = pollSig !== KO.kickPollSig;
-  KO.kickPollSig = pollSig;
   if (pollChanged) kickLog('kick_probe', { slug: KO.kickSlug, live: k.live, url: k.url ? 'yes' : 'no', at: 'poll' });
   if (k.live && k.url) {
     KO.kickStreamId = k.streamId || null;

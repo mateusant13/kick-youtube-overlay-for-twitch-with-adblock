@@ -3039,10 +3039,42 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
       assert.strictEqual(refused[0].data.tried, 2, 'both endpoints were tried');
       assert.ok(/ERR_NAME_NOT_RESOLVED/.test(String(refused[0].data.why)), 'the row carries the real failure, not a verdict');
       assert.strictEqual(got.filter((r) => r.ev === 'kick_offline').length, 0, 'a refusal must NEVER publish "channel offline"');
-      // The outcome is not stable state: two identical refusals are two events.
+      // A 20 s poll is a SAMPLE. The ring already paid for per-heartbeat rows
+      // once (`kick_probe`/`kick_offline` 114 times each in the 2026-11-16 ring,
+      // which evicted the ad chronology), and the refusal branch returned BEFORE
+      // the poll signature, so a ten-minute outage wrote the same row thirty
+      // times. Measured 2026-11-27: one row per transition.
       swCalls.length = 0;
       await S.probeKickLayer();
-      assert.strictEqual(rows().filter((r) => r.ev === 'kick-probe-refused').length, 1, 'a second refusal is a second row');
+      assert.strictEqual(rows().filter((r) => r.ev === 'kick-probe-refused').length, 0, 'a sustained refusal is stable state, not a row every 20 s');
+      // ...and a DIFFERENT outcome after a refusal must still be written: the
+      // refusal used to return before `KO.kickPollSig` was set, so nothing could
+      // see "refused -> answered".
+      swCalls.length = 0;
+      global.fetch = () => Promise.resolve({ ok: true, status: 200, json: async () => ({ livestream: null }) });
+      await S.probeKickLayer();
+      const answered = rows();
+      assert.strictEqual(answered.filter((r) => r.ev === 'kick-probe-refused').length, 0, 'a conclusive answer is not a refusal');
+      assert.strictEqual(answered.filter((r) => r.ev === 'kick_probe' && r.data && r.data.at === 'poll').length, 1, 'refused -> answered is a transition the ring must see');
+      // RED: the pre-fix call logged on every poll. The mutant must show two rows
+      // for two identical refusals, which is what makes the green above a
+      // measurement of the flag and not of the fixture.
+      const oldCall = 'kickRefusal(k, { log: pollChanged })';
+      assert.ok(src.includes(oldCall), 'W6c RED: the mutation target is gone');
+      const MS = new Function('window', 'document', 'location', 'navigator', src.replace(oldCall, 'kickRefusal(k) /* RED: a row per poll */')
+        + '\n;return {KO, probeKickLayer};')(global, doc, global.location, global.navigator);
+      global.fetch = () => Promise.reject(new Error('net::ERR_NAME_NOT_RESOLVED'));
+      MS.KO.enabled = true;
+      MS.KO.player = 'kick';
+      MS.KO.kickSlug = 'refusechannel';
+      MS.KO.activeUrl = '';
+      MS.KO.kickState = null;
+      MS.KO.kickPollSig = '';
+      MS.KO.wrap = null;
+      swCalls.length = 0;
+      await MS.probeKickLayer();
+      await MS.probeKickLayer();
+      assert.strictEqual(rows().filter((r) => r.ev === 'kick-probe-refused').length, 2, 'W6c RED: without the transition flag a sustained refusal writes a row every poll');
     } finally {
       global.fetch = realFetch;
     }
