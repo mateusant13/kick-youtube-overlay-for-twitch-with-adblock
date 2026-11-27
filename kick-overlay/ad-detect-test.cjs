@@ -67,6 +67,13 @@ function grab(name, src = SRC) {
   }
   return src.slice(start, i + 1);
 }
+// Same contract for a `const`: the marker regex has one owner in the shipped
+// file, and the arm must execute that owner rather than a copy of it.
+function grabConst(name, src = SRC) {
+  const m = new RegExp(`^\\s*const ${name} = (.+);$`, 'm').exec(src);
+  if (!m) throw new Error(`missing const ${name}`);
+  return `const ${name} = ${m[1]};`;
+}
 const core = (src = SRC) => [
   'let adUiDetailOverride = null;',
   'const AD_SURFACE_MAX_NODES = 256;',
@@ -1794,6 +1801,50 @@ check('E8: ad-bypass-start and ad-pod-max carry the fields the verdict reads', (
 redArm('E8 RED: the pre-fix code wrote only bypass-msg and no promised row',
   podMutate("adLog('ad-bypass-start', {", "adLog('bypass-msg', {"),
   (src) => promisedRowsArm(src).some((r) => r.ev === 'ad-bypass-start'));
+// ---- THE SUFFIX IS A MEASUREMENT, NEVER THE DECISION (measured live 2026-11-27) ----------
+// Our own token rewrite makes Twitch serve the page's player a cloudfront `index-muted-*.m3u8`
+// whose segments carry no ",live" (KO-20261127-08). `playlistInfo()` called that whole live
+// stream `adOnly` with 1789 segments, while `stripAds()` - acting on the same bytes - refuses to
+// look for ads without Twitch's own stitched-ad marker. One question, two predicates, and the
+// suffix one false-positived 100%.
+const UNMARKED_LIVE = [
+  '#EXTM3U',
+  '#EXT-X-VERSION:3',
+  '#EXT-X-TARGETDURATION:2',
+  ...Array.from({ length: 6 }, (_, i) => `#EXTINF:2.000,\nhttps://d2vi6trrdongqn.cloudfront.net/x_kaicenat_1/index-muted-AAA/${i}.ts`),
+].join('\n');
+const MARKED_AD = [
+  '#EXTM3U',
+  '#EXT-X-VERSION:3',
+  '#EXT-X-DATERANGE:ID="twitch-stitched-ad-2001",CLASS="twitch-stitched-ad",START-DATE="2026-10-27T00:00:00.000Z",DURATION=4.000,X-TV-TWITCH-AD-URL="https://ads.example/creative/2001"',
+  '#EXTINF:2.000,\nhttps://video-edge-a.playlist.ttvnw.net/v1/segment/4200.ts',
+  '#EXTINF:2.000,\nhttps://video-edge-a.playlist.ttvnw.net/v1/segment/4201.ts',
+].join('\n');
+const MARKED_CLEAN = [
+  '#EXTM3U',
+  '#EXT-X-VERSION:3',
+  '#EXTINF:2.000,live\nhttps://video-edge-a.playlist.ttvnw.net/v1/segment/9000.ts',
+  '#EXTINF:2.000,live\nhttps://video-edge-a.playlist.ttvnw.net/v1/segment/9001.ts',
+].join('\n');
+function playlistInfoArm(src) {
+  const P = grab('playlistInfo', src);
+  const M = grabConst('TWITCH_AD_MARKER', src);
+  const info = (text) => new Function(`${M};\n${P};\nreturn playlistInfo(${JSON.stringify(text)});`)();
+  return { unmarked: info(UNMARKED_LIVE), ad: info(MARKED_AD), clean: info(MARKED_CLEAN) };
+}
+check('E9: a suffix-only playlist is unmarked, not an ad; the marker decides and the count stays raw', () => {
+  const { unmarked, ad, clean } = playlistInfoArm(SRC);
+  return unmarked.adOnly === false && unmarked.hasStitched === false
+    // The measurement is kept: 6 of 6 segments lack ",live" and the ring can still see that.
+    && unmarked.adExtinf === unmarked.extinf && unmarked.extinf === 6
+    && ad.adOnly === true && ad.hasStitched === true && ad.adExtinf === ad.extinf
+    && clean.adOnly === false && clean.adExtinf === 0 && clean.extinf === 2;
+});
+redArm('E9 RED: the pre-fix suffix-only decision calls a whole live stream an ad',
+  podMutate('adOnly: hasStitched && extinf.length > 0 && adExtinf.length === extinf.length,',
+    'adOnly: extinf.length > 0 && adExtinf.length === extinf.length,'),
+  (src) => playlistInfoArm(src).unmarked.adOnly === false);
+
 // ---- THE PLAYER'S LOADER IS NOT ALWAYS `fetch` (measured live 2026-11-27) ----------------
 // The player's worker was the patched one (stack: `new KoAdblockWorker` -> `new Wrapped` from
 // `player-core-variant-a-...`), the page video had a `MediaSourceHandle`, and 13 live minutes produced
@@ -2003,6 +2054,8 @@ const expected = [
   'E7 RED: the stale cache rewrites an attribute a direct writer set',
   'E8: ad-bypass-start and ad-pod-max carry the fields the verdict reads',
   'E8 RED: the pre-fix code wrote only bypass-msg and no promised row',
+  'E9: a suffix-only playlist is unmarked, not an ad; the marker decides and the count stays raw',
+  'E9 RED: the pre-fix suffix-only decision calls a whole live stream an ad',
   "the player's XHR playlist reaches the digest and names its transport",
   'a non-playlist XHR body writes no digest',
   "RED: without the XHR transport the player's playlist never reaches the digest",

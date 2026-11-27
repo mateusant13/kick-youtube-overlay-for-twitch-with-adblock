@@ -11,15 +11,15 @@
       "unit": "ms",
       "direction": "lower_is_better",
       "ceiling": 600.0,
-      "command": "node --check kick-overlay/twitch-adblock.js",
-      "parse_mode": "wall_ms",
-      "parse_pattern": "",
+      "command": "node _tools/ko-timed-suite.mjs --suite \"node --check kick-overlay/twitch-adblock.js\" --label syntax_check",
+      "parse_mode": "regex",
+      "parse_pattern": "RESULT_MS=(\\d+)",
       "owner_paths": [
         "kick-overlay/twitch-adblock.js"
       ],
       "blast_radius_callers": [],
       "red_arm_cmd": "printf 'function (' >> /tmp/bad.js && node --check /tmp/bad.js",
-      "note": "MEASURED 432.03 ms warm / 7757 ms cold at e66f551 (benchmark_history bench-reconcile-20261126T202925Z-final); cold 7757 ms is RED against the 600 ms ceiling (first read after a cold page-cache, SMR spindle ~120 ms/file), a 63.6x cold/warm spread; the two warm gate readings were 353.67 ms then 432.03 ms (after). Ceiling stays 600.0 ms as a bound, ~1.4x the 432.03 ms warm after value \u2014 it is not raised to hide the cold REFUTE; a parser check that needs more than half a second is a cold-store problem, not a file-size problem."
+      "note": "MEASURED 432.03 ms warm / 7757 ms cold at e66f551 (benchmark_history bench-reconcile-20261126T202925Z-final); cold 7757 ms is RED against the 600 ms ceiling (first read after a cold page-cache, SMR spindle ~120 ms/file), a 63.6x cold/warm spread; the two warm gate readings were 353.67 ms then 432.03 ms (after). Ceiling stays 600.0 ms as a bound, ~1.4x the 432.03 ms warm after value \u2014 it is not raised to hide the cold REFUTE; a parser check that needs more than half a second is a cold-store problem, not a file-size problem. MEASURED 2026-11-27: the gate graded this metric at 436.19 ms REGRESSED (+250.6 %) with the box at host_cpu 88.8 % and 9 cores pinned, and one `node --check` sampled 16040 / 9338 / 436 ms in the same window \u2014 the number was the queue. The command now runs through `_tools/ko-timed-suite.mjs`, which prints `latency_refused` on BUSY and prints `RESULT_MS` only on a READY box; no ceiling and no tolerance changed."
     },
     {
       "id": "basic.census_ms",
@@ -30,16 +30,16 @@
       "unit": "ms",
       "direction": "lower_is_better",
       "ceiling": 2000.0,
-      "command": "node _tools/ko-census.mjs --gate",
-      "parse_mode": "wall_ms",
+      "command": "node _tools/ko-timed-suite.mjs --suite \"node _tools/ko-census.mjs --gate\" --label census",
+      "parse_mode": "regex",
+      "parse_pattern": "RESULT_MS=(\\d+)",
       "samples": 3,
-      "parse_pattern": "",
       "owner_paths": [
         "_tools/ko-census.mjs"
       ],
       "blast_radius_callers": [],
       "red_arm_cmd": "node _tools/ko-census.mjs --gate --budget-red 1",
-      "note": "MEASURED 383.19 ms warm / 621.24 ms cold at e66f551 (benchmark_history bench-reconcile-20261126T202925Z-final); the two gate readings were 621.24 ms first and 383.19 ms after (1.6x spread, under 4x); a separate probe measured 453.48 ms. Ceiling = 2000.0 ms, ~5.2x the warm after value: this is the per-edit instrument for silent decisions, so it must stay interactive."
+      "note": "MEASURED 383.19 ms warm / 621.24 ms cold at e66f551 (benchmark_history bench-reconcile-20261126T202925Z-final); the two gate readings were 621.24 ms first and 383.19 ms after (1.6x spread, under 4x); a separate probe measured 453.48 ms. Ceiling = 2000.0 ms, ~5.2x the warm after value: this is the per-edit instrument for silent decisions, so it must stay interactive. MEASURED 2026-11-27: the gate graded this metric at 603.31 ms REGRESSED (+249.3 %) with the box at host_cpu 88.8 % and 9 cores pinned; its own samples in that run were 1538.66 / 9058.2 / 603.31 ms for unchanged code, so the number was the queue. The command now runs through `_tools/ko-timed-suite.mjs`, which prints `latency_refused` on BUSY and `RESULT_MS` only on a READY box; no ceiling and no tolerance changed."
     },
     {
       "id": "subsystem.bridge_handshake_ms",
@@ -50,15 +50,15 @@
       "unit": "ms",
       "direction": "lower_is_better",
       "ceiling": 2000.0,
-      "command": "node kick-overlay/bridge-handshake-test.cjs",
-      "parse_mode": "wall_ms",
-      "parse_pattern": "",
+      "command": "node _tools/ko-timed-suite.mjs --suite \"node kick-overlay/bridge-handshake-test.cjs\" --label bridge_handshake",
+      "parse_mode": "regex",
+      "parse_pattern": "RESULT_MS=(\\d+)",
       "owner_paths": [
         "kick-overlay/bridge-handshake-test.cjs"
       ],
       "blast_radius_callers": [],
       "red_arm_cmd": "node kick-overlay/bridge-handshake-test.cjs | grep -q 'RESULT PASS'",
-      "note": "MEASURED 216.79 ms in a quiet window at e66f551 (benchmark_history bench-quiet-20261126T2045Z); the contended reading was 190.43 ms warm / 370.63 ms cold with two sibling agents on the same SMR volume (bench-reconcile-20261126T202925Z-final), and a separate probe read 272.03 ms. Ceiling = 2000.0 ms, ~9.2x the quiet value: the 360p start-level defect lived here, and the suite must stay inside the inner loop."
+      "note": "MEASURED 216.79 ms in a quiet window at e66f551 (benchmark_history bench-quiet-20261126T2045Z); the contended reading was 190.43 ms warm / 370.63 ms cold with two sibling agents on the same SMR volume (bench-reconcile-20261126T202925Z-final), and a separate probe read 272.03 ms. Ceiling = 2000.0 ms, ~9.2x the quiet value: the 360p start-level defect lived here, and the suite must stay inside the inner loop. MEASURED 2026-11-27: a behavioural suite's wall time is a queue on a starved box, so the command now runs through `_tools/ko-timed-suite.mjs` (typed `latency_refused` on BUSY, `RESULT_MS` only on READY); no ceiling and no tolerance changed."
     },
     {
       "id": "subsystem.mute_decision_ms",
@@ -69,9 +69,9 @@
       "unit": "ms",
       "direction": "lower_is_better",
       "ceiling": 15000.0,
-      "command": "node kick-overlay/mute-decision-test.cjs",
-      "parse_mode": "wall_ms",
-      "parse_pattern": "",
+      "command": "node _tools/ko-timed-suite.mjs --suite \"node kick-overlay/mute-decision-test.cjs\" --label mute_decision",
+      "parse_mode": "regex",
+      "parse_pattern": "RESULT_MS=(\\d+)",
       "owner_paths": [
         "kick-overlay/mute-decision-test.cjs"
       ],
@@ -82,7 +82,7 @@
         "kick-overlay/cold-cover-fixture-test.cjs"
       ],
       "red_arm_cmd": "node kick-overlay/mute-decision-test.cjs | grep -q 'RESULT PASS'",
-      "note": "MEASURED 640.39 ms in a quiet window at e66f551 (benchmark_history bench-quiet-20261126T2045Z); the contended reading was 679.27 ms warm / 1073.04 ms cold (bench-reconcile-20261126T202925Z-final). Historically MEASURED 70 783 ms before the virtual clock and 887 ms after it (2026-11-26, identical checks=95). Ceiling = 15 000 ms, ~23x the quiet value: a behavioural suite that once paid 70 s of real sleeps must not creep back above the interactive bound."
+      "note": "MEASURED 640.39 ms in a quiet window at e66f551 (benchmark_history bench-quiet-20261126T2045Z); the contended reading was 679.27 ms warm / 1073.04 ms cold (bench-reconcile-20261126T202925Z-final). Historically MEASURED 70 783 ms before the virtual clock and 887 ms after it (2026-11-26, identical checks=95). Ceiling = 15 000 ms, ~23x the quiet value: a behavioural suite that once paid 70 s of real sleeps must not creep back above the interactive bound. MEASURED 2026-11-27: the command now runs through `_tools/ko-timed-suite.mjs` (typed `latency_refused` on BUSY, `RESULT_MS` only on READY); no ceiling and no tolerance changed."
     },
     {
       "id": "subsystem.ad_time_continuity_ms",
@@ -114,15 +114,15 @@
       "unit": "ms",
       "direction": "lower_is_better",
       "ceiling": 600000.0,
-      "command": "node _tools/ko-verify.mjs",
-      "parse_mode": "wall_ms",
-      "parse_pattern": "",
+      "command": "node _tools/ko-timed-suite.mjs --suite \"node _tools/ko-verify.mjs\" --label gate_wall",
+      "parse_mode": "regex",
+      "parse_pattern": "RESULT_MS=(\\d+)",
       "owner_paths": [
         "_tools/ko-verify.mjs"
       ],
       "blast_radius_callers": [],
       "red_arm_cmd": "node _tools/ko-verify.mjs | grep -q 'RESULT PASS'",
-      "note": "MEASURED 365 290 ms at 0.8.126 (historical pre-clock reading; NOT re-measured in this lane because the 365 s gate is out of scope); ceiling = 600000.0 ms stated bound, ~1.6x that historical value. The suites it runs are now 0.9 s and 4.7 s instead of 70.8 s and 268.3 s, so the gate must drop by roughly five minutes on the next landing; kept until an AFTER benchmark replaces it."
+      "note": "MEASURED 365 290 ms at 0.8.126 (historical pre-clock reading; NOT re-measured in this lane because the 365 s gate is out of scope); ceiling = 600000.0 ms stated bound, ~1.6x that historical value. The suites it runs are now 0.9 s and 4.7 s instead of 70.8 s and 268.3 s, so the gate must drop by roughly five minutes on the next landing. MEASURED 2026-11-27: the gate now reads 41 s on a READY box, and grading a whole-gate wall taken while 8 cores are pinned is the same defect the wrapper exists for, so the command runs through `_tools/ko-timed-suite.mjs` (typed `latency_refused` on BUSY)."
     },
     {
       "id": "basic.import_or_boot_ms",
@@ -133,9 +133,9 @@
       "unit": "ms",
       "direction": "lower_is_better",
       "ceiling": 3000.0,
-      "command": "node -e \"require('./_tools/test-clock.cjs')\"",
-      "parse_mode": "wall_ms",
-      "parse_pattern": "",
+      "command": "node _tools/ko-timed-suite.mjs --suite \"node -e \\\"require('./_tools/test-clock.cjs')\\\"\" --label import_or_boot",
+      "parse_mode": "regex",
+      "parse_pattern": "RESULT_MS=(\\d+)",
       "owner_paths": [
         "_tools/test-clock.cjs"
       ],

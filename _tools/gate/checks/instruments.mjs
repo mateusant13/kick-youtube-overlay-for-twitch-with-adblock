@@ -119,9 +119,30 @@ export const instrumentChecks = [
       const m = /RESULT PASS timed-suite checks=(\d+) failed=0 arms=4\/4/.exec(out);
       ctx.assert(m, `selftest printed no verdict:\n${out.trim().slice(-400)}`);
       const budgets = ctx.read('benchmarks/budgets.json');
+      // A TIMING METRIC IS ANY ROW WHOSE UNIT IS ms: the whole gate wall included.
+      // MEASURED 2026-11-27: only `ad_time_continuity_ms` ran through the wrapper, so
+      // four other rows were graded by raw wall time on a box at `host_cpu 88.8%,
+      // pinned 9` and the gate went red for unchanged code (one `node --check` sampled
+      // 16040 / 9338 / 436 ms in that window). The old assertion named ONE metric id,
+      // which is why the others could regress to a queue unnoticed.
+      const doc = JSON.parse(budgets);
+      const wallRows = (doc.metrics || []).filter((m) => String(m.unit || '').toLowerCase() === 'ms');
+      const unwrapped = wallRows
+        .filter((m) => !/ko-timed-suite\.mjs/.test(String(m.command || '')))
+        .map((m) => m.id);
+      ctx.assert(
+        unwrapped.length === 0,
+        `timing metric(s) graded outside the starvation wrapper: ${unwrapped.join(', ')} (a wall time measured on a busy box is the queue, not the instrument)`,
+      );
+      const notParsing = wallRows
+        .filter((m) => !/RESULT_MS=/.test(String(m.parse_pattern || '')))
+        .map((m) => m.id);
+      ctx.assert(
+        notParsing.length === 0,
+        `timing metric(s) no longer parse the wrapper's RESULT_MS line: ${notParsing.join(', ')}`,
+      );
       ctx.assert(/node _tools\/ko-timed-suite\.mjs --label ad_time_continuity/.test(budgets), 'the ad-time-continuity metric no longer runs through the timing wrapper');
-      ctx.assert(/"parse_pattern": "RESULT_MS=/.test(budgets), 'the metric no longer parses the wrapper\'s RESULT_MS line');
-      return `starvation refusal proven (${m[1]} checks, 4 arms): busy and cannot-measure refuse with the numbers, ready measures, a failing suite propagates its rc, and the mutant arm shows the ceilings are what makes the refusal real`;
+      return `starvation refusal proven (${m[1]} checks, 4 arms): busy and cannot-measure refuse with the numbers, ready measures, a failing suite propagates its rc, and the mutant arm shows the ceilings are what makes the refusal real; all ${wallRows.length} timing metric(s) run through the wrapper`;
     },
   },
   {

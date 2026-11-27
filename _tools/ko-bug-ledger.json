@@ -1747,9 +1747,10 @@
         "digest, live: `{\"tp\":{\"fetch\":{...}},\"hooks\":2,\"pl\":[{\"t\":\"fetch\",\"u\":\"usher.ttvnw.net/vod/v2/...\",\"e\":0,\"a\":0},{\"t\":\"fetch\",\"u\":\"d2vi6trrdongqn.cloudfront.net/500539c242...\",\"e\":1789,\"a\":1789},...]}`",
         "transport census, steady playback 25 s: only `d2vi6trrdongqn.cloudfront.net/.../720p60/<n>.ts` segment traffic; zero `*.playlist.live-video.net` or `/v1/playlist/` requests in any attached session",
         "suites after the change: `RESULT PASS ad-time-continuity checks=198 failed=0`, `RESULT PASS ad-detect: ... (failed=0)` ARMS 117/117",
-        "0.8.134 in the tree carries the naming rows; `fixed_in` stays null because the predicate itself is untouched and the row is cause-isolated, not fixed"
+        "0.8.134 in the tree carries the naming rows; `fixed_in` stays null because the predicate itself is untouched and the row is cause-isolated, not fixed",
+        "0.8.135 fixes the FALSE POSITIVE half of this row: `playlistInfo()`'s `adOnly` now requires Twitch's own marker (`TWITCH_AD_MARKER`, one constant shared with `stripAds()`), so a suffix-only cloudfront playlist reads `{adOnly:false, hasStitched:false, adExtinf:1789, extinf:1789}` - the measurement stays raw and the decision stops lying. Arms `E9` + `E9 RED` (the mutant restores the suffix-only decision and the arm goes red). The host test is NOT widened: `routeWorkerPlaylist()` still refuses the cloudfront shape, which is what keeps this row `cause-isolated`."
       ],
-      "next": "Capture a real ad-bearing live playlist (the owner's standing order) and key the pod decision on Twitch's own ad marker instead of the `,live` suffix; only then may the host test admit the cloudfront live shape."
+      "next": "Capture a real ad-bearing live playlist (the owner's standing order) to learn which host a real stitched pod actually uses, then decide the host test from that evidence. The predicate no longer blocks it: 0.8.135 keys `adOnly` on Twitch's marker, so admitting the cloudfront live shape can no longer open a pod on every page load."
     }
   ]
 }

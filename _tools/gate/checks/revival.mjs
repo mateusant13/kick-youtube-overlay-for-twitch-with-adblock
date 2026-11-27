@@ -53,7 +53,17 @@ export const revivalChecks = [
       ctx.assert(rc === 0, `a basic metric is over its ceiling or unmeasured:\n${out.trim().slice(-700)}`);
       const ids = [...out.matchAll(/"id":\s*"([^"]+)"/g)].map((m) => m[1]);
       ctx.assert(ids.length > 0, `benchmark gate printed no metric row:\n${out.trim().slice(-400)}`);
-      return `${ids.length} basic metric(s) inside budget (${ids.join(', ')})`;
+      // A REFUSAL IS NOT A PASS, AND THE DETAIL MUST NOT READ LIKE ONE.
+      // MEASURED 2026-11-27: every timing row now refuses on a starved box, so a detail
+      // that said "3 basic metric(s) inside budget" would have described three numbers
+      // that were never taken - the refusal-who-invites-a-wrong-reading defect this
+      // repo already ruled on. Counted, named, and the refused rows are listed.
+      const refused = [...out.matchAll(/"verdict":\s*"CANNOT-MEASURE"[\s\S]{0,400}?"refused_reason":\s*"([^"]*)"/g)].length;
+      const measured = ids.length - refused;
+      const tail = refused
+        ? `; ${refused} of ${ids.length} refused (starved box: a wall time there is the queue, not the instrument)`
+        : `; ${measured} measured`;
+      return `${measured} basic metric(s) inside budget (${ids.join(', ')})${tail}`;
     },
   },
   {

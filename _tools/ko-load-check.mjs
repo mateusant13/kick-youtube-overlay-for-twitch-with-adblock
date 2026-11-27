@@ -34,6 +34,67 @@ const MAX_CORE = Number(process.env.KO_LOAD_MAX_CORE || 90); // % of one core, a
 // Unset in normal use; no other behaviour reads it.
 const FIXTURE = process.env.KO_LOAD_FIXTURE;
 
+// When running live (`--gate` without a test `KO_LOAD_FIXTURE`), defer to Watcher's
+// centralized Traffic Light (`GET /traffic/status`):
+//   - GREEN (owner idle/AFK) or YELLOW -> READY (exit 0) immediately; heavy commands
+//     queue inside Watcher's Traffic Light rather than failing BUSY on CPU spikes.
+//   - RED (true OOM / gaming / saturated disk) -> WAIT in-process until GREEN/YELLOW
+//     (up to KO_LOAD_WAIT_CEILING_S, default 600s) instead of returning BUSY and
+//     forcing agents into manual `sleep 90` polling loops.
+//   - Unreachable daemon -> falls back to the local os.cpus() check below.
+async function probeWatcherTraffic(host, port, timeoutMs = 1500) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  timer?.unref?.();
+  try {
+    const resp = await fetch(`http://${host}:${port}/traffic/status`, { signal: ac.signal });
+    if (!resp.ok) return null;
+    const doc = await resp.json();
+    const light = String(doc?.light || '').toUpperCase();
+    if (!light) return null;
+    return { light, reason: String(doc?.reason || ''), max_slots: doc?.max_slots ?? null };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+if (GATE && !FIXTURE && process.env.KO_LOAD_LOCAL_ONLY !== '1') {
+  const host = process.env.WATCHER_BUS_HOST || '127.0.0.1';
+  const port = Number(process.env.WATCHER_BUS_PORT || 47891);
+  const ceilingS = Math.max(10, Number(process.env.KO_LOAD_WAIT_CEILING_S || 600));
+  const pollMs = Math.max(1000, Number(process.env.KO_LOAD_POLL_MS || 5000));
+  const started = Date.now();
+  let reading = await probeWatcherTraffic(host, port);
+  if (reading) {
+    while (reading && reading.light === 'RED' && (Date.now() - started) < ceilingS * 1000) {
+      await new Promise((r) => setTimeout(r, pollMs));
+      reading = await probeWatcherTraffic(host, port);
+    }
+    const waitedS = Number(((Date.now() - started) / 1000).toFixed(1));
+    if (!reading || reading.light === 'GREEN' || reading.light === 'YELLOW') {
+      console.log(JSON.stringify({
+        verdict: 'READY',
+        via: 'watcher-traffic-light',
+        light: reading?.light || 'FAIL-OPEN',
+        reason: reading?.reason || 'daemon-unreachable-mid-wait',
+        waited_s: waitedS,
+      }));
+      process.exit(0);
+    }
+    console.log(JSON.stringify({
+      verdict: 'BUSY',
+      via: 'watcher-traffic-light',
+      light: reading.light,
+      reason: reading.reason,
+      waited_s: waitedS,
+      why: `watcher traffic light stayed RED (${reading.reason}) for ${waitedS}s`,
+    }));
+    process.exit(2);
+  }
+}
+
 // The sampling window and the os.cpus() reads live in gate/load-sample.mjs, because
 // the timing wrapper (`ko-timed-suite.mjs`) asks the same question and two
 // conventions for "is the box ready" is the defect this instrument exists to stop.

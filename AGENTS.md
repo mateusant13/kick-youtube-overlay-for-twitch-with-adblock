@@ -134,12 +134,19 @@ Cap: one visible pane per canonical project across workspaces/worktrees. The pan
 - **Ask what the extension believes RIGHT NOW**: `node _tools/ko-snapshot.mjs [port] [--json]` reads the state the page publishes (`data-ko-owner`, `data-ko-audio-*`, `data-ko-adblock`), samples the main media element twice 1.5 s apart, and prints PLAYING / FROZEN / PAUSED / REPEAT per tab, exiting 1 on an anomaly (`#ko-wrap` with no iframe, an owner published with nothing mounted, an element that claims to play while its clock does not advance, playing at `readyState <= 1`). Read-only: no click, seek, pause or navigate, so it is safe on the owner's tab while he watches. It exists because the ring only holds TRANSITIONS: measured 2026-11-20, a native element sat at `rs=1` with a frozen clock for 70 s and the ring had no row for that stretch, so "is it stuck right now" had no instrument. `KO` itself is unreachable (a closure in the content script); the attributes are the extension's own published contract. What the DOM cannot answer (which seek branch ran, the standby frame's `pos`/`lat`, WHY a video is paused) is printed at the end of every run instead of guessed.
 - **The ad route's host test refuses the shape our own token rewrite produces, and that refusal is now a row.** Layer 1 rewrites
   the page's playout token (platform android/popout); Twitch then serves the page's own player a cloudfront
-  `index-muted-*.m3u8`, which `WORKER_LIVE_MEDIA` rejects, so `routeWorkerPlaylist()` returns before any decision while
-  `playlistInfo()`'s `,live` suffix heuristic calls that same playlist `adOnly` with ~1789 segments. Measured live 2026-11-27
-  (13 min, kaicenat): the playlist pod route never ran on the page's actual stream, and before 0.8.134 the ring said nothing.
-  `ad-skip {from:'worker-url', adUi:'host'}` names it once per load, and `worker-transport-hit {transport, host}` names the
-  loader that carries the stream, so an empty digest can no longer be a clean playlist, a streaming body and an unwrapped
-  loader at once. Do not widen the host test without a real ad-bearing playlist to key on (ledger KO-20261127-08).
+  `index-muted-*.m3u8`, which `WORKER_LIVE_MEDIA` rejects, so `routeWorkerPlaylist()` returns before any decision. Measured
+  live 2026-11-27 (13 min, kaicenat): the playlist pod route never ran on the page's actual stream, and before 0.8.134 the
+  ring said nothing. `ad-skip {from:'worker-url', adUi:'host'}` names it once per load, and `worker-transport-hit {transport,
+  host}` names the loader that carries the stream, so an empty digest can no longer be a clean playlist, a streaming body and
+  an unwrapped loader at once. Do not widen the host test without a real ad-bearing playlist to key on (ledger
+  KO-20261127-08).
+- **A `,live` suffix is a measurement; Twitch's marker is the decision.** Until 0.8.135 `playlistInfo()` called that cloudfront
+  playlist `adOnly` with ~1789 segments — a 100 % false positive on the transport our own token rewrite earns — while
+  `stripAds()`, two functions away on the same bytes, refused to look for ads without `stitched|X-TV-TWITCH-AD-URL|twitch-stitched-ad`.
+  One question had two predicates and the suffix one decided. `TWITCH_AD_MARKER` is now the single owner of that vocabulary,
+  `adOnly` requires it, and `adExtinf` stays the raw suffix count so the ring can still see a playlist with no `,live` at all.
+  The rule for the next reader: when two functions in one file disagree about whether a thing is an ad, the one that ACTS
+  holds the evidence and the one that DECIDES must read the same evidence.
 - **Ask the code what it decides in silence**: `node _tools/ko-census.mjs [--json] [--gate]` parses `content.js`, `twitch-adblock.js` and `player-bridge.js` and lists every `return`/`continue` that is a DECISION with no log call of its own — split into `silent` (nothing nearby) and `guard-shaped` (the enclosing function logs elsewhere, so the author knew that exit should be explainable). It also cross-checks the ad path's declared state against every suite and names the fields no arm references. Measured 2026-11-20 on 0.8.107: **113 guard-shaped silent exits** (`content.js` 50, `twitch-adblock.js` 63) and **39 of 58 ad-path state fields never referenced by an arm**. `--gate` compares against `_tools/ko-census-budget.json` (a CEILING, never a target) and refuses growth; it is check `silent-census` in `ko-verify`. Proof it bites: plant `if (overlay.standby && !overlay.revealed) return;` in `adUiHoldTick()` — the check goes FAIL naming that file.
 - **The census named tonight's bug before tonight's bug happened.** Ranking the same run by function puts `catchUpClean` (8), `adUiHold` (6), `armNativeRecovery` (6), `stopAdOverlay` (6) and `adUiHoldTick` (5) at the top of `twitch-adblock.js` — and `adUiHoldTick` is exactly the guard that let a 62.6 s ad play. The worst offenders are the code paths that decide about the owner's screen. Read that ranking when choosing where to add a row next, not after a report.
 - **`nativeStallWatch` is the reference implementation of the rule**, and it is the only one: 18 exits, every refusal goes through `nativeStallRefuse(why, data)` which writes `native-stall-refused {why}`, and every recovery writes `native-stall`/`native-stall-recovered`. Copy its shape (a refusal helper that names the reason, called from every guard) rather than sprinkling `diag()` calls, because the helper makes "silent" and "explained" impossible to confuse.
@@ -387,11 +394,18 @@ the report.
   a typed `latency_refused {reason: "starved: total=..% pinned=.."}` instead of a number, which
   `benchmark_history.py` turns into CANNOT-MEASURE: never a PASS, never a REGRESSED. A READY box still
   prints `RESULT_MS` and still regresses. Four arms plus the mutant (ceilings raised to 100 % makes the
-  same busy fixture measure) are check `timed-suite` in `ko-verify`, and it refuses if the metric stops
-  running through the wrapper.
-- **The gate is this project's one heavy step** (`node _tools/ko-verify.mjs`, ~330 s serial on the SMR
-  volume). One at a time, with the READY reading quoted beside its result, and no second suite, build,
-  replica scenario or browser guest started while it runs.
+  same busy fixture measure) are check `timed-suite` in `ko-verify`, and it refuses if ANY timing metric
+  stops running through the wrapper — **all seven of them, the whole-gate wall included** (measured again
+  2026-11-27: only `ad_time_continuity_ms` was wrapped, so `basic.syntax_check_ms`, `basic.census_ms`,
+  `basic.import_or_boot_ms` and `subsystem.bridge_handshake_ms` were graded by raw wall time on a box at
+  `host_cpu 88.8 %` with 9 cores pinned and the gate went red for unchanged code; one `node --check`
+  sampled 16040 / 9338 / 436 ms in that window). A green `revival-budgets` on a starved box now means
+  "every timing row refused", and its detail counts the refusals instead of saying "inside budget".
+- **The gate is this project's one heavy step** (`node _tools/ko-verify.mjs`). One at a time, with the
+  READY reading quoted beside its result, and no second suite, build, replica scenario or browser guest
+  started while it runs. Its wall was ~330 s when it ran the pre-clock suites; MEASURED 2026-11-27 it is
+  **41 s on a READY box** (the virtual clock took the two behavioural suites from 70.8 s and 268.3 s to
+  0.9 s and 4.7 s), so a lane that queues the gate for "five minutes plus" is quoting a stale cost.
 - A lane that cannot measure the box (a worktree without the tool) inherits the parent's reading and
   does not re-derive it: the census is the seat's, the cost is shared.
 

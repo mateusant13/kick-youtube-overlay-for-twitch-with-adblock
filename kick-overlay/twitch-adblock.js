@@ -5604,6 +5604,9 @@
     // Same ceiling as the page's own timer: a stopped playlist fetch must not
     // leave this worker's adBypassActive true for the page's 180 s timeout.
     const AD_POD_MAX_MS = 60000;
+    // TWITCH'S OWN AD MARKER, ONE OWNER. `playlistInfo()` decides from it and `stripAds()` acts on
+    // it; two copies of the regex is how a decision and its action drift apart.
+    const TWITCH_AD_MARKER = /stitched|X-TV-TWITCH-AD-URL|twitch-stitched-ad/i;
     const realFetch = self.fetch.bind(self);
     const cleanCache = new Map();
     const mediaFallbackCache = new Map();
@@ -5691,12 +5694,21 @@
       const lines = String(text || '').replace(/\r/g, '').split('\n');
       const extinf = lines.filter((l) => l.startsWith('#EXTINF'));
       const adExtinf = extinf.filter((l) => !/,live\s*$/.test(l));
+      // TWO VOCABULARIES, ONE QUESTION. `adExtinf` is a MEASUREMENT of the ",live" suffix (how
+      // many segments do not claim to be live content), and it stays raw. `adOnly` is the
+      // DECISION "this playlist is an ad", and the suffix cannot make it: measured live
+      // 2026-11-27 (kaicenat, KO-20261127-08), the cloudfront `index-muted-*.m3u8` our own token
+      // rewrite earns carries no ",live" on any segment, so the suffix alone called a whole live
+      // stream `adOnly` with 1789 segments. `stripAds()` - two functions away, acting on the same
+      // bytes - already refuses to look for ads without Twitch's own marker, so the decision now
+      // keys on the marker it acts on, and a suffix-only playlist is what it is: unmarked.
+      const hasStitched = TWITCH_AD_MARKER.test(text);
       return {
         lines,
         extinf: extinf.length,
         adExtinf: adExtinf.length,
-        adOnly: extinf.length > 0 && adExtinf.length === extinf.length,
-        hasStitched: /stitched|X-TV-TWITCH-AD-URL|twitch-stitched-ad/i.test(text),
+        adOnly: hasStitched && extinf.length > 0 && adExtinf.length === extinf.length,
+        hasStitched,
         adExtinfSamples: adExtinf.slice(0, 3).map((l) => l.slice(0, 160)),
       };
     }
@@ -6191,7 +6203,7 @@
     }
 
     function stripAds(text) {
-      if (!/stitched|X-TV-TWITCH-AD-URL|twitch-stitched-ad/i.test(text)) return text;
+      if (!TWITCH_AD_MARKER.test(text)) return text;
       const lines = text.replace(/\r/g, '').split('\n');
       const out = [];
       let skipUri = false;
