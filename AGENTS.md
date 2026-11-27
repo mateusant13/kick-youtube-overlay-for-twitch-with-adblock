@@ -327,6 +327,70 @@ live edge has to come from its player (not from `seekable`), and one CDP round-t
 `Page.setWebLifecycleState('active')` hung the tab past the grace window and the handle was killed —
 probe first, mutate the lifecycle last, and treat a killed handle as a released tab.
 
+## Owner browser use: a SEPARATE WINDOW, muted, and closed before the turn ends (owner order 2026-11-27)
+
+Verbatim, after probe tabs appeared in his tab strip: *"you will stop opening tabs and not closing
+them. if you gonna open one, close the last one. and youre not using a new WINDOW, youre using new
+tabs. i see you opening tabs. you should open WINDOWS. THAT ARE SEPARETED. FROM MY TABS."*
+
+Tool of record: `_tools/ko-bg-window.py` (`open` / `state` / `list` / `close` / `reap` /
+`hide-window`). It drives **his** running Chrome over `http://127.0.0.1:9222` — never a guest
+profile, never a second browser, never his own tabs.
+
+- **A tab in his strip is a defect.** `Target.createTarget{background:true}` without
+  `newWindow:true` puts a page beside his work where he sees it. Every open is
+  `newWindow:true`, a window of its own.
+- **Never leave one behind**: `open` records the target and window in
+  `%LOCALAPPDATA%\omp\ko-bg-tabs.jsonl`; `close --label <name>` (or `--target`) closes it, and
+  `reap` closes every registered window still alive. A run that opens and does not close is the
+  behaviour he complained about, so a probe script closes in a `finally`, not at the end of a happy
+  path.
+- **His focus is not ours to move.** `open` compares `GetForegroundWindow()` before and after and
+  reports `focus_stolen`/`focus_restored`; when Chrome takes it anyway the tool hands it back with
+  `AttachThreadInput` + `SetForegroundWindow` (Windows only lets the current foreground process
+  restore it, so the threads are attached first). Measured across every shape below:
+  `focus_moved:false` for a background window, a parked window and a reloaded one.
+- **Nothing is ever navigated, clicked or activated on his tabs.** `state` is read-only
+  (`location`, `readyState`, video count/`currentTime`, lock flag, `visibilityState`).
+
+Mechanism table — every route measured on this box, 2026-11-27, Chrome 158, port 9222,
+`--user-data-dir=C:\ChromeDebugProfile`:
+
+| route | measured result |
+|---|---|
+| tab in his strip (`background:true`, no `newWindow`) | works, page alive, no focus change — **but it is a tab in his strip** |
+| separate window (`newWindow:true, background:true`) + `Browser.setWindowBounds` | window created, **parked at (-32000,-32000)**, `focus_moved:false`; Chrome ignores the first bounds write until it has finished showing the window (~500 ms), so the write is retried until `getWindowBounds` reads it back |
+| separate window left on screen | same, plus it is painted in his view — only acceptable if he asked for it |
+| `chrome.windows.create({left:-32000,…})` from an extension | refused: `Bounds must be at least 50% within visible screen space.` |
+| `chrome.windows.create({state:'minimized', focused:false})` | Chrome answered `state:"normal"` at (10,0), painted it and **took his focus** — he reported it |
+| alpha-0 layered window (`hide-window`, the `I:/!manager/tools/bg-window.py` mechanism) | **refused before creating anything** on this box: that Chrome runs at a higher integrity than this shell (`SetWindowLongPtr` → err 5, `OpenProcessToken` denied). `preflight` writes back the style a window already has, so the refusal happens **before** a window exists |
+| `Target.createTarget{background:true}` tab with no window, page needing a player | frozen: `visibilityState:"hidden"`, rAF 0, evaluate times out |
+| parked/separate window + `Emulation.setFocusEmulationEnabled` + `Page.setWebLifecycleState('active')` | `visibilityState:"visible"`, the renderer answers for ~10 s then stops |
+
+**Silence is a prototype lock, not a poll.** `LOCK_MUTE` redefines `muted`→true and `volume`→0 on
+`HTMLMediaElement.prototype` as **accessors with setters** (a data-property redefine makes
+strict-mode page code throw, which kills the player bootstrap) and is installed as
+`Page.addScriptToEvaluateOnNewDocument` while the tab is **paused at creation**
+(`Target.setAutoAttach{waitForDebuggerOnStart}` + `Runtime.runIfWaitingForDebugger`) plus one
+`Page.reload` so the running document carries it. Verified: `window.__koAudioLock === true`.
+A poll-and-mute loop is not enough — measured on twitch.tv the player rewrites
+`muted:false, volume:1` inside a 500 ms window, which is audible for exactly that fraction.
+
+**A live player starts on ONE TRUSTED CLICK, and only on that.** Measured 2026-11-27 in a window
+parked at (-32000,-32000) with the lock on: the player mounts but `currentTime` stays 0 for 12 s,
+with and without the lock. After one `Input.dispatchMouseEvent` press/release on the video's centre
+(CDP input is trusted, so Chrome counts it as the gesture autoplay wants) the clock advances at wall
+rate — 8 samples, `+2.07 s` per 2 s, `muted:true`, `paused:false`, `visibilityState:"visible"`,
+`hasFocus:true`, and `GetForegroundWindow()` unchanged for the whole run. `open --play` performs
+exactly that gesture. `video.play()` from page script is not a substitute: it has no user activation
+and it is a page mutation rather than a gesture.
+
+**The working shape, end to end** (all seven steps measured, in this order): separate window
+(`newWindow:true, background:true`) → paused at creation → `LOCK_MUTE` init script → focus emulation
++ `Page.setWebLifecycleState('active')` → resume → park at (-32000,-32000) with read-back → one
+`Page.reload` → one trusted click → playing, silent, off his screen, his focus untouched → `close`.
+Anything less either paints the window, stays silent by staying frozen, or plays audibly.
+
 ## Assume this machine is ten times weaker (owner order 2026-11-11, via watcher DM)
 
 Verbatim: *"cancela todos os trabalhos. em todas as lanes. fala pra matar tudo que ta rodando.
