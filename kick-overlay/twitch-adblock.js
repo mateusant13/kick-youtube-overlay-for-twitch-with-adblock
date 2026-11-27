@@ -5482,7 +5482,18 @@
       if (!changed) return body;
       stats.rewrites++;
       return JSON.stringify(parsed);
-    } catch {
+    } catch (e) {
+      // A body we could not parse is served UNREWRITTEN, and that is the SITE
+      // PLAYER'S OWN ad-bearing token: the exact outcome the rewrite exists to
+      // prevent. Until this row existed the caller could not tell it from
+      // "this body needed no rewrite", because both exits returned `body` in
+      // silence, so a rewrite that failed on every request read as a clean
+      // stream with zero rewrites. Measured 2026-11-27 (A4 wave): the only one
+      // of this file's four silent catches that can hand the page a worse
+      // token than the one it sent; the other three (a `clearTimeout`, a URL
+      // parse, a channel regex) fail into a state their own next row already
+      // names.
+      adLog('token-rewrite-failed', { error: String(e).slice(0, 120), len: body.length });
       return body;
     }
   }

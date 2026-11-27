@@ -2108,6 +2108,45 @@ async function runAdPathArms() {
   check('E13: prewarm keys on the marker and keeps postStandbyStart', prewarmBranchArm(SRC));
 }
 
+// ---- A REWRITE THAT THREW IS NOT A BODY THAT NEEDED NO REWRITE (measured 2026-11-27) ----
+// `rewriteTokenBody` had `catch { return body; }`: a GQL body it could not parse was served
+// UNREWRITTEN, which is the site player's own ad-bearing token, and the ring could not tell that
+// from a clean body because both exits returned `body` in silence. The arms below run the SHIPPED
+// function text with its real collaborators injected, not a copy of its predicates.
+function rewriteTokenArm(src, body) {
+  const start = src.indexOf('  function rewriteTokenBody(body) {');
+  if (start < 0) throw new Error('rewriteTokenBody is gone');
+  let i = src.indexOf('{', start);
+  let depth = 0;
+  let end = -1;
+  for (; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
+  }
+  const text = src.slice(start, end);
+  const rows = [];
+  const stats = { rewrites: 0 };
+  const fn = new Function('PLAYER_TYPE', 'CLEAN_PLATFORM', 'stats', 'adLog',
+    `return (${text.trim()});`)('popout', 'web', stats, (ev, d) => rows.push({ ev, d }));
+  return { out: fn(body), rows, stats };
+}
+check('E14: a token body the rewrite cannot parse is served unchanged and named', () => {
+  const broken = '{"variables":{"playerType":"site"} PlaybackAccessToken';
+  const r = rewriteTokenArm(SRC, broken);
+  return r.out === broken
+    && r.rows.length === 1 && r.rows[0].ev === 'token-rewrite-failed'
+    && /JSON|Unexpected/i.test(String(r.rows[0].d && r.rows[0].d.error))
+    && r.rows[0].d.len === broken.length;
+});
+check('E14b: a body that needed no rewrite writes no failure row', () => {
+  const body = JSON.stringify({ variables: { playerType: 'site', platform: 'web' } });
+  const r = rewriteTokenArm(SRC, body);
+  return r.out !== body && r.rows.length === 0 && r.stats.rewrites === 1;
+});
+redArm('RED: without the row a failed rewrite is indistinguishable from a clean body',
+  SRC.replace("    } catch (e) {\n      // A body we could not parse is served UNREWRITTEN", "    } catch (e) {\n      return body;\n      // A body we could not parse is served UNREWRITTEN"),
+  (src) => rewriteTokenArm(src, '{"variables":{"playerType":"site"} PlaybackAccessToken').rows.length > 0);
+
 const expected = [
   'a wrapper that is 0x0 with a permanent __wrapper-hidden class is still an ad when its container paints',
   'the measured real ad is hold-worthy (it covers the player)',
@@ -2240,6 +2279,9 @@ const expected = [
   'E12b: stripAds leaves an unmarked playlist unchanged',
   'E13 RED: the old prewarm predicate misses the unmarked live grace window',
   'E13: prewarm keys on the marker and keeps postStandbyStart',
+  'E14: a token body the rewrite cannot parse is served unchanged and named',
+  'E14b: a body that needed no rewrite writes no failure row',
+  'RED: without the row a failed rewrite is indistinguishable from a clean body',
 ];
 (async () => {
   await runAdPathArms();

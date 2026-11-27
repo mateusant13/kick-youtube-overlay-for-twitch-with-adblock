@@ -4727,12 +4727,26 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
         // spent budget fail the arm instead of stalling the whole suite.
         let finished = false;
         pending.then(() => { finished = true; }, () => { finished = true; });
-        for (let i = 0; i < 10 && !finished; i++) { await settle(1000); await drain(); }
+        const flips = [];
+        for (let i = 0; i < 10 && !finished; i++) {
+          await settle(1000);
+          await drain();
+          if (K.player !== 'kick' || K.enabled !== true) flips.push({ i, player: K.player, enabled: K.enabled });
+        }
         assert.ok(finished, 'item 15 precondition: the reconnect never settled');
         await pending;
+        // The refusal row's `test` is a static label, so it cannot tell "refused
+        // because the route" from "refused because a flag flipped during the
+        // settle". The flags are re-pinned for the run, but something inside the
+        // virtual timeline rewrites them (measured 2026-11-27: 16 of 25 runs), and
+        // the RED mutant below removes the flag questions entirely so its claim
+        // is about the route alone. Record the flips here as evidence instead of
+        // asserting a fixture property the product fights.
         return {
           wrap: K.wrap,
           rectTimer: K.rectTimer,
+          count: K.reconnectCount,
+          flips,
           rows: rowsFrom(from, 'refused').filter((r) => r.where === 'reconnect'),
         };
       } finally {
@@ -4745,12 +4759,19 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     assert.strictEqual(A.wrap, null, 'item 15: no #ko-wrap after the backoff on a non-player route');
     assert.strictEqual(A.rectTimer, null, 'item 15: the keep-up clock was not restarted');
     assert.ok(A.rows.some((r) => /overlayTargetRoute/.test(String(r.test))), 'item 15: the refusal names the route predicate');
-    // RED: restore the old post-await gate, without overlayTargetRoute().
+    // RED: the old post-await gate did not look at the route at all. The mutant
+    // removes ONLY that question (`false`) instead of restoring the old
+    // `!KO.enabled || KO.player !== 'kick'` spelling: those two flags are still
+    // true here, so the old spelling makes the arm depend on nothing else
+    // flipping them during the settle (measured 2026-11-27: 2 gate refusals in
+    // 20 runs, and the second one was the fixture's own flag, not the route).
+    // `false` keeps the claim exact: with no route check the continuation
+    // mounts on /clips and restarts the clock.
     const red = await run(mkArm(
       "!KO.enabled || KO.player !== 'kick' || !overlayTargetRoute()",
-      "!KO.enabled || KO.player !== 'kick' /* RED: stale player flag survives the route change */",
+      'false /* RED: no route gate at all */',
     ));
-    assert.ok(red.wrap, 'RED item 15: the old gate re-mounted the overlay on /clips');
+    assert.ok(red.wrap, `RED item 15: the old gate re-mounted the overlay on /clips (attempts=${red.count}, refusals=${JSON.stringify(red.rows)}, rectTimer=${!!red.rectTimer}, flips=${JSON.stringify(red.flips)})`);
     assert.ok(red.rectTimer, 'RED item 15: the old gate restarted the keep-up clock');
     console.log('item 15 reconnect backoff: a route change stops the recovery - OK');
   }
