@@ -1,6 +1,6 @@
 # Macro Feature Architecture — kicktwitchyoutube_instagram
 
-> Auto-synced from Git (`79916a3`) at `2026-11-27T08:57:45Z` by `feature_map_sync.py`.
+> Auto-synced from Git (`47d6d5a`) at `2026-11-27T09:01:30Z` by `feature_map_sync.py`.
 > Refine `how_it_works`, `inputs`, `outputs`, `interlinks`, `verify_cmd`, and `metric_ids` in `features/features.json` (set `"curated": true`) — re-syncs preserve curated contracts while keeping file lists & commits live.
 
 ## 1. Macro Feature Matrix
@@ -8,7 +8,7 @@
 | Feature | Files | Commits | Inputs | Outputs | Interlinks | How It Works |
 |---|---:|---:|---|---|---|---|
 | `_tools` | 65 | 178 | the repository working tree and its git history; the extension's ring dump (`chrome.storage.local['ko.adlog']`) read over CDP; a guest Chrome on port 9446 with the unpacked extension loaded, or the owner's Chrome on 9222 for read-only probes | a gate verdict + receipt (`_evidence/ko-verify-latest.md`); machine artifacts per verified bug (`_evidence/<bug>-arms.md`) and reachability records; verdict lines on stdout (`RESULT PASS|FAIL ... checks=N failed=0`) that a lane quotes as evidence | kick-overlay | Instruments, never product: (1) `ko-verify.mjs` runs every static suite plus the ledger, census, artifact and revival gates and writes `_evi |
-| `kick-overlay` | 24 | 306 | the Twitch watch page DOM: `[data-a-target="video-player"]`, the squeezeback/slate ad text, the page's own `HTMLVideoElement`; Twitch's HLS playlists as fetched by the page's own player worker (token, `adExtinf`, `#EXT-X-DATERANGE`) and the GQL usher (`playbackAccessToken`); real user gestures: pointer/key input on the page, the overlay bar, the popup (each carries an author stamp) | the overlay iframe + bar (`#ko-wrap`, `#ko-g1`, seek bar) with the kick/YouTube picture; published attributes the instruments read: `data-ko-owner`, `data-ko-audio-m/-v/-vis/-wt/-it`, `data-ko-adpark`, `data-ko-adblock`; media-element writes: pause/resume, `currentTime` seeks, `muted`/`volume`, `playbackRate` | _tools | Three worlds, one page. The ISOLATED content script (`content.js`) mounts the kick/YouTube layer in an iframe (`player.html`), arbitrates ow |
+| `kick-overlay` | 24 | 305 | the Twitch watch page DOM: `[data-a-target="video-player"]`, the squeezeback/slate ad text, the page's own `HTMLVideoElement`; Twitch's HLS playlists as fetched by the page's own player worker (token, `adExtinf`, `#EXT-X-DATERANGE`) and the GQL usher (`playbackAccessToken`); real user gestures: pointer/key input on the page, the overlay bar, the popup (each carries an author stamp) | the overlay iframe + bar (`#ko-wrap`, `#ko-g1`, seek bar) with the kick/YouTube picture; published attributes the instruments read: `data-ko-owner`, `data-ko-audio-m/-v/-vis/-wt/-it`, `data-ko-adpark`, `data-ko-adblock`; media-element writes: pause/resume, `currentTime` seeks, `muted`/`volume`, `playbackRate` | _tools | Three worlds, one page. The ISOLATED content script (`content.js`) mounts the kick/YouTube layer in an iframe (`player.html`), arbitrates ow |
 
 ## 2. Subsystem Interconnection Graph
 
