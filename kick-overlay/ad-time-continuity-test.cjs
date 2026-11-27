@@ -3469,6 +3469,61 @@ async function main() {
   await redArm('RED: mounting a standby clears the cold pod claim', redStandbyClaim, coldCoverStandbyArm);
   await greenArm('a cold-cover pod mounts its clean source and reveals it', () => coldCoverStandbyArm(SOURCE));
 
+  // ---- 11b2. THE HOST REFUSAL NAMES ITSELF, ONCE ------------------------
+  // Measured live: our token rewrite puts the page's own stream on a cloudfront `index-muted` variant,
+  // which the live-media host test rejects, so the playlist pod route never runs there. The refusal is
+  // now a row (once per load, never a heartbeat) instead of silence.
+  async function hostRefusalArm(src) {
+    const page = makeWorld({ adSource: src });
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    const onCloudfront = { ...WORKER_AD, url: 'https://d2vi6trrdongqn.cloudfront.net/x_kaicenat_1/index-muted-AAA.m3u8' };
+    page.debug(onCloudfront);
+    page.debug(onCloudfront);
+    page.debug(onCloudfront);
+    await settle(20);
+    const rows = page.logsOf('ad-skip').filter((l) => l.d.from === 'worker-url');
+    assert(rows.length === 1, `expected one host refusal row, got ${rows.length}`);
+    assert(rows[0].d.reason === 'no-ad-evidence' && rows[0].d.adOnly === true,
+      `the row does not name what was refused: ${JSON.stringify(rows[0].d)}`);
+    assert(page.stats().adActive() === false, 'the host refusal opened a pod');
+  }
+  const redHostSample = mutate([[
+    '      if (workerUrlRefused) return;\n      workerUrlRefused = true;\n',
+    '',
+  ]]);
+  await redArm('RED: without the once-per-load guard every playlist refresh writes a refusal', redHostSample, hostRefusalArm);
+  await greenArm('a playlist the host test rejects is refused with a row, once per load', () => hostRefusalArm(SOURCE));
+
+  // ---- 11c. THE TRANSPORT OF THE PLAYER'S OWN PLAYLIST IS EVIDENCE -------
+  // A clean playlist writes no row (a transition, not a sample), so before this
+  // row existed "no ad served" and "the player's own playlist never reached the
+  // digest" were the same ring: measured live 2026-11-27, 13 minutes with
+  // `worker-hooked=worker+worker` and nothing of the player's own in the digest.
+  // One row per transport per page load names the loader carrying the stream.
+  async function transportRowArm(src) {
+    const page = makeWorld({ adSource: src });
+    setNative(page, { ct: 397, edge: 400, bufferedEnd: 400 });
+    const cleanOn = (transport) => page.debug({ ...WORKER_CLEAN, transport });
+    cleanOn('xhr');
+    cleanOn('xhr');
+    cleanOn('fetch');
+    await settle(20);
+    const rows = page.logsOf('worker-transport');
+    assert(rows.length === 2, `expected one row per transport, got ${rows.length}: ${JSON.stringify(rows.map((l) => l.d))}`);
+    const xhr = rows.find((l) => l.d.transport === 'xhr');
+    const fet = rows.find((l) => l.d.transport === 'fetch');
+    assert(xhr && fet, 'the rows do not name both transports');
+    assert(xhr.d.liveMedia === true && xhr.d.host === 'video-edge-a.playlist.ttvnw.net',
+      `the xhr row does not name the live host: ${JSON.stringify(xhr.d)}`);
+    assert(xhr.d.extinf === 7 && xhr.d.adExtinf === 0, `the row does not carry the first playlist: ${JSON.stringify(xhr.d)}`);
+  }
+  const redTransportSample = mutate([[
+    '          if (!stats.workerTransports[tr]) {',
+    '          if (true) {',
+  ]]);
+  await redArm('RED: without the once-per-transport guard every playlist writes a row', redTransportSample, transportRowArm);
+  await greenArm('one row per transport names the loader carrying the live stream', () => transportRowArm(SOURCE));
+
   // ---- 12. THE TICK MUST NOT CALL ITS OWN PAUSE A NATIVE PAUSE -----------
   // Replica ring, same millisecond: `ad-ui-hold {act:"paused"}` then
   // `{act:"skip", why:"native-paused"}`. The DOM tick runs adUiHold() then

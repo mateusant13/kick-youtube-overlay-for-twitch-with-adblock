@@ -65,6 +65,8 @@
   // the same streak the worker uses in its own (unreachable here) path.
   let workerRoutePodAt = 0;
   let workerRouteClean = 0;
+  // One row per page load for the host refusal, so a decision is named without becoming a heartbeat.
+  let workerUrlRefused = false;
   const WORKER_ROUTE_CLEAN_END = 2;
   const WORKER_LIVE_MEDIA = /\/v1\/playlist\/|\.playlist\.live-video\.net\//;
   function workerAdSeconds(msg) {
@@ -79,7 +81,25 @@
   function routeWorkerPlaylist(msg) {
     // VOD segments have no ",live" and look like ads to playlistInfo(); only a
     // live media playlist can open a bypass pod.
-    if (!WORKER_LIVE_MEDIA.test(String(msg.url || ''))) return;
+    if (!WORKER_LIVE_MEDIA.test(String(msg.url || ''))) {
+      // A REFUSAL IS A DECISION, SO IT NAMES ITSELF. Measured live 2026-11-27 (0.8.130, kaicenat):
+      // the page's own player streamed a cloudfront `index-muted-*.m3u8` (the shape OUR token
+      // rewrite asks for), so this branch is taken for every playlist of the page's own stream and
+      // the playlist pod route is unreachable there - while `playlistInfo()`'s ",live" heuristic
+      // reports that same playlist as `adOnly` with 1789 segments. Silence here is what made "no ad
+      // served" and "the route refused the page's playlist" the same ring row (none).
+      if (workerUrlRefused) return;
+      workerUrlRefused = true;
+      podEvidenceRefuse('worker-url', {
+        kind: 'host',
+        url: String(msg.url || '').slice(0, 90),
+        extinf: msg.extinf,
+        adExtinf: msg.adExtinf,
+        adOnly: !!msg.adOnly,
+        hasStitched: !!msg.hasStitched,
+      });
+      return;
+    }
     if (Number(msg.adExtinf) > 0 || !!msg.adOnly) {
       workerRouteClean = 0;
       // THE MARKER IS NOT THE AD. A refresh can keep listing ad segments
@@ -178,6 +198,25 @@
     debugChannel.onmessage = (ev) => {
       const msg = ev && ev.data;
       if (!msg || typeof msg !== 'object' || msg.page !== pageId) return ;
+      // A transport hit is not an ad and never routes a pod: it names the loader that carries the
+      // stream, so the next reader does not have to guess why the digest is empty.
+      if (msg.type === 'transport') {
+        try {
+          stats.workerTransportHits = stats.workerTransportHits || {};
+          const key = msg.transport || 'fetch';
+          if (!stats.workerTransportHits[key]) {
+            stats.workerTransportHits[key] = { at: Date.now(), url: String(msg.url || '').slice(0, 160) };
+            adLog('worker-transport-hit', {
+              transport: key,
+              host: String(msg.url || '').replace(/^https?:\/\//, '').split('/')[0],
+              liveMedia: WORKER_LIVE_MEDIA.test(String(msg.url || '')),
+            });
+          }
+        } catch {
+          /* diagnostics only */
+        }
+        return;
+      }
       if (msg.type === 'playlist') {
         if (!Array.isArray(stats.workerPlaylistLog)) stats.workerPlaylistLog = [];
         stats.workerPlaylistLog.push(msg);
@@ -185,6 +224,27 @@
         stats.lastWorkerPlaylist = msg;
         if (msg.adOnly) stats.adOnlySeen = (stats.adOnlySeen || 0) + 1;
         if (msg.changed === 'adOnly->fallback') stats.fallbacks = (stats.fallbacks || 0) + 1;
+        // THE TRANSPORT IS PART OF THE EVIDENCE. A clean playlist writes no row (a transition, not
+        // a sample), so "no ad" and "the player's own playlist never reached the digest" used to be
+        // indistinguishable in the ring: measured 2026-11-27, 13 live minutes with
+        // `worker-hooked=worker+worker` and zero player playlists. One row per transport per page
+        // load names the loader that is actually carrying the stream, with its first playlist.
+        try {
+          const tr = msg.transport || 'fetch';
+          stats.workerTransports = stats.workerTransports || {};
+          if (!stats.workerTransports[tr]) {
+            stats.workerTransports[tr] = { at: Date.now(), extinf: msg.extinf, adExtinf: msg.adExtinf };
+            adLog('worker-transport', {
+              transport: tr,
+              extinf: msg.extinf,
+              adExtinf: msg.adExtinf,
+              liveMedia: WORKER_LIVE_MEDIA.test(String(msg.url || '')),
+              host: String(msg.url || '').replace(/^https?:\/\//, '').split('/')[0],
+            });
+          }
+        } catch {
+          /* diagnostics only */
+        }
         if (msg.adOnly || msg.adExtinf > 0 || msg.changed) {
           adLog('worker-playlist', {
             extinf: msg.extinf,
@@ -5641,12 +5701,13 @@
       };
     }
 
-    function digestPlaylist(url, text, changed) {
+    function digestPlaylist(url, text, changed, transport) {
       if (!debugChannel || typeof text !== 'string') return;
       try {
         const info = playlistInfo(text);
         debugChannel.postMessage({
           type: 'playlist',
+          transport: transport || 'fetch',
           at: Date.now(),
           worker: workerId,
           page: typeof __KO_PAGE_ID !== 'undefined' ? __KO_PAGE_ID : '',
@@ -6253,8 +6314,33 @@
       }
     }
 
+    // WHICH TRANSPORT THE PLAYER ACTUALLY USES, SAID OUT LOUD ONCE PER WORKER.
+    // The digest only speaks for playlists, and a streaming playlist body never ends, so "the ring has
+    // no playlist of the player's own" could mean a clean playlist, a streaming response, or a loader
+    // this worker never wrapped. One row per transport, with the first URL it carried, removes that
+    // ambiguity and cannot be mistaken for evidence of an ad (separate message type, no pod route).
+    const transportSeen = {};
+    function noteTransport(transport, url) {
+      try {
+        if (!debugChannel || transportSeen[transport]) return;
+        transportSeen[transport] = 1;
+        debugChannel.postMessage({
+          type: 'transport',
+          transport,
+          at: Date.now(),
+          // The page's consumer drops any message whose `page` is not its own; the digest in this file
+          // has always carried it and the first version of this row did not, so nothing arrived.
+          page: typeof __KO_PAGE_ID !== 'undefined' ? __KO_PAGE_ID : '',
+          worker: workerId,
+          url: String(url || '').slice(0, 160),
+        });
+      } catch {
+        /* diagnostics only */
+      }
+    }
     self.fetch = async function (input, init) {
       const url = typeof input === 'string' ? input : (input && input.url) || '';
+      noteTransport('fetch', url);
       try {
         // A VOD page reuses the same worker/page after an SPA navigation from
         // a live channel. Drop the stale live channel so the VOD playlists
@@ -6378,6 +6464,53 @@
       }
       return response;
     };
+
+    // THE PLAYER'S LOADER IS NOT ALWAYS `fetch`. Measured on the live page 2026-11-27 (kaicenat,
+    // 13 min, guest Chrome, 0.8.130): the player's worker IS the patched one (`new KoAdblockWorker`
+    // -> `new Wrapped`, stack `assets.twitch.tv/.../player-core-variant-a-...`), `video.srcObject` is
+    // a `MediaSourceHandle`, and yet `stats.workerPlaylistLog` held three entries in 13 minutes -
+    // two cloudfront media playlists and one usher VOD master, all of them OUR OWN loader's. Not one
+    // playlist of the player's own crossed `self.fetch`. The player's HLS pulls its media playlists
+    // through `XMLHttpRequest`, which this worker never wrapped, so the playlist-level ad defence had
+    // no transport at all on the live page. The body is read here and handed to the same digest; the
+    // page-side consumer keeps every decision (`routeWorkerPlaylist` still refuses non-live-media URLs
+    // and still requires pod evidence before a hold).
+    try {
+      if (typeof self.XMLHttpRequest === 'function') {
+        const X = self.XMLHttpRequest;
+        const xOpen = X.prototype.open;
+        const xSend = X.prototype.send;
+        X.prototype.open = function (method, url) {
+          try {
+            this.__koXUrl = String(url);
+            noteTransport('xhr', url);
+          } catch { /* ignore */ }
+          return xOpen.apply(this, arguments);
+        };
+        X.prototype.send = function () {
+          try {
+            this.addEventListener('load', () => {
+              try {
+                const url = this.__koXUrl || '';
+                if (!/\.m3u8(?:[?#]|$)|\/playlist\//.test(url)) return;
+                if (this.responseType && this.responseType !== 'text') return;
+                const text = this.responseText;
+                if (typeof text !== 'string' || text.indexOf('#EXTM3U') < 0) return;
+                if (playlistInfo(text).extinf === 0) return;
+                digestPlaylist(url, text, false, 'xhr');
+              } catch {
+                /* diagnostics only */
+              }
+            });
+          } catch {
+            /* addEventListener failure must not break the loader */
+          }
+          return xSend.apply(this, arguments);
+        };
+      }
+    } catch {
+      /* the XHR patch is optional; fetch stays covered */
+    }
   }
 
   // Twitch moved its player to a SHARED worker feeding `video.srcObject =

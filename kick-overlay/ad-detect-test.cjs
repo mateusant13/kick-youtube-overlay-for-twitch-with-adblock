@@ -1794,6 +1794,103 @@ check('E8: ad-bypass-start and ad-pod-max carry the fields the verdict reads', (
 redArm('E8 RED: the pre-fix code wrote only bypass-msg and no promised row',
   podMutate("adLog('ad-bypass-start', {", "adLog('bypass-msg', {"),
   (src) => promisedRowsArm(src).some((r) => r.ev === 'ad-bypass-start'));
+// ---- THE PLAYER'S LOADER IS NOT ALWAYS `fetch` (measured live 2026-11-27) ----------------
+// The player's worker was the patched one (stack: `new KoAdblockWorker` -> `new Wrapped` from
+// `player-core-variant-a-...`), the page video had a `MediaSourceHandle`, and 13 live minutes produced
+// zero playlists of the player's own in `stats.workerPlaylistLog`. The worker wrapped `self.fetch`
+// only; an XHR loader carried the stream, so the playlist-level defence had no transport. These arms
+// run the SHIPPED `workerMain` and drive a real XMLHttpRequest shape through it.
+function workerWorld(src) {
+  const posts = [];
+  class FakeBC {
+    constructor(name) { this.name = name; }
+    postMessage(m) { posts.push({ ch: this.name, m }); }
+    addEventListener() {}
+  }
+  class FakeXHR {
+    constructor() {
+      this._load = [];
+      this.responseType = '';
+      this.responseText = '';
+    }
+    open(method, url) { this._url = url; }
+    addEventListener(type, fn) { if (type === 'load') this._load.push(fn); }
+    send() {}
+    fire(text) { this.responseText = text; for (const f of this._load) f(); }
+  }
+  const self = {
+    fetch: async () => new Response(''),
+    XMLHttpRequest: FakeXHR,
+    addEventListener() {},
+    postMessage() {},
+    location: { href: 'https://www.twitch.tv/rodil' },
+  };
+  const fn = new Function(
+    'self', 'BroadcastChannel', 'Response', 'URL', 'TextDecoder', 'atob', 'btoa', 'performance',
+    'setTimeout', 'clearTimeout', 'fetch',
+    'const __KO_CLIENT_ID="cid",__KO_GQL_HASH="h",__KO_GQL_URL="https://gql",__KO_PLAYER_TYPE="site",' +
+      '__KO_PLATFORM="web",__KO_PAGE_ID="p1";' + grab('workerMain', src) + '\nworkerMain();',
+  );
+  fn(self, FakeBC, Response, URL, TextDecoder, atob, btoa, performance, setTimeout, clearTimeout, fetch);
+  return { self, posts, FakeXHR };
+}
+const LIVE_PLAYLIST = '#EXTM3U\n#EXTINF:2.000,live\na.ts\n#EXTINF:2.000,\nb.ts\n';
+function xhrDigestArm(src) {
+  const w = workerWorld(src);
+  const x = new w.self.XMLHttpRequest();
+  x.open('GET', 'https://video-edge-a.playlist.ttvnw.net/v1/playlist/live.m3u8?token=abc');
+  x.send();
+  x.fire(LIVE_PLAYLIST);
+  return w.posts.filter((p) => p.m.type === 'playlist');
+}
+check('the player\'s XHR playlist reaches the digest and names its transport', () => {
+  const d = xhrDigestArm(SRC);
+  return d.length === 1 && d[0].m.transport === 'xhr' && d[0].m.extinf === 2 && d[0].m.adExtinf === 1;
+});
+check('a non-playlist XHR body writes no digest', () => {
+  const w = workerWorld(SRC);
+  const x = new w.self.XMLHttpRequest();
+  x.open('GET', 'https://gql.twitch.tv/gql');
+  x.send();
+  x.fire('{"data":null}');
+  const y = new w.self.XMLHttpRequest();
+  y.open('GET', 'https://video-edge-a.playlist.ttvnw.net/v1/playlist/live.m3u8');
+  y.send();
+  y.fire('#EXTM3U\n');
+  return w.posts.filter((p) => p.m.type === 'playlist').length === 0;
+});
+function transportHitArm(src) {
+  const w = workerWorld(src);
+  const a = new w.self.XMLHttpRequest();
+  a.open('GET', 'https://video-edge-a.playlist.ttvnw.net/v1/playlist/live1.m3u8');
+  const b = new w.self.XMLHttpRequest();
+  b.open('GET', 'https://video-edge-a.playlist.ttvnw.net/v1/playlist/live2.m3u8');
+  return w.posts.filter((p) => p.m.type === 'transport').map((p) => p.m);
+}
+check('the first XHR request says which transport the player uses, once', () => {
+  const hits = transportHitArm(SRC);
+  // The page's consumer refuses any message whose `page` is not its own: a row without it is dropped
+  // on the floor, which is exactly how the first version of this transport row shipped silent.
+  return hits.length === 1 && hits[0].transport === 'xhr' && /live1\.m3u8/.test(hits[0].url) && hits[0].page === 'p1';
+});
+check('a transport hit is not a playlist digest and cannot open a pod', () => {
+  const w = workerWorld(SRC);
+  const x = new w.self.XMLHttpRequest();
+  x.open('GET', 'https://video-edge-a.playlist.ttvnw.net/v1/playlist/live.m3u8');
+  return w.posts.every((p) => p.m.type !== 'playlist');
+});
+redArm('RED: without the transport row the loader is invisible again',
+  SRC.replace("    function noteTransport(transport, url) {\n      try {\n        if (!debugChannel || transportSeen[transport]) return;", "    function noteTransport(transport, url) {\n      try {\n        return;\n        if (!debugChannel || transportSeen[transport]) return;"),
+  (src) => transportHitArm(src).length > 0);
+
+redArm('RED: without the XHR transport the player\'s playlist never reaches the digest',
+  (() => {
+    const start = SRC.indexOf('    // THE PLAYER\'S LOADER IS NOT ALWAYS `fetch`.');
+    const end = SRC.indexOf('  }\n\n  // Twitch moved its player to a SHARED worker');
+    return start > 0 && end > start ? SRC.slice(0, start) + SRC.slice(end + 4) : SRC;
+  })(),
+  (src) => xhrDigestArm(src).length > 0);
+
 const expected = [
   'a wrapper that is 0x0 with a permanent __wrapper-hidden class is still an ad when its container paints',
   'the measured real ad is hold-worthy (it covers the player)',
@@ -1906,6 +2003,12 @@ const expected = [
   'E7 RED: the stale cache rewrites an attribute a direct writer set',
   'E8: ad-bypass-start and ad-pod-max carry the fields the verdict reads',
   'E8 RED: the pre-fix code wrote only bypass-msg and no promised row',
+  "the player's XHR playlist reaches the digest and names its transport",
+  'a non-playlist XHR body writes no digest',
+  "RED: without the XHR transport the player's playlist never reaches the digest",
+  'the first XHR request says which transport the player uses, once',
+  'a transport hit is not a playlist digest and cannot open a pod',
+  'RED: without the transport row the loader is invisible again',
 ];
 const missing = expected.filter((l) => !arms.includes(l));
 if (missing.length) {
