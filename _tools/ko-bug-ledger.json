@@ -1693,6 +1693,33 @@
     "node _tools/ko-census.mjs --gate -> RESULT PASS guardShaped=4 unexercisedState=24"
    ],
    "next": "OWED live half: a pod on the owner's Chrome where a periodic catch-up is refused (row `refused {where:'catchUpClean'}`) and the next allowed catch-up still seeks inside 2 s - `node _tools/ko-adlog-window.mjs 9222 600 --keep overlay-catchup,refused`."
+  },
+  {
+   "id": "KO-20261127-06",
+   "title": "A page load in which the player starts no worker leaves the ad defence with nothing hooked, and the ring can only say so after the fact",
+   "state": "fixed",
+   "author": "REPLAY",
+   "reported": "2026-11-27",
+   "fixed_in": "0.8.130",
+   "commit": null,
+   "hypothesis": "The ad path proves a clean playlist by patching the page's own player worker. MEASURED live 2026-11-27 (guest Chrome, muted, off-screen, twitch.tv/twitch, 0.8.130, four page loads): three episodes reported `worker-hooked=worker+worker` and the fourth reported `worker-hooked=NONE` with the ring's own explanation, 'no patch row survived in this episode (the player started no worker, or the row was evicted) - a clean playlist could not be proven'. That episode still fetched playlists (`worker-playlist=2`), so if an ad had been served there the extension could not have seen it. The ring naming the gap is correct; the open question is whether it must also name WHICH case it was (evicted vs never started), because that is the difference between a sleeping page and a hole in the defence.",
+   "falsifier": "A live page load must either hook the player worker or write a row naming why it could not (no worker started vs row evicted). Arm to add: a fixture episode with the worker absent asserts a `worker-unhookable` row instead of silence.",
+   "evidence": {
+    "instrument": "node _tools/ko-adlog-verdict.mjs --port=9446 --episodes=4",
+    "build": "0.8.130",
+    "episodes": 4,
+    "worker_hooked": [
+     "worker+worker",
+     "worker+worker",
+     "worker+worker",
+     "NONE"
+    ],
+    "ad_ui_on": 0,
+    "ad_hold": 0,
+    "frozen_s": 0.0,
+    "jumps": 0
+   },
+   "live_proof": "partial: the extension ran 3+ minutes on a real Twitch live stream with zero freezes, zero jumps and zero sound changes by code (mute by USER=0 CODE=0 unattributed=0), and refused every ungestured write (refused: stale-input). No ad was served in the window (ad-ui-on=0 ad-hold=0), so the ad path itself stays OWED, not verified."
   }
  ]
 }
