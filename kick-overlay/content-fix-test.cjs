@@ -3001,6 +3001,50 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   }
 
   {
+    // A PROBE THAT REACHED NO ENDPOINT IS A REFUSAL, NOT AN OFFLINE VERDICT.
+    // Measured before this arm: every `fetch` rejection was swallowed by a bare
+    // `catch {}` and `probeKickLayer` published `kick_offline` for a network or
+    // JSON error - "channel offline" for something nobody measured. `kickPlaybackUrl`
+    // now carries the failures out as `refusals`, and the poll logs them instead.
+    const S = new Function('window', 'document', 'location', 'navigator', src
+      + '\n;return {KO, probeKickLayer};')(
+      global, doc, global.location, global.navigator,
+    );
+    const K = S.KO;
+    doc.getElementById = () => null;
+    K.enabled = true;
+    K.player = 'kick';
+    K.kickSlug = 'refusechannel';
+    K.activeUrl = '';
+    K.kickState = null;
+    K.kickPollSig = '';
+    K.wrap = null;
+    K.kickPollSig = null;
+
+    const rows = () => swCalls.filter((m) => m && m.__koDiag).map((m) => m.__koDiag);
+    const realFetch = global.fetch;
+    // Every endpoint rejects the way a dead network or a 12 s timeout does.
+    global.fetch = () => Promise.reject(new Error('net::ERR_NAME_NOT_RESOLVED'));
+    try {
+      swCalls.length = 0;
+      await S.probeKickLayer();
+      const got = rows();
+      const refused = got.filter((r) => r.ev === 'kick-probe-refused');
+      assert.strictEqual(refused.length, 1, `a refused probe must log exactly one row, saw ${refused.length}`);
+      assert.strictEqual(refused[0].data.tried, 2, 'both endpoints were tried');
+      assert.ok(/ERR_NAME_NOT_RESOLVED/.test(String(refused[0].data.why)), 'the row carries the real failure, not a verdict');
+      assert.strictEqual(got.filter((r) => r.ev === 'kick_offline').length, 0, 'a refusal must NEVER publish "channel offline"');
+      // The outcome is not stable state: two identical refusals are two events.
+      swCalls.length = 0;
+      await S.probeKickLayer();
+      assert.strictEqual(rows().filter((r) => r.ev === 'kick-probe-refused').length, 1, 'a second refusal is a second row');
+    } finally {
+      global.fetch = realFetch;
+    }
+    console.log('W6b kick probe: a fetch failure is a refusal row, never "channel offline" - OK');
+  }
+
+  {
     // A SOURCE SWITCH IN FLIGHT IS NOT A STALL. Measured 2026-11-13 (0.8.88): the
     // go-live mint landed 460 ms after the click, the frame took ~10 s to apply
     // it, and the stall watchdog fired at 9.8 s on the OLD state — three
@@ -4512,7 +4556,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   // the same file, so an arm deleted or skipped without its label is a FAILURE
   // rather than a quieter green. Appending an arm means appending its label.
   const ARMS = [
-    'P1b2', 'P2e', 'P2f', 'P2g', 'P2h', 'P2i', 'P2k', 'P2n', 'P2o', 'P2p', 'P2q', 'P3', 'W1', 'W2', 'W3', 'W4', 'W5', 'W6',
+    'P1b2', 'P2e', 'P2f', 'P2g', 'P2h', 'P2i', 'P2k', 'P2n', 'P2o', 'P2p', 'P2q', 'P3', 'W1', 'W2', 'W3', 'W4', 'W5', 'W6 kick log', 'W6b kick probe',
     'U mute', 'V quality', 'X per-player', 'X2 manual sw', 'X3 stale liv', 'Z hover', 'D1', 'N1', 'N2', 'O1 owner death',
     'A3a arrow hold', 'A3b arrow burst', 'A3c arrow handoff', 'A3d arrow refusals', 'A3e arrow mirror',
     'A3f arrow coalesced report', 'A3g arrow delivery',

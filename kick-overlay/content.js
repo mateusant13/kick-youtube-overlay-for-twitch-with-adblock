@@ -1460,6 +1460,7 @@ async function kickPlaybackUrl(slug) {
     `https://kick.com/api/v2/channels/${enc}`,
     `https://kick.com/api/v1/channels/${enc}`,
   ];
+  const refusals = [];
   for (const url of probes) {
     try {
       const r = await fetch(url, { signal: AbortSignal.timeout(12000), credentials: 'omit' });
@@ -1477,11 +1478,14 @@ async function kickPlaybackUrl(slug) {
         if (d && d.playback_url) return { live: true, url: d.playback_url, streamId: ls.id || null };
       }
       return { live: false }; // livestream null (or url-less) → channel offline
-    } catch {
-      // transient — try next endpoint / next poll tick
+    } catch (e) {
+      // A fetch/JSON failure is a MEASUREMENT REFUSAL, not an offline verdict:
+      // carry it to the caller instead of publishing "channel offline" for a
+      // network or parse error. Try the next endpoint / next poll tick.
+      refusals.push({ url, why: String(e) });
     }
   }
-  return { live: false };
+  return { live: false, refusals };
 }
 
 // Badge texts are clipped by Chrome at 4 chars — every badge is one of the
@@ -3980,6 +3984,23 @@ async function probeKickLayer() {
     return;
   }
   const k = await kickPlaybackUrl(KO.kickSlug);
+  // A probe that reached no endpoint is a REFUSAL, not an offline verdict. Every
+  // fetch/JSON error used to be swallowed and the caller published `kick_offline`
+  // for a network or parse failure, which is the same false answer the ring
+  // exists to prevent. The row names the endpoints that refused, so "channel
+  // offline" can never again be printed for something nobody measured.
+  const refusals = Array.isArray(k.refusals) ? k.refusals : [];
+  if (!k.live && refusals.length) {
+    const why = refusals.map((r) => `${String(r.url).replace(/^https:\/\/kick\.com\/api\//, '')}: ${r.why}`).join(' | ');
+    kickLog('kick-probe-refused', { slug: KO.kickSlug, tried: refusals.length, why: why.slice(0, 300) });
+    console.log('[ko] kick probe refused (not offline)', KO.kickSlug, 'endpoints:', refusals.length);
+    setBadge(KO.ytHlsFailed ? 'YT' : 'KICK', '#6b7280');
+    // Same teardown as a conclusive offline: nothing will play behind the wrap,
+    // so the keep-up clock stops and the empty box is hidden.
+    KO.kickProbeAt = 0;
+    if (KO.wrap) hideWrap();
+    return;
+  }
   // The poll runs every 20 s, so an unchanged outcome is stable state, not
   // news: `kick_probe {at:"poll"}` + `kick_offline` repeated 114 times each in
   // the owner's 2026-11-16 ring and evicted the ad chronology. One row per
