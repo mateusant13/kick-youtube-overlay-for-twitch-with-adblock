@@ -37,6 +37,7 @@ const fs = require('fs');
 const http = require('http');
 const path = require('path');
 const { makePage, settle, healthySt } = require('./mute-decision-test.cjs');
+const clock = require('../_tools/test-clock.cjs');
 
 const SOURCE = fs.readFileSync(path.join(__dirname, 'twitch-adblock.js'), 'utf8');
 const FIXTURES = path.join(__dirname, 'fixtures', 'cold-preroll');
@@ -265,15 +266,26 @@ async function main() {
       // A background tab: the frame's timer is throttled to one sample every
       // 10-30s. The gate must reveal on that single healthy sample instead of
       // counting to three and letting the bound stop a healthy player.
-      await settle(1700);
-      // A real throttled frame keeps DECODING between the two reports it gets:
-      // its playhead advances by the wall-clock gap. A sample that repeats the
-      // same `pos` after >2 s is exactly what the product's pos-frozen guard
-      // refuses (`playing-not-healthy {why:'pos-frozen'}`), so a fixture that
-      // held pos at 30 measured the guard instead of the sparse gate whenever
-      // this settle overshot 2 s on a loaded box (measured 2026-11-24, gate run
-      // under load: `no overlay-reveal after one healthy sample`).
-      page.frameMsg(healthySt({ pos: 31.7 }));
+      // THE GAP IS MEASURED, NOT ASSUMED. A real throttled frame keeps DECODING
+      // between the two reports it gets: its playhead advances by the wall-clock
+      // gap, and a sample that repeats the same `pos` after >2 s is exactly what
+      // the product's pos-frozen guard refuses (`playing-not-healthy
+      // {why:'pos-frozen'}`). A fixture that hardcoded `pos: 31.7` after a
+      // `settle(1700)` therefore measured the GUARD instead of the sparse gate
+      // whenever the box stalled (measured 2026-11-24 and again 2026-11-27: the
+      // same tree printed `FAIL ... checks=18 failed=1` inside one gate run at
+      // 8 pinned cores and `PASS` 3/3 alone). The playhead now advances by the gap
+      // that actually elapsed, so an overshoot keeps the sample healthy - and the
+      // arm's verdict stops depending on the box. `sparseGapMs` lets the caller
+      // force an overshoot and require the SAME verdict.
+      // `settle()` advances the VIRTUAL clock (`_tools/test-clock.cjs`), which is also
+      // the `Date` the product runs on, so the gap a throttled frame would see is
+      // `clock.now()` - reading the real `Date.now()` here measured ~0 ms and sent
+      // `pos: 30.05`, which the product correctly refused as `why:'advancing'`.
+      const gapFrom = clock.now();
+      await settle(opts && opts.sparseGapMs ? opts.sparseGapMs : 1700);
+      const gapS = Math.max(0.05, (clock.now() - gapFrom) / 1000);
+      page.frameMsg(healthySt({ pos: Number((30 + gapS).toFixed(3)) }));
       await settle(60);
     } else {
       for (let i = 0; i < 3; i++) page.frameMsg(healthySt());
@@ -457,6 +469,28 @@ async function main() {
     assert(sparseRed.revealEvents.length === 0, `the count-based gate still revealed: ${JSON.stringify(sparseRed.revealEvents)}`);
   });
 
+  // THE SAME TWO ARMS ACROSS A FORCED OVERSHOOT (KO-20261127-07). The gate's own
+  // run went red once at 8 pinned cores and green 3/3 alone on the same tree, which
+  // is an arm racing the box rather than a product verdict. A 2 600 ms gap is past
+  // the product's 2 s pos-frozen bound, so a fixture that assumed the gap would
+  // fail here; measuring it must leave both verdicts unchanged.
+  const sparseLong = await arm(SOURCE, 'sparse-long', { sparse: true, sparseGapMs: 2600 });
+  check('a 2.6 s throttled gap still reveals (the playhead advanced by the measured gap)', () => {
+    assert(
+      sparseLong.revealEvents.length >= 1,
+      `no overlay-reveal across a long throttled gap; refusals=${JSON.stringify(
+        sparseLong.events.filter((e) => /refus|not-healthy|stall/.test(e.ev)).map((e) => [e.ev, e.d]),
+      )}`,
+    );
+  });
+  const sparseRedLong = await arm(counted, 'sparse-red-long', { sparse: true, sparseGapMs: 2600 });
+  check('SPARSE-RED (pre-fix) across a long gap: a count-based gate still never reveals', () => {
+    assert(
+      sparseRedLong.revealEvents.length === 0,
+      `the count-based gate revealed across a long gap: ${JSON.stringify(sparseRedLong.revealEvents)}`,
+    );
+  });
+
   server.close();
   const failed = checks.filter((c) => c.status === 'FAIL');
   console.log('');
@@ -468,7 +502,7 @@ function antiVacuity(actual, expected) {
   }
   console.log(`ANTI-VACUITY suite=cold-cover-fixture checks=${actual} expected=${expected}`);
 }
-antiVacuity(checks.length, 18);
+antiVacuity(checks.length, 20);
   console.log(`RESULT ${failed.length ? 'FAIL' : 'PASS'} cold-cover-fixture checks=${checks.length} failed=${failed.length}`);
   process.exit(failed.length ? 1 : 0);
 }

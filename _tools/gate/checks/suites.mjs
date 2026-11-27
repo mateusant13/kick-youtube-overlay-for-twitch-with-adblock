@@ -26,8 +26,20 @@ function runSuite(ctx, check, rel, { maxBuffer, env } = {}) {
   return r;
 }
 
+// THE TAIL LOSES THE NAME OF THE FAILING CHECK. Measured 2026-11-27: a gate run
+// printed `RESULT FAIL cold-cover-fixture checks=18 failed=1` and the receipt's
+// Detail column held exactly that, while the suite had already printed the arm's
+// name dozens of lines above it. A red whose check cannot be named sends the next
+// reader through the whole suite again, so the FAIL lines are lifted out first and
+// the tail is kept for context.
 function lastLines(r, n) {
-  return String(r.stderr || r.stdout || '').trim().slice(-n);
+  const text = String(r.stderr || r.stdout || '');
+  const fails = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => /^FAIL\b/.test(l));
+  if (!fails.length) return text.trim().slice(-n);
+  return `${fails.length} FAIL line(s): ${fails.slice(0, 3).join(' | ').slice(0, n)} | tail: ${text.trim().slice(-Math.min(200, n))}`;
 }
 
 export const suiteChecks = [

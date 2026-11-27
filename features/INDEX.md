@@ -1,13 +1,13 @@
 # Macro Feature Architecture — kicktwitchyoutube_instagram
 
-> Auto-synced from Git (`84a91be`) at `2026-11-27T08:48:11Z` by `feature_map_sync.py`.
+> Auto-synced from Git (`3a3cf18`) at `2026-11-27T08:56:34Z` by `feature_map_sync.py`.
 > Refine `how_it_works`, `inputs`, `outputs`, `interlinks`, `verify_cmd`, and `metric_ids` in `features/features.json` (set `"curated": true`) — re-syncs preserve curated contracts while keeping file lists & commits live.
 
 ## 1. Macro Feature Matrix
 
 | Feature | Files | Commits | Inputs | Outputs | Interlinks | How It Works |
 |---|---:|---:|---|---|---|---|
-| `_tools` | 65 | 173 | the repository working tree and its git history; the extension's ring dump (`chrome.storage.local['ko.adlog']`) read over CDP; a guest Chrome on port 9446 with the unpacked extension loaded, or the owner's Chrome on 9222 for read-only probes | a gate verdict + receipt (`_evidence/ko-verify-latest.md`); machine artifacts per verified bug (`_evidence/<bug>-arms.md`) and reachability records; verdict lines on stdout (`RESULT PASS|FAIL ... checks=N failed=0`) that a lane quotes as evidence | kick-overlay | Instruments, never product: (1) `ko-verify.mjs` runs every static suite plus the ledger, census, artifact and revival gates and writes `_evi |
+| `_tools` | 65 | 177 | the repository working tree and its git history; the extension's ring dump (`chrome.storage.local['ko.adlog']`) read over CDP; a guest Chrome on port 9446 with the unpacked extension loaded, or the owner's Chrome on 9222 for read-only probes | a gate verdict + receipt (`_evidence/ko-verify-latest.md`); machine artifacts per verified bug (`_evidence/<bug>-arms.md`) and reachability records; verdict lines on stdout (`RESULT PASS|FAIL ... checks=N failed=0`) that a lane quotes as evidence | kick-overlay | Instruments, never product: (1) `ko-verify.mjs` runs every static suite plus the ledger, census, artifact and revival gates and writes `_evi |
 | `kick-overlay` | 24 | 305 | the Twitch watch page DOM: `[data-a-target="video-player"]`, the squeezeback/slate ad text, the page's own `HTMLVideoElement`; Twitch's HLS playlists as fetched by the page's own player worker (token, `adExtinf`, `#EXT-X-DATERANGE`) and the GQL usher (`playbackAccessToken`); real user gestures: pointer/key input on the page, the overlay bar, the popup (each carries an author stamp) | the overlay iframe + bar (`#ko-wrap`, `#ko-g1`, seek bar) with the kick/YouTube picture; published attributes the instruments read: `data-ko-owner`, `data-ko-audio-m/-v/-vis/-wt/-it`, `data-ko-adpark`, `data-ko-adblock`; media-element writes: pause/resume, `currentTime` seeks, `muted`/`volume`, `playbackRate` | _tools | Three worlds, one page. The ISOLATED content script (`content.js`) mounts the kick/YouTube layer in an iframe (`player.html`), arbitrates ow |
 
 ## 2. Subsystem Interconnection Graph
@@ -43,7 +43,7 @@ flowchart LR
 
 ## 4. Self-Improvement Memory (Auto-Projected from `revival/sim.jsonl`)
 
-> **Single source of truth:** Never hand-edit this section — record via `sim_memory.py predict` / `observe` in `revival/sim.jsonl` and re-sync.
+> **Single source of truth:** Never hand-edit this section — record via `sim_memory.py predict` / `observe` into `revival/sim.jsonl` and re-sync. That recorder is NOT a file in this repo: it lives in the shared skills tree (`C:/Users/Administrador/.agents/skills/project-revival/scripts/sim_memory.py`), untracked here, and the pre-commit hook names that absolute path.
 
 | Root Cause ID | Hypothesis | Attempts (Pass/Fail) | Latest Rationale & Observed Outcome | Provenance |
 |---|---|---:|---|---|
@@ -62,3 +62,6 @@ flowchart LR
 | `guest-start-ignores-preflight` | The load pre-flight is advisory: ko-load-check printed BUSY and ko-guest.mjs started an 18-process guest anywa | 1P / 0F | **Advice in a log is not a limit; the artifact that starts the heavy step must be the one th** -> selftest 12/12 PASS arms=4/4; real busy arm 'guest not started: BUSY total=100% busiest=100% pinned=20' rc=3 w | `deepseek-v4.1-flash` / `node _tools/ko-verify.mjs; node _tools/gate/guest-load-guard-selftest.mjs` |
 | `ad-worker-hook-can-vanish` | The ad path can only see playlists through the page's player worker; a live episode measured worker-hooked=NON | 1P / 1F | **The honest fix belongs where the blindness was: the reader had the fact and did not use it** -> selftest 8/8 PASS arms=4/4; RED mutant -> RESULT FAIL adlog-verdict checks=8 failed=3; gate RESULT PASS checks | `deepseek-v4.1-flash` / `node _tools/ko-verify.mjs` |
   - _Failed attempt r1_ (`ad-worker-hook-can-vanish`): Record KO-20261127-06 with the four episodes; the arm that makes it structural (an episode -> **FAIL**: KO-20261127-06 recorded (episodes=4, worker_hooked=[worker+worker x3, NONE], worker_playlist=2). NO arm yet: a
+| `verdict-names-numbers-not-the-ceiling` | The load verdict returned total/busiest/pinned and both ceilings but never named WHICH ceiling broke, so a ref | 1P / 0F | **A refusal whose message invites a wrong reading is a defect in the refusal: the reader had** -> breach+why present; load-check-json 55/55 PASS; guest-load-guard 14/14 PASS; RED mutant (breach hardcoded 'tot | `deepseek-v4.1-flash` / `node _tools/gate/load-check-test.mjs; node _tools/gate/guest-load-guard-selftest.mjs` |
+| `arm-verdict-depends-on-box-load` | A pre-fix arm asserted a tick count inside a fixed window, so the same tree produced FAIL inside a gate run at | 1P / 1F | **An arm whose verdict moves with the box's spare CPU is measuring the queue; the twin exist** -> RESULT PASS cold-cover-fixture checks=20 failed=0 x3; RED (real-clock read) FAIL checks=20 failed=2; gate RESU | `deepseek-v4.1-flash` / `node kick-overlay/cold-cover-fixture-test.cjs` |
+  - _Failed attempt r1_ (`arm-verdict-depends-on-box-load`): KO-20261127-07 records both gate runs, the three clean solo runs and the load; the arm fix -> **FAIL**: KO-20261127-07 recorded with both gate runs and 3/3 solo PASS; NO arm written yet - the pre-fix arm still asse

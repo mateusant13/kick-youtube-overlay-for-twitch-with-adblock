@@ -1711,6 +1711,25 @@
     "gate check `adlog-verdict` runs those arms: node _tools/ko-verify.mjs"
    ],
    "next": "OWED live: an episode with an actual ad (this run served none: ad-ui-on=0 ad-hold=0), so the ad path itself stays unverified; the reader now names evicted-vs-never-started instead of claiming blindness."
+  },
+  {
+   "id": "KO-20261127-07",
+   "title": "cold-cover-fixture goes red once inside a gate run and pass 3/3 alone: the arm races the box, not the product",
+   "state": "fixed",
+   "author": "REPLAY",
+   "reported": "2026-11-27",
+   "fixed_in": "0.8.130",
+   "commit": null,
+   "hypothesis": "The sparse arms read the REAL `Date.now()` to decide how far a throttled frame's playhead had advanced, while `settle()` advances the VIRTUAL clock (`_tools/test-clock.cjs`) and the product runs on that same virtual `Date`. So the reported advance was `max(0.05, ~0)` = 0.05 s, which the product correctly refused as `playing-not-healthy {pos:30.05, moved:0.05, why:'advancing'}`. The suite only survived because it hardcoded `pos: 31.7` after a `settle(1700)`, i.e. it faked the one number the twin was supposed to supply, and its verdict then depended on how much real time the box spent between samples (MEASURED 2026-11-27, same tree: `RESULT FAIL cold-cover-fixture checks=18 failed=1` inside one gate run at 8 pinned cores, `RESULT PASS` 3/3 alone).",
+   "falsifier": "The gap must come from the clock the product reads. Arms: `a 2.6 s throttled gap still reveals` and `SPARSE-RED (pre-fix) across a long gap` force an overshoot past the product's 2 s pos-frozen bound and require the same verdicts; restoring the real-clock read turns both RED (`RESULT FAIL checks=20 failed=2`).",
+   "evidence": [
+    "gate run 1 at 8 pinned cores: `RESULT FAIL cold-cover-fixture checks=18 failed=1`; gate run 2, same tree: `RESULT PASS checks=36 failed=0`; suite alone x3: `PASS checks=18 failed=0`",
+    "root cause captured from the refusal row itself: `playing-not-healthy {rs:4,buffered:8,pos:30.05,why:'advancing',advanced:false,moved:0.05}` - the advance was 0.05 s because `Date.now()` saw ~0 ms while `settle()` had advanced 1 700 ms of virtual time",
+    "after the fix: `RESULT PASS cold-cover-fixture checks=20 failed=0` three times in a row, and the gate `RESULT PASS checks=36 failed=0`",
+    "RED: real-clock read restored -> `RESULT FAIL cold-cover-fixture checks=20 failed=2` (the two new overshoot arms)",
+    "receipt defect fixed too: `lastLines` in _tools/gate/checks/suites.mjs now lifts `FAIL` lines out before the tail, so a red names its check instead of only `failed=1`"
+   ],
+   "next": null
   }
  ]
 }
