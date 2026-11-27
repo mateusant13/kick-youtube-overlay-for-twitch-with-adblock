@@ -18,6 +18,9 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const clock = require('../_tools/test-clock.cjs');
+// Virtual-clock timer. The suites NEVER schedule on the host's real clock.
+const schedule = clock.setTimeout;
 
 // ---- stubs (same shape as route-gate-test.cjs) ------------------------------
 const mkClassList = (owner) => {
@@ -116,7 +119,16 @@ global.innerWidth = 1280;
 global.innerHeight = 720;
 global.MutationObserver = class { observe() {} disconnect() {} };
 global.getComputedStyle = () => ({ height: '', maxHeight: '', position: 'static' });
-global.requestAnimationFrame = (f) => setTimeout(f, 0);
+// The stub world's timers and clock SHARE the suite's virtual timeline. A wait
+// is an advance of that timeline, never a host sleep (KO_REAL_CLOCK=1 restores
+// the old wall-clock behaviour for debugging).
+global.setTimeout = schedule;
+global.clearTimeout = clock.clearTimeout;
+global.setInterval = clock.setInterval;
+global.clearInterval = clock.clearInterval;
+global.Date = clock.Date;
+if (global.performance) global.performance.now = clock.performance.now;
+global.requestAnimationFrame = (f) => schedule(f, 0);
 global.fetch = () => Promise.reject(new Error('stub-fetch'));
 global.chrome = {
   runtime: {
@@ -129,7 +141,7 @@ global.chrome = {
     local: {
       // player=twitch on a YouTube page is exactly the branch that resumed the
       // user's video.
-      get: (k, cb) => setTimeout(() => cb && cb({
+      get: (k, cb) => schedule(() => cb && cb({
         'ko.v2': { enabled: true, player: 'twitch', mappings: { rodil: { kick: 'rodil', yt: '@rodil' } } },
       }), 0),
       set: (o, cb) => cb && cb(),
@@ -141,7 +153,16 @@ global.chrome = {
 };
 
 const ARM = (process.argv.find((a) => a.startsWith('--arm=')) || '--arm=all').split('=')[1];
-const settle = (ms) => new Promise((r) => setTimeout(r, ms));
+const settle = async (ms) => {
+  await clock.advance(ms);
+  if (clock.real) return; // the real sleep already let pending work run
+  // Product callbacks schedule follow-up work in microtasks; give those tasks
+  // their turns and fire any zero-delay timer they arm before asserting.
+  for (let i = 0; i < 8; i += 1) {
+    await Promise.resolve();
+    clock.advance(0);
+  }
+};
 
 async function runArm(arm) {
   playCalls.n = 0;
@@ -156,6 +177,14 @@ async function runArm(arm) {
     useSrc = useSrc.replace(guard, '');
   }
 
+  if (arm === 'red') {
+    // RED arm: one anchor breaks BOTH hand-back paths (resumeTwitchIfOurs and
+    // resumeNativePagePlayer both ask twitchVideo for the element). The owned
+    // player predicate MUST fail here, or this suite detects no lost hand-back.
+    const find = "  const visible = [...document.querySelectorAll('video')].filter((v) => v.getClientRects().length);";
+    if (!useSrc.includes(find)) throw new Error('RED arm cannot find the page-video lookup to break');
+    useSrc = useSrc.replace(find, '  return null; // RED: no page player can be found');
+  }
   const api = new Function(
     'window', 'document', 'location', 'navigator',
     useSrc + '\n;return {KO, probe, apply, currentSlug, twitchVideo, resumeNativePagePlayer};',
@@ -203,6 +232,13 @@ async function runArm(arm) {
       console.log(red ? 'RED as expected — user-paused video was resumed' : 'FAIL: pre-fix arm did not reproduce');
       process.exit(red ? 0 : 1);
     }
+    if (ARM === 'red') {
+      const broken = r.oursArm.plays === 0 && r.oursArm.paused === true;
+      console.log(broken
+        ? 'FAIL RED youtube-resume: the owned player was not handed back (mutation detected)'
+        : 'FAIL youtube-resume RED arm did not reproduce: the resume still happened');
+      process.exit(broken ? 1 : 0);
+    }
     const green = r.afterProbe.plays === 0 && r.afterProbe.paused === true;
     const handsBack = r.oursArm.plays >= 1 && r.oursArm.paused === false;
     console.log(green && handsBack
@@ -225,6 +261,7 @@ async function runArm(arm) {
     process.exit(1);
   }
   console.log(`ANTI-VACUITY suite=youtube-resume arms=${armLines.length} expected=2`);
+  console.log(`ARMS ${armLines.length}/2 present`);
   console.log(ok ? 'RESULT PASS youtube-resume (RED before, GREEN after)' : 'RESULT FAIL youtube-resume');
   process.exit(ok ? 0 : 1);
 })();

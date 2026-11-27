@@ -126,8 +126,21 @@ function gradeTwin(twin) {
       .replace(/\r\n/g, '\n')
       .split('\n')
       .filter((line) => line.trim() !== '');
-    const missingGolden = goldenLines.filter((line) => !output.includes(line));
+    // TWO-WAY, matching ring-replay at :119-120. MEASURED 2026-11-27: this limb only
+    // looked for MISSING golden lines, so a tool that printed every golden line plus
+    // arbitrary extra output graded clean - the same one-directional grading the ring
+    // twin already refuses. An extra line is a contract the golden never agreed to.
+    const observedLines = output
+      .replace(/\r\n/g, '\n')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line !== '');
+    const observedSet = new Set(observedLines);
+    const missingGolden = goldenLines.filter((line) => !observedSet.has(line.trim()));
     if (missingGolden.length) problems.push(`golden line missing=${JSON.stringify(missingGolden)}`);
+    const goldenSet = new Set(goldenLines.map((line) => line.trim()));
+    const unexpected = observedLines.filter((line) => !goldenSet.has(line));
+    if (unexpected.length) problems.push(`unexpected output line=${JSON.stringify(unexpected.slice(0, 8))}`);
   }
 
   result.ms = Date.now() - t0;
@@ -184,8 +197,13 @@ function selftest(config) {
 // row cannot distinguish "the product is right" from "the grader never looked".
 function corruptTwin(twin, tempDir) {
   const source = recordedPath(twin);
+  // A MISSING RECORDING IS NOT "NOTHING TO CORRUPT". `gradeTwin` calls this same
+  // state FAIL (`:74-79`) and returns `missing_recorded`; returning PASS here made
+  // `--corrupt` print `TWIN CORRUPT PASS` over an artifact that was never read,
+  // so the grader's own two-direction proof could evaporate with the recording and
+  // still report a whole arm. The arm grades the CORRUPTION, so its absence is FAIL.
   if (!existsSync(source)) {
-    return { id: twin.id, status: 'PASS', reason: 'nothing to corrupt (no recording)', ms: 0 };
+    return { id: twin.id, status: 'FAIL', reason: `missing recording (${twin.recorded}): nothing was graded`, ms: 0 };
   }
   const t0 = Date.now();
   const mutated = join(tempDir, `${twin.id}.corrupt`);
@@ -198,11 +216,19 @@ function corruptTwin(twin, tempDir) {
     writeFileSync(mutated, `${readFileSync(source, 'utf8').trimEnd()}\nPASS impossible golden line\n`, 'utf8');
   }
   const arm = gradeTwin({ ...twin, recorded: mutated });
-  const ok = arm.status === 'FAIL';
+  // BOTH DIRECTIONS: grading the UNMUTATED artifact must PASS, or a grader that
+  // fails everything would satisfy "it caught the corruption" and prove nothing.
+  const control = gradeTwin(twin);
+  const ok = arm.status === 'FAIL' && control.status === 'PASS';
+  const why = arm.status !== 'FAIL'
+    ? 'grader passed a corrupt artifact'
+    : (control.status !== 'PASS' ? `the unmutated artifact does not grade clean (${control.reason.slice(0, 60)})` : '');
   return {
     id: twin.id,
     status: ok ? 'PASS' : 'FAIL',
-    reason: ok ? `grader caught the corrupt artifact (${arm.reason.slice(0, 80)})` : 'grader passed a corrupt artifact',
+    reason: ok
+      ? `grader caught the corrupt artifact (${arm.reason.slice(0, 70)}) and passed the real one`
+      : why,
     ms: Date.now() - t0,
   };
 }

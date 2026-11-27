@@ -306,6 +306,18 @@ async function live(channel) {
   return 0;
 }
 
+// Keep the newest 40 look receipts in the DECLARED scratch store. Deletes are
+// by exact path (never a wildcard), so a similarly named file survives.
+function pruneLookReceipts(dir) {
+  try {
+    const names = fs.readdirSync(dir)
+      .filter((n) => /^ko-look-\d{4}-\d{2}-\d{2}T[\w-]+\.md$/.test(n))
+      .map((n) => ({ n, t: fs.statSync(path.join(dir, n)).mtimeMs }))
+      .sort((a, b) => b.t - a.t);
+    for (const old of names.slice(40)) fs.unlinkSync(path.join(dir, old.n));
+  } catch { /* evidence is best effort */ }
+}
+
 // ---- run ------------------------------------------------------------------
 let rc = 0;
 if (has('--channels')) await channels();
@@ -316,7 +328,11 @@ else if (has('--live')) {
 
 if (!JSON_OUT) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const dir = path.join(REPO, '_evidence');
-  try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, `ko-look-${stamp}.md`), '# ko-look\n\n```\n' + lines.join('\n') + '\n```\n'); } catch { /* evidence is best effort */ }
+  const dir = 'G:/Temp/ko-scratch'; // declared family in .artifacts.toml, never I:
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `ko-look-${stamp}.md`), '# ko-look\n\n```\n' + lines.join('\n') + '\n```\n');
+    pruneLookReceipts(dir);
+  } catch { /* evidence is best effort */ }
 } else console.log(JSON.stringify(out, null, 1));
 process.exit(rc);

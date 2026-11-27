@@ -55,7 +55,12 @@ const timeoutMs = Number(flag('--timeout-ms', '300000'));
 // declares instead of guessing one.
 const childCwd = path.join(ROOT, flag('--cwd', '.'));
 const dryRun = own.includes('--dry-run');
-const abs = path.join(ROOT, file);
+// An ABSOLUTE `--file` is used as given. Without this the only plantable subject was a
+// file inside the checkout, so any selftest that proved "the bytes come back" had to
+// mutate TRACKED product code - one kill between write and restore left the tree dirty
+// with a mutant nobody planted on purpose. A fixture on `G:/Temp` proves the same
+// restore contract with nothing at risk.
+const abs = path.isAbsolute(file) ? file : path.join(ROOT, file);
 
 function refuse(msg) {
   console.log(`PLANT REFUSED ${msg}`);
@@ -70,7 +75,7 @@ let original;
 try {
   original = readFileSync(abs);
 } catch (error) {
-  refuse(`cannot read ${file}: ${error.message}`);
+  refuse(`cannot read ${file} (resolved ${abs}): ${error.message}`);
 }
 const sha = (buf) => createHash('sha256').update(buf).digest('hex').slice(0, 16);
 const text = original.toString('utf8');

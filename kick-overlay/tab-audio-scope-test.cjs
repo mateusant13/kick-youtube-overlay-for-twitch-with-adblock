@@ -25,6 +25,11 @@ const assert = require('assert');
 const AUDIO = fs.readFileSync(path.join(__dirname, 'ko-audio.js'), 'utf8').replace(/\r\n/g, '\n');
 const CONTENT = fs.readFileSync(path.join(__dirname, 'content.js'), 'utf8').replace(/\r\n/g, '\n');
 const TAB_KEY = 'ko.audio.v2';
+// content.js keeps its shared record under its own row (`ko.v2`), and its
+// chrome.storage.onChanged listener returns immediately when `changes[KEY]` is
+// absent. Compiling that listener into a tab world therefore needs content.js's
+// key, not the arbiter's per-tab one.
+const CONTENT_KEY = 'ko.v2';
 
 let checks = 0;
 let failed = 0;
@@ -99,6 +104,98 @@ const withClock = (delta, fn) => {
 
 const videoEl = () => ({ tagName: 'VIDEO', isConnected: true, muted: false, volume: 1 });
 
+// The cross-tab writer SHIPPED before ca471a4 (content.js applyVols), kept
+// verbatim. It applied one shared `vols` row in EVERY tab via KOAudio.setIntent.
+// The positive control below fires a real storage row through this function.
+const PREFIX_APPLY_VOLS = `function applyVols(vols) {
+  vols = vols || {};
+  const audio = window.KOAudio;
+  const kv = vols.kick || {};
+  const yv = vols.yt || {};
+  const tv = vols.twitch || {};
+  const pv = vols.page || {};
+  const norm = (v) => Math.max(0, Math.min(1, v > 1 ? v / 100 : v));
+  if (audio) {
+    audio.setIntent('kick', {
+      muted: typeof kv.m === 'boolean' ? kv.m : undefined,
+      volume: typeof kv.v === 'number' ? norm(kv.v) : undefined,
+    });
+    audio.setIntent('yt', {
+      muted: typeof yv.m === 'boolean' ? yv.m : undefined,
+      volume: typeof yv.v === 'number' ? norm(yv.v) : undefined,
+    });
+    audio.setIntent('twitch', {
+      muted: typeof tv.m === 'boolean' ? tv.m : undefined,
+      volume: typeof tv.v === 'number' ? norm(tv.v) : undefined,
+    });
+    audio.setIntent('page', {
+      muted: typeof pv.m === 'boolean' ? pv.m : undefined,
+      volume: typeof pv.v === 'number' ? norm(pv.v) : undefined,
+    });
+  }
+  if (typeof kv.v === 'number') KO.kickVol = norm(kv.v);
+  if (typeof kv.m === 'boolean') KO.kickMuted = kv.m;
+  if (typeof yv.v === 'number') KO.ytVol = norm(yv.v);
+  if (typeof yv.m === 'boolean') KO.ytMuted = yv.m;
+}`;
+
+const sharedVolsRow = () => ({ 'ko.v2': {
+  oldValue: { enabled: true, player: 'kick', mappings: {} },
+  newValue: { enabled: true, player: 'kick', mappings: {}, vols: { twitch: { v: 0.3, m: true } } },
+} });
+
+// Compile the SHIPPED chrome.storage.onChanged registration into a tab world.
+// The pre-fix writer is in scope, but only the mutation calls it; the shipped
+// listener never references it. The row travels through the registered chrome
+// stub, not through a test-authored predicate.
+const storageWorld = (tab, source) => {
+  const marker = 'chrome.storage.onChanged.addListener(';
+  const start = source.indexOf(marker);
+  assert.ok(start > 0, 'content.js registers chrome.storage.onChanged');
+  const end = source.indexOf('// ---- helpers ----', start);
+  assert.ok(end > start, 'the listener ends before helpers');
+  const close = source.lastIndexOf('\n});', end);
+  assert.ok(close > start, 'the listener closing brace was found');
+  const registration = source.slice(start, close + 4);
+  let listener = null;
+  const chrome = { storage: { onChanged: { addListener: (f) => { listener = f; } } } };
+  const KO = {
+    enabled: true, adblock: true, player: 'kick', playerPreference: 'kick',
+    mappings: {}, slug: null,
+  };
+  const fireFn = (f) => f();
+  const apply = () => {};
+  const onYtHost = () => false;
+  const mirrorAudio = () => {
+    KO.kickMuted = tab.audio.intent('kick').muted;
+    KO.kickVol = tab.audio.intent('kick').volume;
+    KO.ytMuted = tab.audio.intent('yt').muted;
+    KO.ytVol = tab.audio.intent('yt').volume;
+  };
+  // eslint-disable-next-line no-new-func
+  new Function('window', 'chrome', 'KEY', 'KO', 'mirrorAudio', 'fire', 'apply', 'onYtHost',
+    `${PREFIX_APPLY_VOLS}\n${registration}`)(
+    { KOAudio: tab.audio }, chrome, CONTENT_KEY, KO, mirrorAudio, fireFn, apply, onYtHost,
+  );
+  assert.ok(typeof listener === 'function', 'the real storage listener was registered');
+  return { KO, fire: (changes) => listener(changes, 'local') };
+};
+
+const withSharedVolsWrite = (source) => {
+  const anchor = '  if (pChanged) fire(apply); // hot toggle / remap / player switch — no page reload';
+  const mutated = source.replace(anchor, `  applyVols(s.vols); // pre-fix cross-tab write\n${anchor}`);
+  assert.notStrictEqual(mutated, source, 'the pre-fix call site was found');
+  return mutated;
+};
+
+const victimTab = () => {
+  const tab = makeTab();
+  const v = videoEl();
+  tab.audio.registerNative('twitch', { elements: () => [v], main: () => v });
+  tab.audio.setVisible('twitch');
+  return { tab, v };
+};
+
 // ---- 1. a gesture in tab A is invisible to tab B ---------------------------
 const tabA = makeTab();
 const tabB = makeTab();
@@ -148,14 +245,16 @@ check('a reload of tab A restores tab A own choice', () => {
   assert.strictEqual(fresh.audio.intent('kick').muted, false, 'every surface starts audible (no default mute); "one at a time" is the visibility rule');
 });
 
-// ---- 3. positive control: the instrument CAN see coupling ------------------
-check('positive control: feeding a shared row into a tab DOES mute it', () => {
-  const victim = makeTab();
-  victim.audio.registerNative('twitch', { elements: () => [], main: () => null });
-  // This is exactly what the pre-fix applyVols(s.vols) did in every tab.
-  victim.audio.setIntent('twitch', { muted: true, volume: 0.3 });
-  assert.strictEqual(victim.audio.intent('twitch').muted, true, 'the arm would have caught the old coupling');
-  assert.strictEqual(victim.audio.intent('twitch').volume, 0.3);
+// ---- 3. positive control: a shared storage row CAN cross into a tab --------
+// The real pre-fix applyVols(s.vols) writer is compiled into the tab world and
+// the row is delivered through chrome.storage.onChanged. If this cannot flip
+// the victim, the fence arm below is not measuring anything.
+check('positive control: the pre-fix shared vols row DOES mute the victim', () => {
+  const { tab, v } = victimTab();
+  assert.strictEqual(tab.audio.intent('twitch').muted, false, 'the victim starts audible');
+  storageWorld(tab, withSharedVolsWrite(CONTENT)).fire(sharedVolsRow());
+  assert.strictEqual(tab.audio.intent('twitch').muted, true, 'the shared row flips the victim under the pre-fix writer');
+  assert.strictEqual(v.muted, true, 'and its native element is muted');
 });
 
 // ---- 3b. the UI mirror reads the arbiter, never a stored copy -------------

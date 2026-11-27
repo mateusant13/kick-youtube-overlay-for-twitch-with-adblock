@@ -5,8 +5,24 @@
 // exercised, the RED/mutation lines the harness printed and its full output.
 // A check that threw before capturing leaves no artifact: a missing artifact is
 // visible in arm_artifacts, while a fabricated one would not be.
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
+
+// One receipt per gate run cannot grow forever. Keep the newest 40 by mtime;
+// delete each loser by its exact path, never by wildcard. Hand-written
+// reachability records do not match this name and are left alone.
+const ARM_FILE = /^KO-\d{8}-\d{2}-arms\.md$/;
+function pruneArmArtifacts(dir) {
+  let names;
+  try { names = readdirSync(dir); } catch { return; }
+  const files = names
+    .filter((n) => ARM_FILE.test(n))
+    .map((n) => ({ path: path.join(dir, n), t: statSync(path.join(dir, n)).mtimeMs }))
+    .sort((a, b) => b.t - a.t);
+  for (const old of files.slice(40)) {
+    try { unlinkSync(old.path); } catch { /* best effort */ }
+  }
+}
 
 const ARM_SOURCES = {
   'KO-20261023-01': ['kick-overlay/twitch-adblock.js'],
@@ -63,4 +79,5 @@ export function writeArmArtifacts(ctx) {
     });
   }
   payload.arm_artifacts = armArtifacts;
+  pruneArmArtifacts(path.join(ctx.ROOT, '_evidence'));
 }

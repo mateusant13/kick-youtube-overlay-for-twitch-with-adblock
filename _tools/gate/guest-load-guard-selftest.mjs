@@ -16,6 +16,7 @@
 //   4. a `--flag` is never taken as the URL
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
+import { cpus } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -25,6 +26,14 @@ const GUEST = path.join(ROOT, '_tools', 'ko-guest.mjs');
 let checks = 0;
 let failed = 0;
 const lines = [];
+// COUNTED, NEVER DECLARED. A literal `arms=4/4` is a claim the file makes about
+// itself; delete a block and it still prints 4/4 while the gate's regex matches
+// that same literal, so a suite missing a quarter of its coverage read whole.
+const ARMS = [];
+function arm(name) {
+  ARMS.push(name);
+  lines.push(`  arm  ${name}`);
+}
 function ok(cond, label, detail = '') {
   checks += 1;
   if (cond) lines.push(`  ok   ${label}`);
@@ -47,6 +56,7 @@ function run(env, args = ['start', '--dry-run']) {
 
 // 1. BUSY refuses before anything exists.
 {
+  arm('1-busy');
   const r = run({ KO_LOAD_FIXTURE: 'busy' }, ['start']);
   let j = null;
   try { j = JSON.parse(r.out.trim()); } catch { /* asserted below */ }
@@ -58,12 +68,18 @@ function run(env, args = ['start', '--dry-run']) {
   // was `total=57.2% (ceilings total 70%)`, refused for its CORE ceiling, which read
   // as a contradiction (seat DM dm-486c70525fc807e40aab).
   ok(j !== null && /total 100% above its 70% ceiling/.test(String(j.reason)), 'busy: reason names the total ceiling it broke', j && j.reason);
-  ok(j !== null && /20 core\(s\) above 90%/.test(String(j.reason)), 'busy: reason names the core ceiling it broke', j && j.reason);
+  // HOST-DERIVED, not a measured-box literal. The fixture pins EVERY core of
+  // whatever host runs this (`load-sample.mjs:44` uses `os.cpus().length`), so a
+  // hardcoded `/20 core/` made the arm green only on the 20-core box it was
+  // written on and red everywhere else - a test of the machine, not the guard.
+  ok(j !== null && /\b\d+ core\(s\) above 90%/.test(String(j.reason)), 'busy: reason names the core ceiling it broke', j && j.reason);
+  ok(j !== null && String(j.reason).includes(`${cpus().length} core(s) above 90%`), 'busy: the pinned-core count equals this host\'s core count (not a literal)', j && j.reason);
   ok(j !== null && String(j.advice).includes('KO_ALLOW_BUSY=1'), 'busy: names the override');
 }
 
 // 2. The override exists and is loud.
 {
+  arm('2-override');
   const r = run({ KO_LOAD_FIXTURE: 'busy', KO_ALLOW_BUSY: '1' });
   let j = null;
   try { j = JSON.parse(r.out.trim()); } catch { /* asserted below */ }
@@ -74,6 +90,7 @@ function run(env, args = ['start', '--dry-run']) {
 
 // 3. READY is not refused.
 {
+  arm('3-ready');
   const r = run({ KO_LOAD_FIXTURE: 'ready' });
   let j = null;
   try { j = JSON.parse(r.out.trim()); } catch { /* asserted below */ }
@@ -84,6 +101,7 @@ function run(env, args = ['start', '--dry-run']) {
 
 // 4. `start --dry-run` must not read the flag as the URL.
 {
+  arm('4-flag');
   const r = run({ KO_LOAD_FIXTURE: 'ready' });
   let j = null;
   try { j = JSON.parse(r.out.trim()); } catch { /* asserted below */ }
@@ -91,6 +109,10 @@ function run(env, args = ['start', '--dry-run']) {
   ok(j !== null && j.wouldStart.port === '9446', 'flag: default port stays 9446 (never 9333, the relay)');
 }
 
+const EXPECTED_ARMS = 4;
+const told = ARMS.length;
+const allOk = failed === 0 && told === EXPECTED_ARMS;
 for (const l of lines) console.log(l);
-console.log(`RESULT ${failed === 0 ? 'PASS' : 'FAIL'} guest-load-guard checks=${checks} failed=${failed} arms=4/4`);
-process.exit(failed === 0 ? 0 : 1);
+if (told !== EXPECTED_ARMS) console.error(`ARMS never entered: expected ${EXPECTED_ARMS}, entered ${told} (${ARMS.join(', ')})`);
+console.log(`RESULT ${allOk ? 'PASS' : 'FAIL'} guest-load-guard checks=${checks} failed=${failed} arms=${told}/${EXPECTED_ARMS}`);
+process.exit(allOk ? 0 : 1);

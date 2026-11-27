@@ -1,7 +1,15 @@
 # Every directory a tool in this repo writes and never reads back declares
 # itself here: root, producer, kind, cap and retention. The project's census
-# (AGENTS.md "Disk: this project measures its own bytes") names the same three
-# stores with --own; this file is the machine-readable form of that statement.
+# (AGENTS.md "Disk: this project measures its own bytes") names the three
+# external G: stores with --own; this file is the machine-readable form.
+#
+# AUTHORITY (2026-11-27): the --budget-gib in AGENTS.md:89 is the SUM of the
+# external caps below (2.0 + 1.5 + 0.5 = 4.0 GiB). Measured that day with
+# `du -sb`: ko-harness 397 920 184 B, ko-replica 38 968 383 B,
+# ko-scratch 30 273 222 B (467 161 789 B = 0.44 GiB). The old 0.4 GiB ceiling
+# was BELOW measured use, so its gate could only report a false OVER; the
+# declared caps are the authority. Caps are ceilings, not targets: the
+# retention rules below are what actually return bytes.
 #
 # Measured 2026-11-26 with `python I:/!watcher/tools/artifact-manifest.py
 # --project .`: ko-harness 945 MiB (profile 326 MiB + manual 381 MiB are live
@@ -28,8 +36,52 @@ keep_days = 14
 [[family]]
 name = "scratch-and-suite-output"
 roots = ["G:/Temp/ko-scratch*"]
-producer = "every probe/suite run that redirects output (never on I:, the SMR spindle)"
+producer = "every probe/suite run that redirects output (never on I:, the SMR spindle); _tools/ko-look.mjs writes ko-look-<stamp>.md here"
 kind = "reclaimable"
 cap_gib = 0.5
 keep_newest = 40
 min_age_min = 30
+
+# In-checkout stores (small by design). Roots here are the directory itself for
+# _evidence: retention is enforced by the writers (arms.mjs / ko-look.mjs) with
+# exact-path unlink, so hand-written reachability records are never collected.
+[[family]]
+name = "evidence-receipts"
+roots = ["_evidence"]
+producer = "_tools/gate/arms.mjs (<bug>-arms.md, self-pruned to 40) + _tools/ko-verify.mjs (latest receipt)"
+kind = "reclaimable"
+cap_gib = 0.05
+keep_newest = 40
+min_age_min = 30
+
+[[family]]
+name = "scratch-probes"
+roots = ["_scratch/*"]
+producer = "ad-hoc agent probes/logs under the checkout (_scratch/dump.mjs, probe*.mjs in revival/FRICTION.json)"
+kind = "reclaimable"
+cap_gib = 0.01
+keep_days = 14
+min_age_min = 30
+
+[[family]]
+name = "codeintel-cache"
+roots = [".codeintel"]
+producer = "external `codeintel` CLI (AGENTS.md skill routing; COMMANDS.md codeintel_health / codeintel_trace)"
+kind = "external"
+# EXEMPT from a project cap by decision 2026-11-27: 248 883 779 B (170 files)
+# measured with `du -sb`. No tool in this repo writes this tree and its index
+# format belongs to the codeintel CLI, so a cap here would be unenforceable;
+# `kind = external` also keeps artifact-manifest --reclaim from deleting it.
+exempt = true
+exempt_reason = "external tool-owned cache; not written by this repo, pruning it would corrupt a separate tool's index"
+
+[[family]]
+name = "benchmark-history"
+roots = ["benchmarks/history.jsonl"]
+producer = "external bench-reconcile job that appends rows; no in-repo writer (harness/twins/slider_probe.mjs:327 only reads)"
+kind = "external"
+cap_gib = 0.001
+cap_lines = 200
+# cap_lines is the declared ceiling: 200 rows; 15 934 B / 12 rows measured
+# 2026-11-27. TRIMMED BY the external benchmark operator / bench-reconcile job
+# (keep the newest 200 lines) - no tool in this repo writes or trims this file.

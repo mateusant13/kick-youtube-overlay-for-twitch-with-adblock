@@ -16,6 +16,9 @@
 'use strict';
 const fs = require('fs');
 const assert = require('assert');
+const clock = require('../_tools/test-clock.cjs');
+// Virtual-clock timer. The suites NEVER schedule on the host's real clock.
+const schedule = clock.setTimeout;
 
 // ---- stubs ----------------------------------------------------------------
 const mkClassList = (owner) => {
@@ -105,13 +108,20 @@ const navStub = { userAgent: 'node' };
 global.addEventListener = (t, l) => { if (t === 'message') msgListeners.push(l); };
 global.removeEventListener = () => {};
 const msgListeners = [];
-global.setTimeout = setTimeout;
-global.clearTimeout = clearTimeout;
+// The stub world's timers and clock SHARE the suite's virtual timeline. A wait
+// is an advance of that timeline, never a host sleep (KO_REAL_CLOCK=1 restores
+// the old wall-clock behaviour for debugging).
+global.setTimeout = schedule;
+global.clearTimeout = clock.clearTimeout;
+global.setInterval = clock.setInterval;
+global.clearInterval = clock.clearInterval;
+global.Date = clock.Date;
+if (global.performance) global.performance.now = clock.performance.now;
 global.innerWidth = 1280;
 global.innerHeight = 720;
 global.MutationObserver = class { observe() {} disconnect() {} };
 global.getComputedStyle = () => ({ height: '', maxHeight: '', position: 'static' });
-global.requestAnimationFrame = (f) => setTimeout(f, 0);
+global.requestAnimationFrame = (f) => schedule(f, 0);
 global.fetch = () => Promise.reject(new Error('stub-fetch'));
 global.chrome = {
   runtime: {
@@ -122,7 +132,7 @@ global.chrome = {
   },
   storage: {
     local: {
-      get: (k, cb) => setTimeout(() => cb && cb({ 'ko.v2': { enabled: true, player: 'kick' } }), 0),
+      get: (k, cb) => schedule(() => cb && cb({ 'ko.v2': { enabled: true, player: 'kick' } }), 0),
       set: (o, cb) => cb && cb(),
     },
     onChanged: { addListener() {} },
@@ -131,14 +141,29 @@ global.chrome = {
   tabs: { query: () => Promise.resolve([]) },
 };
 
-const src = fs.readFileSync('content.js', 'utf8');
+const GATE_LINE = '  return /^[a-z0-9_]{2,25}$/.test(s) && !NOT_CHANNEL.has(s);';
+const RED = process.argv.includes('--red');
+let src = fs.readFileSync('content.js', 'utf8');
+if (RED) {
+  if (!src.includes(GATE_LINE)) throw new Error('RED arm cannot find the route-gate line to break');
+  src = src.replace(GATE_LINE, '  return true; // RED: the route gate was removed');
+}
 const api = new Function(
   'window', 'document', 'location', 'navigator',
   src + '\n;return {KO, probe, apply, rectTick, teardown, overlayTargetRoute, twitchVideo, currentSlug};',
 )(global, doc, global.location, navStub);
 const { KO } = api;
 
-const settle = (ms) => new Promise((r) => setTimeout(r, ms));
+const settle = async (ms) => {
+  await clock.advance(ms);
+  if (clock.real) return; // the real sleep already let pending work run
+  // Product callbacks schedule follow-up work in microtasks; give those tasks
+  // their turns and fire any zero-delay timer they arm before asserting.
+  for (let i = 0; i < 8; i += 1) {
+    await Promise.resolve();
+    clock.advance(0);
+  }
+};
 const setLoc = (href) => {
   const u = new URL(href);
   location.href = href;

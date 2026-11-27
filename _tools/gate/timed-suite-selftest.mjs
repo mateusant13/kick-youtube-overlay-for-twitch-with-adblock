@@ -23,6 +23,16 @@ const WRAPPER = path.join(ROOT, '_tools', 'ko-timed-suite.mjs');
 let checks = 0;
 let failed = 0;
 const arms = [];
+// COUNTED, NEVER DECLARED. A literal `arms=4/4` in the verdict is a claim the
+// file makes about itself: delete an arm block and it still printed 4/4 while
+// the gate's own regex matched that same literal, so a suite that lost a third
+// of its coverage read exactly like a whole one. Each block declares itself
+// here and the verdict prints what was actually entered (heavy-lock pattern).
+const ARMS = [];
+function arm(name) {
+  ARMS.push(name);
+  arms.push(`  arm  ${name}`);
+}
 function ok(cond, label, detail = '') {
   checks += 1;
   if (cond) {
@@ -46,6 +56,7 @@ function run(env, args = []) {
 
 // 1. BUSY refuses, with the numbers in the reason and no measurement in the receipt.
 {
+  arm('1-busy');
   const r = run({ KO_LOAD_FIXTURE: 'busy' });
   let j = null;
   try { j = JSON.parse(r.out.trim()); } catch { /* asserted below */ }
@@ -57,6 +68,7 @@ function run(env, args = []) {
 
 // 2. CANNOT-MEASURE refuses too: a sampler that could not read is not a fast suite.
 {
+  arm('2-cannot');
   const r = run({ KO_LOAD_FIXTURE: 'cannot' });
   let j = null;
   try { j = JSON.parse(r.out.trim()); } catch { /* asserted below */ }
@@ -67,6 +79,7 @@ function run(env, args = []) {
 
 // 3. READY measures.
 {
+  arm('3-ready');
   const r = run({ KO_LOAD_FIXTURE: 'ready' }, ['--suite', 'node -e "console.log(1)"', '--label', 'trivial']);
   ok(r.rc === 0, 'ready: exit 0', `rc=${r.rc}`);
   ok(/RESULT_MS=\d+/.test(r.out), 'ready: prints RESULT_MS=<digits>', r.out.slice(0, 120));
@@ -75,6 +88,7 @@ function run(env, args = []) {
 
 // 4. A failing suite is a FAIL, never a refusal.
 {
+  arm('4-failing');
   const r = run({ KO_LOAD_FIXTURE: 'ready' }, ['--suite', 'node -e "process.exit(7)"', '--label', 'fake']);
   ok(r.rc === 7, 'failing suite: rc propagated (7)', `rc=${r.rc}`);
   ok(/RESULT FAIL fake rc=7/.test(r.out), 'failing suite: prints RESULT FAIL with the rc');
@@ -83,11 +97,18 @@ function run(env, args = []) {
 // MUTANT: the same busy box with the ceilings removed must MEASURE, which is the defect
 // arms 1-3 protect against. If this arm ever stops measuring, the refusal arms prove nothing.
 {
+  arm('5-mutant');
   const r = run({ KO_LOAD_FIXTURE: 'busy', KO_LOAD_MAX_TOTAL: '100', KO_LOAD_MAX_CORE: '100' }, ['--suite', 'node -e "console.log(1)"', '--label', 'mutant']);
   ok(/RESULT_MS=\d+/.test(r.out), 'MUTANT: ceilings raised, the busy box measures (so the refusal arms can fail the other way)', r.out.slice(0, 120));
   ok(!/latency_refused/.test(r.out), 'MUTANT: no refusal when the instrument was told nothing is busy');
 }
 
+const EXPECTED_ARMS = 5;
+const told = ARMS.length;
+const okAll = failed === 0 && told === EXPECTED_ARMS;
 for (const line of arms) console.log(line);
-console.log(`RESULT ${failed === 0 ? 'PASS' : 'FAIL'} timed-suite checks=${checks} failed=${failed} arms=4/4`);
-process.exit(failed === 0 ? 0 : 1);
+if (told !== EXPECTED_ARMS) {
+  console.error(`ARMS never entered: expected ${EXPECTED_ARMS}, entered ${told} (${ARMS.join(', ')})`);
+}
+console.log(`RESULT ${okAll ? 'PASS' : 'FAIL'} timed-suite checks=${checks} failed=${failed} arms=${told}/${EXPECTED_ARMS}`);
+process.exit(okAll ? 0 : 1);

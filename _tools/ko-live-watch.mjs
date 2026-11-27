@@ -9,8 +9,10 @@
 //   node _tools/ko-live-watch.mjs stop   [--tag=owner]
 //
 // Arquivos (dir = KO_WATCH_DIR ou G:/Temp/opencode):
-//   ko-live-<tag>.jsonl  stream de amostras, eventos do ko.adlog e erros da pagina
+//   ko-live-<tag>.jsonl  stream de amostras, eventos do ko.adlog e erros da pagina (16 MiB)
+//   ko-live-<tag>-<stamp>.jsonl  geracoes rotacionadas (no maximo 2, 16 MiB cada)
 //   ko-live-<tag>.pid
+// Teto: 3 ficheiros * 16 MiB = 48 MiB por tag; a rotacao apaga por caminho exato.
 //
 // Metricas usadas no report:
 //   gap      = buffered.end(ultimo) - currentTime. Em live, a borda so existe ate
@@ -34,6 +36,12 @@ const EVERY = Math.max(200, Number(args.every || 500));
 const DIR = process.env.KO_WATCH_DIR || 'G:/Temp/opencode';
 const JSONL = path.join(DIR, `ko-live-${TAG}.jsonl`);
 const PID = path.join(DIR, `ko-live-${TAG}.pid`);
+const MAX_JSONL_BYTES = 16 * 1024 * 1024;
+const KEEP_ROTATED = 2;
+const TAG_RE = TAG.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const ROTATED_RE = new RegExp(`^ko-live-${TAG_RE}-\\d{4}-\\d{2}-\\d{2}T[0-9TZ-]+\\.jsonl$`);
+let rotationNo = 0;
+
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const hhmmss = (t) => {
@@ -84,9 +92,33 @@ const HLS_STATE = `(() => {
 })()`;
 
 // ---------------------------------------------------------------- helpers
+function rotatedFiles() {
+  try {
+    return fs.readdirSync(DIR)
+      .filter((n) => ROTATED_RE.test(n))
+      .map((n) => ({ path: path.join(DIR, n), t: fs.statSync(path.join(DIR, n)).mtimeMs }))
+      .sort((a, b) => a.t - b.t); // oldest first
+  } catch { return []; }
+}
+
+function rotate() {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-') + `-${process.pid}-${++rotationNo}`;
+  fs.renameSync(JSONL, path.join(DIR, `ko-live-${TAG}-${stamp}.jsonl`));
+  const old = rotatedFiles();
+  for (const f of old.slice(0, Math.max(0, old.length - KEEP_ROTATED))) {
+    try { fs.unlinkSync(f.path); } catch { /* exact path only */ }
+  }
+}
+
 function writer() {
   fs.mkdirSync(DIR, { recursive: true });
-  return (obj) => { try { fs.appendFileSync(JSONL, JSON.stringify(obj) + '\n'); } catch { /* ignore */ } };
+  return (obj) => {
+    const chunk = JSON.stringify(obj) + '\n';
+    try {
+      if (fs.existsSync(JSONL) && fs.statSync(JSONL).size + Buffer.byteLength(chunk) > MAX_JSONL_BYTES) rotate();
+      fs.appendFileSync(JSONL, chunk);
+    } catch { /* ignore */ }
+  };
 }
 
 async function attachPage(cdp) {
@@ -253,9 +285,11 @@ async function state() {
 
 // ---------------------------------------------------------------- report
 function load() {
-  if (!fs.existsSync(JSONL)) throw new Error(`sem captura em ${JSONL}`);
-  return fs.readFileSync(JSONL, 'utf8').split('\n').filter(Boolean)
-    .map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  const files = rotatedFiles().map((f) => f.path); // oldest generation first
+  if (fs.existsSync(JSONL)) files.push(JSONL);
+  if (!files.length) throw new Error(`sem captura em ${JSONL}`);
+  return files.flatMap((f) => fs.readFileSync(f, 'utf8').split('\n').filter(Boolean)
+    .map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean));
 }
 
 function report() {

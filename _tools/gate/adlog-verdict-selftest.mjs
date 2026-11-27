@@ -28,6 +28,14 @@ const SCRATCH = 'G:/Temp/ko-scratch';
 let checks = 0;
 let failed = 0;
 const lines = [];
+// COUNTED, NEVER DECLARED (the same defect the other three gate selftests carried):
+// a literal `arms=4/4` in the verdict plus the gate's literal regex meant a lost
+// arm still printed a whole-looking verdict.
+const ARMS = [];
+function arm(name) {
+  ARMS.push(name);
+  lines.push(`  arm  ${name}`);
+}
 function ok(cond, label, detail = '') {
   checks += 1;
   if (cond) lines.push(`  ok   ${label}`);
@@ -85,6 +93,7 @@ try {
   const r = read(hooked, 2);
   const rn = read(silent, 1);
 
+  arm('1-evicted');
   // 1. The episode with playlists and no hook row is EVICTED, and the ambiguous
   //    sentence is gone from THAT episode's block.
   const blocks = r.out.split(/^EPISODE /m).slice(1);
@@ -95,13 +104,16 @@ try {
   ok(/2 playlist row\(s\) in this episode/.test(a), 'arm1: the line carries the playlist count it inferred from');
   ok(!/could not be proven/.test(a), 'arm1: no blindness claim over evidence in hand', a.match(/could not be proven/)?.[0] || '');
 
+  arm('2-hooked-kind');
   // 2. A surviving hook row still names its kind.
   ok(/worker-hooked=worker\b/.test(b), 'arm2: a surviving hook row is reported by kind', b.match(/worker-hooked=\S+/)?.[0] || '');
 
+  arm('3-none');
   // 3. The genuinely empty episode keeps the NONE line.
   ok(/worker-hooked=NONE/.test(c), 'arm3: no playlist and no hook keeps NONE', c.match(/worker-hooked=\S+/)?.[0] || '');
   ok(/could not be proven/.test(c), 'arm3: NONE still says the proof is missing');
 
+  arm('4-rc');
   // 4. EVICTED is not a defect (exit 0), while the genuinely silent load still fails -
   //    so the exit code answers the same question in both directions.
   ok(r.rc === 0, 'arm4: EVICTED is not a defect - exit 0', `rc=${r.rc}`);
@@ -110,6 +122,10 @@ try {
   for (const f of [hooked, silent]) { try { unlinkSync(f); } catch { /* exact path */ } }
 }
 
+const EXPECTED_ARMS = 4;
+const told = ARMS.length;
+const allOk = failed === 0 && told === EXPECTED_ARMS;
 for (const l of lines) console.log(l);
-console.log(`RESULT ${failed === 0 ? 'PASS' : 'FAIL'} adlog-verdict checks=${checks} failed=${failed} arms=4/4`);
-process.exit(failed === 0 ? 0 : 1);
+if (told !== EXPECTED_ARMS) console.error(`ARMS never entered: expected ${EXPECTED_ARMS}, entered ${told} (${ARMS.join(', ')})`);
+console.log(`RESULT ${allOk ? 'PASS' : 'FAIL'} adlog-verdict checks=${checks} failed=${failed} arms=${told}/${EXPECTED_ARMS}`);
+process.exit(allOk ? 0 : 1);

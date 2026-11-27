@@ -306,6 +306,24 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
   assert.ok(!styleEl.textContent.includes('top:-28px'), 'seek bar no longer extends above bar');
   assert.ok(src.includes("document.addEventListener('keydown', onOverlayKeydown, true)"), 'F key capture listener present');
   assert.ok(src.includes('e.stopImmediatePropagation()'), 'overlay F handler wins over Twitch fullscreen');
+
+  // A source substring can survive a dead handler. Dispatch the real capture
+  // listener: when the overlay is selected, F must stop Twitch's handler.
+  const keyWrap = el('div');
+  keyWrap.requestFullscreen = () => Promise.resolve();
+  const savedWrap = KO.wrap;
+  const savedPlayer = KO.player;
+  KO.wrap = keyWrap;
+  KO.player = 'kick';
+  let stopped = 0;
+  (docListeners.keydown || []).forEach((fn) => fn({
+    key: 'f', target: doc,
+    preventDefault() {},
+    stopImmediatePropagation() { stopped++; },
+  }));
+  assert.strictEqual(stopped, 1, 'the live keydown handler stops immediate propagation');
+  KO.wrap = savedWrap;
+  KO.player = savedPlayer;
   // 0.8.47: the property is GONE from every builder. With an `allow` attribute
   // present Chrome logs "Allow attribute will take precedence over
   // 'allowfullscreen'" on each frame, and the attribute already carries
@@ -441,14 +459,22 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
   console.log('B probe: fallback gate — same-handle stays youtube, real mapping hands over w/o persisting — OK');
 
   // ---- G: kick frame ready only from the actual frame -----------------------
-  // The kick message listener was registered at eval on `window` (=global);
-  // assert the guard directly on the registered source.
-  const kickHandlerStart = src.indexOf("window.addEventListener('message', (ev) => {", 0);
-  const kickHandlerEnd = src.indexOf('// kick.com-identical seek UX', kickHandlerStart);
-  const kickSrc = src.slice(kickHandlerStart, kickHandlerEnd);
-  assert.ok(kickSrc.includes("if (m.t === 'ready')"), 'ready branch present');
-  assert.ok(kickSrc.includes('ev.source !== KO.kickFrame.contentWindow'), 'kick ready guarded by frame source check');
-  console.log('G kick ready: source-guarded against non-frame windows — OK (source assertion)');
+  // A source substring can survive a dead guard. Deliver a spoofed ready with
+  // the right origin but the WRONG window through the registered listener.
+  const gFrame = el('iframe');
+  gFrame.contentWindow = { postMessage() {} };
+  KO.kickFrame = gFrame;
+  KO.kickReady = false;
+  KO.kickWin = null;
+  const gOrigin = new URL(chromeStub.runtime.getURL('player.html')).origin;
+  msgListeners.forEach((listener) => listener({
+    data: { __koKick: { t: 'ready' } },
+    origin: gOrigin,
+    source: { postMessage() {} }, // a page-world spoofer, not KO.kickFrame.contentWindow
+  }));
+  assert.strictEqual(KO.kickReady, false, 'a spoofed ready from another window cannot declare the kick frame ready');
+  assert.strictEqual(KO.kickWin, null, 'and cannot capture kickSend');
+  console.log('G kick ready: source-guarded against non-frame windows — OK (spoofed message refused)');
 
   // ---- teardown resets the new fields ---------------------------------------
   KO.ytHlsUrl = 'u'; KO.ytHlsAt = 1; KO.ytHlsFailed = true; KO.ytHlsFailedAt = 2; KO.ytLoadedUrl = 'u';
@@ -595,7 +621,6 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
   const pH4After = swCalls.filter((m) => m && m.type === 'ko-yt-play').length;
   assert.strictEqual(KO.ytHlsFailed, false, 'retry intent with expired backoff must clear the stale mint failure');
   assert.strictEqual(KO.player, 'youtube', 'retry intent must return the active layer to youtube (not keep kicking)');
-  console.log('DBG', JSON.stringify({diff: pH4After - pH4Before, tail: swCalls.slice(-3), ytId: KO.ytId, ytRaw: KO.ytRaw, url: KO.ytHlsUrl, failed: KO.ytHlsFailed, probe: KO.ytProbeAt, noev: KO.ytNoEvidence, player: KO.player}));
   assert.strictEqual(pH4After - pH4Before, 1, 'the re-pick re-mints exactly once (fresh mint, not the old pendings)');
   assert.ok(KO.ytHlsUrl, 'the re-mint produced a fresh url');
   KO.player = 'kick';
@@ -700,7 +725,18 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
   assert.strictEqual(bConn.color, '#d97706', 'amber = url attached but IVS not Playing yet');
   // KICK failed/offline -> gray, on the layer the user actually chose
   KO.activeUrl = null;
-  assert.ok(kickSrc.includes('ev.origin !== PLAYER_ORIGIN'), 'kick messages must use the extension-frame origin');
+  // A wrong-origin message must be dropped even when it names the real frame.
+  const originSavedFrame = KO.kickFrame;
+  KO.kickFrame = gFrame;
+  KO.kickState = KO.kickState || {};
+  delete KO.kickState.qualities;
+  msgListeners.forEach((listener) => listener({
+    data: { __koKick: { t: 'levels', levels: ['2160p'] } },
+    origin: 'https://evil.example',
+    source: gFrame.contentWindow,
+  }));
+  assert.strictEqual(KO.kickState.qualities, undefined, 'a wrong-origin spoof cannot write kick state');
+  KO.kickFrame = originSavedFrame;
   KO.kickUrlT = 0;
   KO.kickState = null;
   KO.kickEverPlayed = false;
@@ -755,6 +791,7 @@ const lastBadge = () => badge[badge.length - 1] || { text: null, color: null };
 
   // ---- J: badge texts all fit Chrome's 4-char clip --------------------------
   const seen = new Set(badgeTexts);
+  assert.ok(seen.size > 0, 'no badge was emitted');
   for (const t of seen) {
     assert.ok(typeof t === 'string' && t.length <= 4, `badge text '${t}' must fit the 4-char clip`);
     assert.ok(['', 'KICK', 'YT', 'TW', 'OFF'].includes(t), `badge '${t}' must be a normalized token`);
@@ -1111,10 +1148,8 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   try {
     Object.assign(global.location, { hostname: 'www.youtube.com', pathname: '/watch', search: '?v=Pu7xsoh-K6k' });
     setPageSel('#movie_player', el('div'));
-    const player = byId.get('mp-sel') || (byId.has('mp-sel') ? null : null);
     // setPageSel stores raw nodes, so reach into the pageSel map.
     const mp = pageSel.get('#movie_player');
-    assert.ok(mp, '#movie_player selectable on a YT watch page');
     mp.getBoundingClientRect = () => ({ left: 8, top: 9, width: 640, height: 360 });
     const r1 = qRectFn();
     assert.strictEqual(r1.left, 8, 'rectFromHost uses #movie_player first on www.youtube.com');
@@ -1311,7 +1346,6 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     // preference must still hold the pre-flip player when the event lands.
     KO.playerPreference = KO.player;
     // Mirror chrome.storage.onChanged: enabled+player+mappings drive apply().
-    console.log('T diag fireFlip enter: listener=', !!storageChangedListener, 'target=', player, 'pref-before=', KO.playerPreference);
     const _r = storageChangedListener(
       { 'ko.v2': {
         newValue: { enabled: true, player, mappings: KO.mappings, vols: undefined },
@@ -1322,9 +1356,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     void _r;
   };
   fireFlip('youtube'); // pChanged (player differs) -> fire(apply)
-  console.log('T diag sync-after-fireFlip: player=', KO.player, 'pref=', KO.playerPreference);
   await settle(50);
-  console.log('T diag flip-yt: player=', KO.player, 'pref=', KO.playerPreference, 'wrap=', !!KO.wrap, 'classes=', KO.wrap && KO.wrap.classList.value, 'ytState=', JSON.stringify(KO.ytState), 'ytHlsUrl=', KO.ytHlsUrl, 'ytHlsFailed=', KO.ytHlsFailed, 'ytEmbedAt=', KO.ytEmbedAt);
   assert.strictEqual(KO.wrap, tWrap, 'flip to youtube keeps the SAME wrap (no teardown)');
   assert.ok(KO.wrap.classList.contains('ko-yt') && !KO.wrap.classList.contains('ko-kick'), 'flip: class swapped to ko-yt');
   if (tKickFrame) assert.strictEqual(KO.kickFrame, tKickFrame, 'flip keeps the SAME kick iframe object');
@@ -1634,6 +1666,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   assert.ok(!mKO.wrap.classList.contains('ko-hot'), 'a hidden wrap does not re-arm');
   mountApi.teardownHotBar();
   (docEvents.pointermove || []).forEach((f) => f({ clientX: 200, clientY: 150 }));
+  assert.ok(!mKO.wrap.classList.contains('ko-hot'), 'a pointermove after teardownHotBar never re-arms the bar');
   console.log('Z hover re-arm: document-level pointermove over the wrap rect re-arms the bar; outside/hidden do not — OK');
 
   // ---- P1a: yt HLS — arrow-right at/over the live edge sends seekToLive,

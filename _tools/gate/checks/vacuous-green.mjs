@@ -5,10 +5,17 @@
 
 // Suites here print a PASS verdict but expose no count signal. One-line reason
 // per entry: their exit code and verdict string are the only signal available.
-const NO_COUNT_ALLOWLIST = new Map([
-  ['kick-overlay/route-gate-test.cjs', 'prints a PASS verdict and no count; rc and verdict string are its only signal'],
-  ['kick-overlay/youtube-resume-test.cjs', 'prints a PASS verdict and no count; rc and verdict string are its only signal'],
-]);
+//
+// MEASURED 2026-11-27: BOTH original entries were stale and are gone.
+// `route-gate-test.cjs` already printed `ANTI-VACUITY suite=route-gate checks=39
+// expected=39`, which the CHECKS regex below matches, so its entry excused a
+// suite that could already prove its count - and would have excused the same
+// suite at `checks=0` if its own anti-vacuity line were ever deleted.
+// `youtube-resume-test.cjs` printed `arms=2 expected=2`, which the ARMS regex
+// (`ARMS n/m`) did NOT match; it now prints the canonical `ARMS 2/2 present`.
+// An entry here is a permanent exemption from the count requirement, so a stale
+// one is a false green that never expires.
+const NO_COUNT_ALLOWLIST = new Map([]);
 
 const CHECKS = /checks=(\d+)/g;
 const ARMS = /ARMS (\d+)\/(\d+)/g;

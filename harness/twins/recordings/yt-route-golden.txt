@@ -5,4 +5,5 @@ PASS a stored mapping still wins over the handle guess
 PASS the kick probe refuses a handle that cannot exist
 PASS negative arm (guessed channel): the pre-fix resolver is caught inventing a channel
 
+ANTI-VACUITY suite=yt-route checks=6 expected=6
 RESULT PASS yt-route checks=6 failed=0

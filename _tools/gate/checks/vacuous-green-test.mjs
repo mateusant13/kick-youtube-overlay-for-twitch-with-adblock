@@ -37,8 +37,15 @@ const cases = [
     ctx: ctx(suite('kick-overlay/content-fix.cjs', 'ARMS 41/41 present\n\nALL CONTENT.JS FIX CHECKS PASSED')),
   },
   {
-    name: 'allowlisted no-count suite passes',
+    // THE ALLOWLIST IS EMPTY NOW. Its one surviving fixture asserted the exemption
+    // itself; with no exemption left, a PASS verdict and no count must THROW.
+    name: 'no count signal throws (the allowlist is empty)',
     ctx: ctx(suite('kick-overlay/route-gate-test.cjs', 'RESULT PASS route-gate-test')),
+    throws: /no count signal/,
+  },
+  {
+    name: 'route-gate real shape now satisfies the count requirement',
+    ctx: ctx(suite('kick-overlay/route-gate-test.cjs', 'ANTI-VACUITY suite=route-gate checks=39 expected=39\nRESULT PASS route gate: contract + hide + no-mount + no-ghost-anchor')),
   },
   {
     name: 'checks=0 is not excused by nonzero arms',

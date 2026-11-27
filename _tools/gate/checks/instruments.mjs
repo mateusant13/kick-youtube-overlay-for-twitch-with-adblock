@@ -116,7 +116,7 @@ export const instrumentChecks = [
       const r = spawnSync(process.execPath, [tool], { timeout: 120000, killSignal: 'SIGKILL', cwd: ctx.ROOT, encoding: 'utf8' });
       const out = String(r.stdout || '') + String(r.stderr || '');
       ctx.assert(r.status === 0, `timed-suite selftest refused:\n${out.trim().slice(-500)}`);
-      const m = /RESULT PASS timed-suite checks=(\d+) failed=0 arms=4\/4/.exec(out);
+      const m = /RESULT PASS timed-suite checks=(\d+) failed=0 arms=(\d+)\/5/.exec(out);
       ctx.assert(m, `selftest printed no verdict:\n${out.trim().slice(-400)}`);
       const budgets = ctx.read('benchmarks/budgets.json');
       // A TIMING METRIC IS ANY ROW WHOSE UNIT IS ms: the whole gate wall included.
@@ -142,7 +142,7 @@ export const instrumentChecks = [
         `timing metric(s) no longer parse the wrapper's RESULT_MS line: ${notParsing.join(', ')}`,
       );
       ctx.assert(/node _tools\/ko-timed-suite\.mjs --label ad_time_continuity/.test(budgets), 'the ad-time-continuity metric no longer runs through the timing wrapper');
-      return `starvation refusal proven (${m[1]} checks, 4 arms): busy and cannot-measure refuse with the numbers, ready measures, a failing suite propagates its rc, and the mutant arm shows the ceilings are what makes the refusal real; all ${wallRows.length} timing metric(s) run through the wrapper`;
+      return `starvation refusal proven (${m[1]} checks, ${m[2]} arms counted): busy and cannot-measure refuse with the numbers, ready measures, a failing suite propagates its rc, and the mutant arm shows the ceilings are what makes the refusal real; all ${wallRows.length} timing metric(s) run through the wrapper`;
     },
   },
   {
@@ -160,12 +160,12 @@ export const instrumentChecks = [
       const r = spawnSync(process.execPath, [tool], { timeout: 120000, killSignal: 'SIGKILL', cwd: ctx.ROOT, encoding: 'utf8' });
       const out = String(r.stdout || '') + String(r.stderr || '');
       ctx.assert(r.status === 0, `guest-load-guard selftest refused:\n${out.trim().slice(-500)}`);
-      const m = /RESULT PASS guest-load-guard checks=(\d+) failed=0 arms=4\/4/.exec(out);
+      const m = /RESULT PASS guest-load-guard checks=(\d+) failed=0 arms=(\d+)\/4/.exec(out);
       ctx.assert(m, `selftest printed no verdict:\n${out.trim().slice(-400)}`);
       const guest = ctx.read('_tools/ko-guest.mjs');
       ctx.assert(/readLoad\(/.test(guest), 'ko-guest.mjs no longer reads the load pre-flight');
       ctx.assert(/process\.exit\(3\)/.test(guest), 'ko-guest.mjs no longer refuses with exit 3');
-      return `guest launch guard proven (${m[1]} checks, 4 arms): BUSY refuses with the reading and names KO_ALLOW_BUSY=1, the override proceeds and still reports BUSY, READY launches, a --flag is never the URL`;
+      return `guest launch guard proven (${m[1]} checks, ${m[2]} arms counted): BUSY refuses with the reading and names KO_ALLOW_BUSY=1, the override proceeds and still reports BUSY, READY launches, a --flag is never the URL`;
 
     },
   },
@@ -185,11 +185,11 @@ export const instrumentChecks = [
       const r = spawnSync(process.execPath, [tool], { timeout: 120000, killSignal: 'SIGKILL', cwd: ctx.ROOT, encoding: 'utf8' });
       const out = String(r.stdout || '') + String(r.stderr || '');
       ctx.assert(r.status === 0, `adlog-verdict selftest refused:\n${out.trim().slice(-500)}`);
-      const m = /RESULT PASS adlog-verdict checks=(\d+) failed=0 arms=4\/4/.exec(out);
+      const m = /RESULT PASS adlog-verdict checks=(\d+) failed=0 arms=(\d+)\/4/.exec(out);
       ctx.assert(m, `selftest printed no verdict:\n${out.trim().slice(-400)}`);
       const src = ctx.read('_tools/ko-adlog-verdict.mjs');
       ctx.assert(/worker-hooked=EVICTED/.test(src), 'the reader no longer reports EVICTED');
-      return `verdict reader proven (${m[1]} checks, 4 arms): playlists without a hook row read EVICTED with the count, a surviving hook is named by kind, a genuinely silent load keeps NONE and still exits 1, EVICTED exits 0`;
+      return `verdict reader proven (${m[1]} checks, ${m[2]} arms counted): playlists without a hook row read EVICTED with the count, a surviving hook is named by kind, a genuinely silent load keeps NONE and still exits 1, EVICTED exits 0`;
 
     },
   },

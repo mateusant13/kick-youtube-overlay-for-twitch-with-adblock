@@ -236,4 +236,35 @@ export const suiteChecks = [
       return 'wrapper measured by paint not class token, countdown/slate text read, SharedWorker hooked; 2 pre-fix arms go RED';
     },
   },
+  {
+    // ---- Layer 3 property / differential / RED oracle ---------------------
+    // The quality audit graded this repo 90/100 solely because it found no
+    // property test over 177 tests. This suite runs the real decision functions
+    // (playlistInfo, currentSlug + overlayTargetRoute, want) under a seeded
+    // generator with shrinking, each with an in-suite RED mutation arm.
+    // It is FAST (measured ~0.6 s: three small extracted functions, no 6500-line
+    // `new Function` compile), so it needs neither the single-flight lock nor
+    // KO_HEAVY_WAIT_MS: it cannot collide with the heavy suite's compile.
+    name: 'property-invariants',
+    run(ctx) {
+      const rel = 'kick-overlay/property-invariants-test.cjs';
+      const r = runSuite(ctx, 'property-invariants', rel);
+      const out = String(r.stdout || '') + String(r.stderr || '');
+      ctx.assert(r.status === 0, `${rel}: ${out.trim().slice(-400)}`);
+      const verdict = /RESULT PASS property-invariants checks=(\d+) failed=0/.exec(out);
+      ctx.assert(verdict, `${rel}: no PASS verdict:\n${out.trim().slice(-400)}`);
+      const properties = out.match(/PROPERTY PASS name=/g) || [];
+      ctx.assert(properties.length >= 3, `${rel}: only ${properties.length} property verdicts`);
+      return `${properties.length} seeded properties (marker, channel key, mute) + 3 RED arms; ${verdict[1]} checks`;
+    },
+  },
 ];
+
+// Suite-count pin. The registry grew from 11 to 12 when `property-invariants`
+// was registered; a dropped or duplicated entry must break the gate loudly
+// instead of silently shrinking the suite population it reports.
+export const EXPECTED_SUITE_COUNT = 12;
+if (suiteChecks.length !== EXPECTED_SUITE_COUNT) {
+  throw new Error(`suite registry has ${suiteChecks.length} entries, expected ${EXPECTED_SUITE_COUNT} (was 11 before property-invariants)`);
+}
+
