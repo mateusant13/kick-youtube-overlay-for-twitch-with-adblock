@@ -52,7 +52,13 @@ function run(env, args = ['start', '--dry-run']) {
   try { j = JSON.parse(r.out.trim()); } catch { /* asserted below */ }
   ok(r.rc === 3, 'busy: exit 3 (refusal is not a crash)', `rc=${r.rc}`);
   ok(j !== null && j.refused === true, 'busy: refused true');
-  ok(j !== null && /guest not started: BUSY total=\d+% busiest=\d+% pinned=\d+/.test(String(j.reason)), 'busy: reason carries the reading', j && j.reason);
+  ok(j !== null && /guest not started: BUSY /.test(String(j.reason)), 'busy: reason carries the reading', j && j.reason);
+  // NAMES THE BREACH. The fixture puts every core at 100 % and the total at 100 %,
+  // so both ceilings broke and the sentence must say both - the defect this replaced
+  // was `total=57.2% (ceilings total 70%)`, refused for its CORE ceiling, which read
+  // as a contradiction (seat DM dm-486c70525fc807e40aab).
+  ok(j !== null && /total 100% above its 70% ceiling/.test(String(j.reason)), 'busy: reason names the total ceiling it broke', j && j.reason);
+  ok(j !== null && /20 core\(s\) above 90%/.test(String(j.reason)), 'busy: reason names the core ceiling it broke', j && j.reason);
   ok(j !== null && String(j.advice).includes('KO_ALLOW_BUSY=1'), 'busy: names the override');
 }
 

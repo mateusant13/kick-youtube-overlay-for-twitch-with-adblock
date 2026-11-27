@@ -1,9 +1,9 @@
 {
   "schema": "revival.features/v1",
   "repo": "kicktwitchyoutube_instagram",
-  "git_head": "b8442c8",
-  "generated_at": "2026-11-27T08:38:59Z",
-  "total_tracked_files": 164,
+  "git_head": "84a91be",
+  "generated_at": "2026-11-27T08:48:11Z",
+  "total_tracked_files": 165,
   "feature_count": 2,
   "features": [
     {
@@ -13,6 +13,7 @@
       "files": [
         "_tools/cdp-daemon.mjs",
         "_tools/cdp.mjs",
+        "_tools/gate/adlog-verdict-selftest.mjs",
         "_tools/gate/arms.mjs",
         "_tools/gate/checks/artifacts.mjs",
         "_tools/gate/checks/index.mjs",
@@ -76,14 +77,14 @@
         "_tools/relay.mjs",
         "_tools/test-clock.cjs"
       ],
-      "file_count": 64,
-      "recent_commit_touches": 170,
+      "file_count": 65,
+      "recent_commit_touches": 173,
       "recent_commit_subjects": [
         "gate: split ko-verify into modules; test the load pre-flight; refuse vacuous PASS",
         "revival v3.0.1 P0-04..P0-08: virtual clock, ledger truth, gate hardening",
         "fix(ad): end a playlist pod when the ad UI leaves, and stop starting the standby at 360p (0.8.111)",
         "fix(overlay): native stall watchdog, arrow seek parity, ad standby silence (0.8.110)",
-        "verdict: read the squeeze, his gestures and the DVR rescue",
+        "verdict: the reader stops claiming blindness it can lift",
         "Bound every hang-capable call in the tooling, and add the impacted fast loop",
         "guest: the launcher refuses to start on a busy box, in the launcher"
       ],

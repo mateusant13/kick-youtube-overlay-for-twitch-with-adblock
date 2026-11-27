@@ -88,6 +88,40 @@ function runBash(fixture) {
   eq('dead exit without gate', exitCodeFor(out.verdict), 3);
 }
 
+// 3b. THE BREACH IS NAMED, because the numbers alone cannot say which ceiling broke.
+// A box under its total ceiling with one pinned core refuses for the CORE ceiling, and
+// a receipt that prints `total=57.2% (ceilings total 70%)` beside that refusal reads as
+// a contradiction (measured: seat DM dm-486c70525fc807e40aab). Three shapes, three names.
+{
+  // One core at 95 %, the other three idle: total ~23.8 %, under 70.
+  const before = Array.from({ length: 4 }, () => ({ idle: 0, total: 1000 }));
+  const after = [
+    { idle: 50, total: 2000 },
+    { idle: 1000, total: 2000 },
+    { idle: 1000, total: 2000 },
+    { idle: 1000, total: 2000 },
+  ];
+  const out = evaluateLoad(before, after, CEILINGS);
+  eq('pinned-only verdict', out.verdict, 'BUSY');
+  check('pinned-only total is under its ceiling', out.total < CEILINGS.total, String(out.total));
+  eq('pinned-only breach name', out.breach, 'pinned');
+  check('pinned-only why names the core ceiling', /core\(s\) above 90%/.test(String(out.why)), String(out.why));
+  check('pinned-only why says the total stayed under', /stays under its 70%/.test(String(out.why)), String(out.why));
+
+  const both = evaluateLoad(...pair(100), CEILINGS);
+  eq('both breach name', both.breach, 'total+pinned');
+
+  const [rb, ra] = pair(0);
+  const readyOut = evaluateLoad(rb, ra, CEILINGS);
+  eq('ready breach is null', readyOut.breach, null);
+  eq('ready why is null', readyOut.why, null);
+
+  // 71 % on every core: over the total ceiling, no core over 90 -> the name is `total`.
+  const overTotal = evaluateLoad(...pair(71), CEILINGS);
+  eq('total-only breach name', overTotal.breach, 'total');
+  check('total-only why names the total ceiling', /total 71% above its 70% ceiling/.test(String(overTotal.why)), String(overTotal.why));
+}
+
 // 4. Ceilings: 71% is BUSY at 70 but READY at 90; the CLI maps its env var in.
 {
   const [before, after] = pair(71);
@@ -114,7 +148,7 @@ function runBash(fixture) {
     if (out.verdict === 'CANNOT-MEASURE') {
       check('real CANNOT-MEASURE has why', typeof out.why === 'string' && out.why.length > 0, String(out.why));
     } else {
-      const keys = ['advice', 'busiest', 'ceilings', 'cores', 'perCore', 'pinned', 'total', 'verdict', 'windowMs'];
+      const keys = ['advice', 'breach', 'busiest', 'ceilings', 'cores', 'perCore', 'pinned', 'total', 'verdict', 'why', 'windowMs'];
       eq('real schema keys', JSON.stringify(Object.keys(out).sort()), JSON.stringify(keys));
       for (const key of ['windowMs', 'cores', 'total', 'busiest', 'pinned']) {
         check(`real ${key} is a number`, Number.isFinite(out[key]), JSON.stringify(out[key]));

@@ -37,6 +37,22 @@ export function evaluateLoad(before, after, ceilings) {
   const busiest = Math.max(...cores);
   const ready = total <= ceilings.total && pinned === 0;
 
+  // WHICH CEILING BROKE, because the reading alone cannot say it and a lane read
+  // the wrong one (measured 2026-11-27: `BUSY total=57.2% ... ceilings total 70%`
+  // was refused for its CORE ceiling, and `57.2` sits under `70`, so the receipt
+  // invited "why did this refuse?" and the answer lived in a predicate instead of
+  // in the message). Lowering `total` under a busy core never clears this guard;
+  // naming the breach is what makes that legible without reading the source.
+  const overTotal = total > ceilings.total;
+  const breach = ready ? null : overTotal && pinned ? 'total+pinned' : overTotal ? 'total' : 'pinned';
+  const why = ready
+    ? null
+    : breach === 'pinned'
+      ? `${pinned} core(s) above ${ceilings.core}% (busiest ${busiest}%), while the total ${total}% stays under its ${ceilings.total}% ceiling`
+      : breach === 'total'
+        ? `total ${total}% above its ${ceilings.total}% ceiling (busiest ${busiest}%)`
+        : `total ${total}% above its ${ceilings.total}% ceiling AND ${pinned} core(s) above ${ceilings.core}% (busiest ${busiest}%)`;
+
   return {
     verdict: ready ? 'READY' : 'BUSY',
     windowMs: ceilings.windowMs,
@@ -44,6 +60,8 @@ export function evaluateLoad(before, after, ceilings) {
     total,
     busiest,
     pinned,
+    breach,
+    why,
     ceilings: { total: ceilings.total, core: ceilings.core },
     perCore: cores,
     advice: ready ? READY_ADVICE : QUEUE_ADVICE,

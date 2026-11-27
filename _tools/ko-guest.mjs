@@ -117,8 +117,11 @@ const LOAD = await readLoad({
 const DRY = process.argv.includes('--dry-run');
 const OVERRIDE = process.env.KO_ALLOW_BUSY === '1';
 if (LOAD.verdict !== 'READY' && !OVERRIDE) {
+  // The reason NAMES the ceiling that broke, not both ceilings beside a number
+  // that exceeds neither: `BUSY total=57.2% (ceilings total 70%)` was refused for
+  // its core ceiling and read as a contradiction (seat DM dm-486c70525fc807e40aab).
   const why = LOAD.verdict === 'BUSY'
-    ? `BUSY total=${LOAD.total}% busiest=${LOAD.busiest}% pinned=${LOAD.pinned} (ceilings total ${process.env.KO_LOAD_MAX_TOTAL || 70}%, core ${process.env.KO_LOAD_MAX_CORE || 90}%)`
+    ? `BUSY ${LOAD.why || `total=${LOAD.total}% busiest=${LOAD.busiest}% pinned=${LOAD.pinned}`}`
     : `CANNOT-MEASURE ${LOAD.why || 'no cpu reading'}`;
   console.log(JSON.stringify({
     refused: true,
