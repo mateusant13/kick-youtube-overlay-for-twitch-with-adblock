@@ -1,9 +1,9 @@
 {
   "schema": "revival.features/v1",
   "repo": "kicktwitchyoutube_instagram",
-  "git_head": "26a24b5",
-  "generated_at": "2026-11-27T07:08:06Z",
-  "total_tracked_files": 157,
+  "git_head": "bf9e8cd",
+  "generated_at": "2026-11-27T07:31:25Z",
+  "total_tracked_files": 159,
   "feature_count": 2,
   "features": [
     {
@@ -26,6 +26,7 @@
         "_tools/gate/checks/vacuous-green-test.mjs",
         "_tools/gate/checks/vacuous-green.mjs",
         "_tools/gate/fast-loop.mjs",
+        "_tools/gate/heavy-lock-selftest.mjs",
         "_tools/gate/load-check-test.mjs",
         "_tools/gate/load-verdict.mjs",
         "_tools/gate/product.mjs",
@@ -44,6 +45,7 @@
         "_tools/ko-guest.mjs",
         "_tools/ko-harness-check.mjs",
         "_tools/ko-harness.mjs",
+        "_tools/ko-heavy-lock.cjs",
         "_tools/ko-hook-probe.mjs",
         "_tools/ko-live-latency-arm.mjs",
         "_tools/ko-live-watch.mjs",
@@ -70,8 +72,8 @@
         "_tools/relay.mjs",
         "_tools/test-clock.cjs"
       ],
-      "file_count": 58,
-      "recent_commit_touches": 156,
+      "file_count": 60,
+      "recent_commit_touches": 162,
       "recent_commit_subjects": [
         "gate: split ko-verify into modules; test the load pre-flight; refuse vacuous PASS",
         "revival v3.0.1 P0-04..P0-08: virtual clock, ledger truth, gate hardening",
@@ -134,13 +136,12 @@
         "kick-overlay/yt-route-test.cjs"
       ],
       "file_count": 24,
-      "recent_commit_touches": 297,
+      "recent_commit_touches": 309,
       "recent_commit_subjects": [
+        "0.8.130: one heavy job at a time is enforced, and the suite stops recompiling the product",
         "Put the content.js suite on a virtual clock, bound the extension's fetches, and repair two slider probes",
         "0.8.129: every pod-end door owns the hand-back wait; the replica grades decoded pixels",
-        "0.8.128: one seek clock, one source writer, one loading window",
-        "0.8.127: evidence-gated pods, one hand-back wait, one audio arbiter, <=15s replica twin",
-        "revival v3.0.1 P0-04..P0-08: virtual clock, ledger truth, gate hardening"
+        "0.8.128: one seek clock, one source writer, one loading window"
       ],
       "how_it_works": "Three worlds, one page. The ISOLATED content script (`content.js`) mounts the kick/YouTube layer in an iframe (`player.html`), arbitrates ownership of the screen (`data-ko-owner`, `overlayOwnsPicture`, `OWNER_GRACE_MS`), pauses/resumes the page's own `<video>` through the stall watchdog (`nativeStallWatch`, which refuses with a named row), publishes the display clock verdicts (LIVE/BEHIND/REPEAT/FROZEN/PAUSED), sets the toolbar badge (`setBadge` -> `chrome.action`) and heals a stale tab only while it is hidden. `ko-audio.js` is the single writer of mute/volume (intent x policy x visible surface), persisted per tab in sessionStorage. The MAIN-world ad path (`twitch-adblock.js`) detects an ad by paint + slate text + the worker-hooked playlist, opens a pod, mints a clean source over Twitch's GQL usher, covers the native with the clean picture only once it is decoding at the sync target (`cleanLatTarget`, reveal waits for the caught-up report), freezes the page element for the pod's duration, and hands back exactly once (timeline-reset detection, buffered-edge or wall-clock target, `handback-wait` until `rs >= 3` or 3 s). `adblock-bridge.js` crosses the world boundary in both directions; `background.js` installs the DNR rules and the packaged resources (it holds no storage record and no badge).",
       "inputs": [
