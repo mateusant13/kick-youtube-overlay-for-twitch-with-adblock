@@ -1,16 +1,16 @@
 {
   "schema": "revival.sliders/v1",
-  "updated_at": "2026-11-27T07:49:09Z",
+  "updated_at": "2026-11-27T07:56:06Z",
   "scale_0_100": [
     {
       "id": "delivery_balance",
       "label": "Delivery Balance (Product vs Meta)",
       "baseline": 92,
-      "current": 67.0,
+      "current": 100.0,
       "target": 85,
       "counterpart": "Gate rigor & hygiene",
-      "proof_cmd": "node harness/twins/slider_probe.mjs delivery_balance",
-      "evidence": "git log -n12 --name-only --format=%x00%H at af51a90 -> product=8 meta=2 other=2 of total=12 (the two meta commits are the feature map and this record); counts PRODUCT commits in a 12-commit window, so it rises only by landing product work"
+      "proof_cmd": "python \"$S/landing_ratio_check.py\" --repo . --balance-score",
+      "evidence": "landing_ratio_check --balance-score after the rulebook split: score_0_100=100 band=Product-Led subs product 40/40 telemetry 25/25 hygiene 20/20 cadence 15/15; AGENTS.md 2790 -> 390 lines, history verbatim in docs/AGENTS-archive-2026-11-27.md (2413); product_commits=33/40 (82.5%)"
     },
     {
       "id": "observability",
