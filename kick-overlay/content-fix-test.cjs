@@ -24,7 +24,12 @@ global.Date = clock.Date;
 if (global.performance) global.performance.now = clock.performance.now;
 const drain = () => new Promise((resolve) => realSetImmediate(resolve));
 
-const manifest = JSON.parse(fs.readFileSync('manifest.json', 'utf8'));
+// EVERY READ BELOW IS RESOLVED BESIDE THIS FILE, NEVER FROM THE PROCESS CWD.
+// Measured 2026-11-27: the gate spawns this suite with its own cwd, and a
+// relative read made it die before the first arm, which the receipt reported as
+// a stack trace instead of the defect. A suite is not a shell command.
+const HERE = __dirname;
+const manifest = JSON.parse(fs.readFileSync(require('path').join(HERE, 'manifest.json'), 'utf8'));
 assert.ok(manifest.host_permissions.includes('https://kick.com/*'), 'manifest permits Kick API fetches');
 const CS_ENTRY = (manifest.content_scripts || []).find((c) => (c.js || []).includes('content.js'));
 assert.ok(CS_ENTRY, 'manifest registers content.js as a content script');
@@ -244,12 +249,12 @@ global.getComputedStyle = () => ({ height: '', maxHeight: '', position: 'static'
 // failures internally, so a rejecting stub keeps the boot probe deterministic.
 global.fetch = () => Promise.reject(new Error('stub-fetch'));
 
-const src = fs.readFileSync('content.js', 'utf8').replace(/\r\n/g, '\n'); // RED mutations are LF literals
+const src = fs.readFileSync(require('path').join(HERE, 'content.js'), 'utf8').replace(/\r\n/g, '\n'); // RED mutations are LF literals
 assert.ok(
   src.includes(`const KO_VER = '${manifest.version}'`),
   `content KO_VER is aligned with the manifest version (${manifest.version}); a half-bump would drift green`,
 );
-const bridgeSrc = fs.readFileSync('player-bridge.js', 'utf8');
+const bridgeSrc = fs.readFileSync(require('path').join(HERE, 'player-bridge.js'), 'utf8');
 // Run in a Function scope so top-level consts/functions are accessible.
 const scope = {};
 const fn = new Function('window', 'document', 'location', 'navigator', src + '\n;return {KO, probe, apply, ensureYtHls, injectStyles, teardown, setPlayer, saveState, ' +

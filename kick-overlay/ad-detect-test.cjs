@@ -2002,9 +2002,13 @@ async function workerPlaylistArm(src, text) {
   };
   const w = workerWorld(src, fetchImpl);
   const token = encodeURIComponent(JSON.stringify({ player_type: 'site', platform: 'web' }));
-  await w.self.fetch(`https://usher.ttvnw.net/api/v2/channel/hls/rodil.m3u8?token=${token}`);
+  // A BOUND ON EVERY FETCH CALL SITE, even the stub's: `fail_fast_audit` reads a
+  // call with no `signal`/`timeout` on the line or in the six after it as a hang,
+  // and it cannot know this implementation is local. 2 s is the ceiling this
+  // arm's stub would ever need, and the bound stays true if the stub is replaced.
+  await w.self.fetch(`https://usher.ttvnw.net/api/v2/channel/hls/rodil.m3u8?token=${token}`, { signal: AbortSignal.timeout(2000) });
   await new Promise((r) => setTimeout(r, 0));
-  await w.self.fetch('https://video-edge-a.playlist.ttvnw.net/v1/playlist/live.m3u8?token=abc');
+  await w.self.fetch('https://video-edge-a.playlist.ttvnw.net/v1/playlist/live.m3u8?token=abc', { signal: AbortSignal.timeout(2000) });
   await new Promise((r) => setTimeout(r, 0));
   return {
     holds: w.posts.filter((p) => p.m.type === 'ad-hold'),

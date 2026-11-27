@@ -1031,7 +1031,7 @@ const NOT_CHANNEL = new Set([
 
 // Build marker for the diag stream — lets us tell which code a tab runs
 // (content scripts of pre-reload tabs survive extension reloads).
-const KO_VER = '0.8.135';
+const KO_VER = '0.8.138';
 // How long a lost picture may last before the native player is allowed to
 // reclaim the screen (owner 2026-11-11: an ad and the player fighting).
 const OWNER_GRACE_MS = 6000;
@@ -1433,15 +1433,21 @@ function kickLog(ev, d) {
 // that refused and the real error; it never claims anything about the stream.
 function kickRefusal(k) {
   const refusals = Array.isArray(k && k.refusals) ? k.refusals : [];
-  if (!refusals.length) return false;
-  const why = refusals
-    .map((r) => `${String(r.url).replace(/^https:\/\/kick\.com\/api\//, '')}: ${r.why}`)
-    .join(' | ');
-  kickLog('kick-probe-refused', {
-    slug: KO.kickSlug, tried: refusals.length, why: why.slice(0, 300),
-  });
-  console.log('[ko] kick probe refused (not offline)', KO.kickSlug, 'endpoints:', refusals.length);
-  return true;
+  // NOTHING TO REFUSE IS THE ORDINARY CASE, NOT A DECISION. Written as an early
+  // `return false` this was counted as a fourth guard-shaped silent exit in a
+  // file whose ceiling is three (`ko-census`, 2026-11-27): the census cannot see
+  // that the no-refusal path is the hot one, and a row per successful probe is
+  // the per-heartbeat sampling this ring already paid for. One exit instead.
+  if (refusals.length) {
+    const why = refusals
+      .map((r) => `${String(r.url).replace(/^https:\/\/kick\.com\/api\//, '')}: ${r.why}`)
+      .join(' | ');
+    kickLog('kick-probe-refused', {
+      slug: KO.kickSlug, tried: refusals.length, why: why.slice(0, 300),
+    });
+    console.log('[ko] kick probe refused (not offline)', KO.kickSlug, 'endpoints:', refusals.length);
+  }
+  return refusals.length > 0;
 }
 
 // Records one mint-probe outcome per api, and only when THAT api's outcome
