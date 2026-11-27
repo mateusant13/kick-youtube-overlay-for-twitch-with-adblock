@@ -92,6 +92,7 @@ owner already applies to the spectacle of a claim being repeated back to him.
 
 - **`task-resolver` is the entry point for every non-trivial task** in this project, defect, feature, refactor, performance, configuration or research. Load it first, before choosing any other skill, and re-run its classification when the objective, domain or scope changes. Trivial edits (typo, rename, single-line fix) do not need it.
 - `project-revival` governs work whose outcome spans product, design and engineering at once; `task-resolver` hands off to it rather than duplicating it.
+- **Pinned skill version: `project-revival` v4.6.0** (`C:/Users/Administrador/.agents/skills/project-revival/SKILL.md` declares `version: "4.6.0"`, measured 2026-11-27). This project's gate is `py -3 scripts/gate.py`; its matrix is `harness/angulos.tsv` (the file the fleet's `angulos` vocabulary names).
 - Every other skill is reached THROUGH `task-resolver`: it names the domain pack (`task-skill-pack`, `debugging-skill-pack`, `performance-skill-pack`, `design-skill-pack`, `agents-skill-pack` in `C:/Users/Administrador/.agents/skills`), and the pack row names the skill file. Do not select a skill from its one-line description alone.
 
 ## Browser: agent-browser default.
