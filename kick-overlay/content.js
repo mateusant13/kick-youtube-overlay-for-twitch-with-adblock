@@ -1427,6 +1427,22 @@ function plausibleKickSlug(slug) {
 function kickLog(ev, d) {
   diag(ev, d); // diag() persists to ko.adlog too - one sink, no double line
 }
+// A mint that reached no endpoint is a REFUSAL, not an offline verdict. One
+// shaped row from every caller (poll, go-live, reconnect) so the ring can tell
+// "nobody answered" from "the channel is offline". The row names the endpoints
+// that refused and the real error; it never claims anything about the stream.
+function kickRefusal(k) {
+  const refusals = Array.isArray(k && k.refusals) ? k.refusals : [];
+  if (!refusals.length) return false;
+  const why = refusals
+    .map((r) => `${String(r.url).replace(/^https:\/\/kick\.com\/api\//, '')}: ${r.why}`)
+    .join(' | ');
+  kickLog('kick-probe-refused', {
+    slug: KO.kickSlug, tried: refusals.length, why: why.slice(0, 300),
+  });
+  console.log('[ko] kick probe refused (not offline)', KO.kickSlug, 'endpoints:', refusals.length);
+  return true;
+}
 
 // Records one mint-probe outcome per api, and only when THAT api's outcome
 // changed. Returns true when the row was written, so a caller can act on it.
@@ -2485,6 +2501,10 @@ async function kickGoLive(why) {
   // source before the mint let a reader see a live url carrying the replay's
   // flags — and an offline/error mint left the two writers contradictory.
   const k = await kickPlaybackUrl(KO.kickSlug);
+  // REFUSAL FIRST. A mint that reached no endpoint says nothing about the
+  // channel: the replay behind the wrap is still working. Never convert it to
+  // `err:'offline'` and never tear the DVR down on a measurement failure.
+  if (kickRefusal(k)) return;
   if (KO.kickUserSeekAt > requestedAt) {
     row({ err: 'user-took-over', via: 'mint' });
     return;
@@ -2817,7 +2837,15 @@ function coldHoldActive() {
   // front of a stream the user could simply watch. So the window only opens
   // while the layer is provably on its way: the mint is in flight, the frame
   // exists, or it has already reported a state this page load.
-  const coming = !!(KO.kickFrame || KO.ytFrame || KO.kickPrewarm || KO.kickState || KO.ytState || KO.kickMountPending);
+  // Only PRODUCT-WRITTEN fields count as "a layer is coming". `ytFrame` and
+  // `kickMountPending` had no writers at all, and `ytState` is a truthy object
+  // at boot and after every reset — three ways for this guard to be vacuous.
+  // A youtube layer is on its way only when its report has moved off the fresh
+  // default (ready / playing / live / real progress). An ad hold still pauses
+  // the native through the kickPrewarm and kickState arms below.
+  const ys = KO.ytState || {};
+  const ytComing = !!(ys.ready || ys.playing || ys.live || ys.ct > 0 || ys.dur > 0);
+  const coming = !!(KO.kickFrame || KO.kickPrewarm || KO.kickState || ytComing);
   if (!coming) return false;
   const t0 = KO.bootAt || performance.now();
   return performance.now() - t0 < COLD_HOLD_MS;
@@ -3640,13 +3668,16 @@ async function reconnect() {
   console.log(`[ko] kick reconnect attempt ${KO.reconnectCount}/${MAX_RECONNECT}`);
   diag('reconnect', { n: KO.reconnectCount, max: MAX_RECONNECT });
   const k = await kickPlaybackUrl(KO.kickSlug);
+  // A refusal is not an offline verdict. Leave the layer and the keep-up clock
+  // alone; only the row and the refusal reason say what actually happened.
+  if (kickRefusal(k)) return typeof refuseValue === 'function' ? refuseValue("reconnect", "k.refusals.length", undefined) : undefined;
   if (!k.live || !k.url) {
     teardown();
     setBadge('KICK', '#6b7280');
     return typeof refuseValue === 'function' ? refuseValue("reconnect", "!k.live || !k.url", undefined) : undefined;
   }
   await new Promise((r) => setTimeout(r, 2000)); // back off, then re-attach
-  if (!KO.enabled || KO.player !== 'kick') return typeof refuseValue === 'function' ? refuseValue("reconnect", "!KO.enabled || KO.player !== 'kick'", undefined) : undefined;
+  if (!KO.enabled || KO.player !== 'kick' || !overlayTargetRoute()) return typeof refuseValue === 'function' ? refuseValue("reconnect", "!KO.enabled || KO.player !== 'kick' || !overlayTargetRoute()", undefined) : undefined;
   // FORCE: the stall that asked for this reconnect was a frozen picture, and
   // the url is the same one the dead element already has. A no-op here is the
   // whole defect (`stall {ct:10262}` repeating while the picture never moved).
@@ -3989,11 +4020,7 @@ async function probeKickLayer() {
   // for a network or parse failure, which is the same false answer the ring
   // exists to prevent. The row names the endpoints that refused, so "channel
   // offline" can never again be printed for something nobody measured.
-  const refusals = Array.isArray(k.refusals) ? k.refusals : [];
-  if (!k.live && refusals.length) {
-    const why = refusals.map((r) => `${String(r.url).replace(/^https:\/\/kick\.com\/api\//, '')}: ${r.why}`).join(' | ');
-    kickLog('kick-probe-refused', { slug: KO.kickSlug, tried: refusals.length, why: why.slice(0, 300) });
-    console.log('[ko] kick probe refused (not offline)', KO.kickSlug, 'endpoints:', refusals.length);
+  if (!k.live && kickRefusal(k)) {
     setBadge(KO.ytHlsFailed ? 'YT' : 'KICK', '#6b7280');
     // Same teardown as a conclusive offline: nothing will play behind the wrap,
     // so the keep-up clock stops and the empty box is hidden.

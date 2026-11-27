@@ -1323,9 +1323,13 @@
   function audioState() {
     const root = document.documentElement;
     const m = root ? root.getAttribute('data-ko-audio-m') : null;
-    const v = root ? root.getAttribute('data-ko-audio-v') : null;
+    const raw = root ? String(root.getAttribute('data-ko-audio-v') || '').trim() : '';
     const policy = root ? String(root.getAttribute('data-ko-audio-policy') || '') : '';
-    return { muted: m === '1', volume: Number.isFinite(Number(v)) ? Number(v) : 1, policy };
+    // `Number(null)` and `Number('')` are 0. An absent/empty level is the
+    // authority having NO OPINION, not an order to silence this frame. A
+    // published "0" is a level and stays 0; no opinion is published as null.
+    const level = raw === '' ? null : Number(raw);
+    return { muted: m === '1', volume: level !== null && Number.isFinite(level) ? level : null, policy };
   }
 
   // "I cover the page" / "I no longer do": the claim is what makes the native
@@ -1410,7 +1414,9 @@
     // outer call undo the mute the re-entrant observer just applied.
     const a = audioState();
     const muted = !!a.muted; // THE authority, never `|| overlay.audioRefused`
-    const volume = a.volume;
+    // No opinion: keep the level already commanded to this frame, or 1 for a
+    // frame we have never commanded. Absence must never become volume 0.
+    const volume = a.volume === null ? (overlay.audioSent ? overlay.audioSent.volume : 1) : a.volume;
     const last = overlay.audioSent;
     if (!(last && last.muted === muted && Math.abs(last.volume - volume) < 0.02)) {
       overlay.audioSent = { muted, volume };
@@ -5887,7 +5893,9 @@
               adExtinf: info.adExtinf,
               adOnly: info.adOnly,
             });
-            if (info.extinf > 0 && info.adExtinf === 0) return url;
+            // The ",live" count is a measurement, not the ad decision: our own token rewrite
+            // earns cloudfront `index-muted-*` variants with no ",live" on any segment.
+            if (info.extinf > 0 && !info.hasStitched) return url;
           }
         } catch (e) {
           debugLog('bypass.probeError', { playerType, platform, error: String(e).slice(0, 160) });
@@ -5909,11 +5917,18 @@
     let bypassBusy = false;
     let lastBypassAt = 0;
     let cleanPlaylistStreak = 0;
+    let noEvidenceSkipLogged = false;
     let podMaxTimer = 0;
     // ONE worker end door: every reason clears the same state and posts the
     // same ad-end shape the page turns into its promised ad-pod-max row.
     function workerEndPod(reason, detail) {
+      // CLEARING THE BYPASS IS NOT OPTIONAL. `adBypassActive` is what the page's
+      // `need-source` door, the prewarm gate and this loader's own hand-back all
+      // read as "a pod owns the picture"; leaving it true after the pod ended
+      // means the next ad playlist never opens a pod and the page's 180 s
+      // timeout is the only thing that can end it.
       adBypassActive = false;
+      noEvidenceSkipLogged = false;
       cleanPlaylistStreak = 0;
       bypassStartedAt = 0;
       try { clearTimeout(podMaxTimer); } catch { /* ignore */ }
@@ -6229,7 +6244,7 @@
           out.push(line);
           continue;
         }
-        if (line.startsWith('#EXT-X-DATERANGE') && /twitch-stitched-ad|X-TV-TWITCH-AD-URL/i.test(line)) {
+        if (line.startsWith('#EXT-X-DATERANGE') && TWITCH_AD_MARKER.test(line)) {
           removed = true;
           continue;
         }
@@ -6421,7 +6436,19 @@
           // after it; a stopped fetch no longer holds the cover open.
           workerPodMax();
           if (info.extinf > 0) {
-            if (liveMedia && info.adExtinf > 0) {
+            // A suffix-only playlist is a MEASUREMENT, never the decision. The page refuses the
+            // same hold at its ad-start door; without this row "no pod" and "no hook" look alike
+            // in the ring. One row per worker/pod, not one per segment refresh.
+            if (liveMedia && info.adExtinf > 0 && !info.hasStitched && !info.adOnly && !noEvidenceSkipLogged) {
+              noEvidenceSkipLogged = true;
+              debugLog('bypass.skip-no-ad-evidence', {
+                reason: 'no-ad-evidence', from: 'worker-playlist',
+                url: String(url).slice(0, 160),
+                extinf: info.extinf, adExtinf: info.adExtinf,
+                hasStitched: info.hasStitched, adOnly: info.adOnly,
+              });
+            }
+            if (liveMedia && info.adExtinf > 0 && (info.hasStitched || info.adOnly)) {
               // Any stitched ad, not just an all-ad preroll. A midroll can be
               // mixed (e.g. 51 ad segments + 1 content segment in the same
               // refreshed playlist), and the player may already have buffered
@@ -6445,7 +6472,7 @@
           // Use the pre-ad grace window: while the live playlist is clean,
           // keep one warm, pre-probed clean master ready. When the preroll
           // lands, maybeStartBypass() can cover it without the 1-3s probe.
-          if (liveMedia && info.extinf > 0 && info.adExtinf === 0 && !adBypassActive) {
+          if (liveMedia && info.extinf > 0 && !info.hasStitched && !adBypassActive) {
             prewarmCleanSource(lastChannel);
           }
           // All-ad preroll/master window: there is no content segment to keep.

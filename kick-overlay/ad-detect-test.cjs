@@ -51,11 +51,40 @@ function redArm(label, mutantSrc, run) {
   }
 }
 
+// Async twin of redArm for arms that must await the shipped async functions.
+async function redArmAsync(label, mutantSrc, run) {
+  arms.push(label);
+  let detail = null;
+  const ok = await run(mutantSrc, (d) => { detail = d; });
+  if (ok) {
+    failures++;
+    console.log(`  - FAIL ${label} (the mutation did not break the arm)`);
+  } else {
+    console.log(`  - FAIL RED ${label}${detail ? ` (${detail})` : ''}`);
+  }
+}
+
 // Pull one top-level `function name(` body out of the shipped file by brace
 // matching, so the suite always executes the code the browser gets.
 function grab(name, src = SRC) {
   const start = src.indexOf(`  function ${name}(`);
   if (start < 0) throw new Error(`missing function ${name}()`);
+  let i = src.indexOf('{', start);
+  let depth = 0;
+  for (; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}') {
+      depth--;
+      if (!depth) break;
+    }
+  }
+  return src.slice(start, i + 1);
+}
+// Same brace-matching contract for `async function name(`, which the existing
+// grab() does not match (the token `async` sits between the indent and `function`).
+function grabAsync(name, src = SRC) {
+  const start = src.indexOf(`  async function ${name}(`);
+  if (start < 0) throw new Error(`missing async function ${name}()`);
   let i = src.indexOf('{', start);
   let depth = 0;
   for (; i < src.length; i++) {
@@ -1614,6 +1643,7 @@ function workerTimerArm(src) {
   const w = new Function('ctx', [
     'let adBypassActive = ctx.active;',
     'let cleanPlaylistStreak = ctx.streak;',
+    'let noEvidenceSkipLogged = false;',
     'let bypassStartedAt = ctx.startedAt;',
     'let podMaxTimer = 123;',
     'const AD_POD_MAX_MS = 60000;',
@@ -1637,6 +1667,20 @@ check('E2b: the worker ceiling clears its own flags and posts an ad-end with evi
 redArm('E2b RED: a stopped fetch left the worker pod open with no ad-end',
   podMutate('if (!adBypassActive || !bypassStartedAt || Date.now() - bypassStartedAt <= AD_POD_MAX_MS) return;', 'if (true) return;'),
   (src) => { const { ctx } = workerTimerArm(src); return !(ctx.posts.length === 0); });
+// EVERY POD END DOOR MUST DISARM THE BYPASS, NOT JUST THE FIRST ONE. The worker
+// has two end doors (`pod-max` here and `clean-playlists` below), and both go
+// through `workerEndPod`; `adBypassActive` is what the page's `need-source`
+// door, the prewarm gate and this loader's hand-back all read as "a pod owns
+// the picture". An armed flag after the pod ended means the NEXT ad playlist
+// opens no pod at all and the page's 180 s timeout is the only thing that can
+// end it - the measured shape of an ad that plays uncovered to its last second.
+check('E2c: a pod end truly clears the bypass, not only this pod\'s own timer', () => {
+  const { state } = workerTimerArm(SRC);
+  return state.active === false && state.startedAt === 0;
+});
+redArm('E2c RED: a pod end that leaves the bypass armed refuses every later pod',
+  podMutate('      adBypassActive = false;\n      noEvidenceSkipLogged = false;', '      noEvidenceSkipLogged = false;'),
+  (src) => { const { state } = workerTimerArm(src); return state.active === false; });
 
 // 3. A playlist pod reaches ad-ui-release pod-end without a DOM ad signal.
 function playlistEndArm(src) {
@@ -1851,7 +1895,7 @@ redArm('E9 RED: the pre-fix suffix-only decision calls a whole live stream an ad
 // zero playlists of the player's own in `stats.workerPlaylistLog`. The worker wrapped `self.fetch`
 // only; an XHR loader carried the stream, so the playlist-level defence had no transport. These arms
 // run the SHIPPED `workerMain` and drive a real XMLHttpRequest shape through it.
-function workerWorld(src) {
+function workerWorld(src, fetchImpl) {
   const posts = [];
   class FakeBC {
     constructor(name) { this.name = name; }
@@ -1870,7 +1914,7 @@ function workerWorld(src) {
     fire(text) { this.responseText = text; for (const f of this._load) f(); }
   }
   const self = {
-    fetch: async () => new Response(''),
+    fetch: fetchImpl || (async () => new Response('')),
     XMLHttpRequest: FakeXHR,
     addEventListener() {},
     postMessage() {},
@@ -1941,6 +1985,124 @@ redArm('RED: without the XHR transport the player\'s playlist never reaches the 
     return start > 0 && end > start ? SRC.slice(0, start) + SRC.slice(end + 4) : SRC;
   })(),
   (src) => xhrDigestArm(src).length > 0);
+
+// ---- THE WORKER'S OWN AD DECISIONS MUST READ THE MARKER (measured 2026-11-27) ----------
+// The page refuses a suffix-only playlist at its ad-start door, but the worker still opened a pod
+// from `info.adExtinf > 0`: our token rewrite earns cloudfront `index-muted-*` variants with no
+// ",live" on any segment, so the clean-streak close could never fire and only the 60 s ceiling
+// ended the cover. These arms run the SHIPPED workerMain(), findCleanHlsUrl(), stripAds() and
+// prewarm branch, not a copy of their predicates.
+async function workerPlaylistArm(src, text) {
+  const fetchImpl = async (input) => {
+    const u = String((input && input.url) || input || '');
+    if (/\/channel\/hls\//.test(u)) return new Response('');
+    if (u.includes('gql.twitch.tv')) return new Response(JSON.stringify({ data: null }));
+    if (/\.m3u8/.test(u)) return new Response(text);
+    return new Response('', { status: 500 });
+  };
+  const w = workerWorld(src, fetchImpl);
+  const token = encodeURIComponent(JSON.stringify({ player_type: 'site', platform: 'web' }));
+  await w.self.fetch(`https://usher.ttvnw.net/api/v2/channel/hls/rodil.m3u8?token=${token}`);
+  await new Promise((r) => setTimeout(r, 0));
+  await w.self.fetch('https://video-edge-a.playlist.ttvnw.net/v1/playlist/live.m3u8?token=abc');
+  await new Promise((r) => setTimeout(r, 0));
+  return {
+    holds: w.posts.filter((p) => p.m.type === 'ad-hold'),
+    starts: w.posts.filter((p) => p.m.type === 'ad-start'),
+    skips: w.posts.filter((p) => p.ch === 'ko-adblock-debug' && p.m.step === 'bypass.skip-no-ad-evidence'),
+  };
+}
+async function triggerArm(src, note) {
+  const r = await workerPlaylistArm(src, UNMARKED_LIVE);
+  const row = r.skips[0] && r.skips[0].m.detail;
+  if (note) note(JSON.stringify({ holds: r.holds.length, starts: r.starts.length, skips: r.skips.length, row }));
+  return r.holds.length === 0 && r.starts.length === 0 && r.skips.length === 1
+    && !!row && row.reason === 'no-ad-evidence' && row.from === 'worker-playlist'
+    && row.adExtinf === 6 && row.extinf === 6 && row.hasStitched === false && row.adOnly === false;
+}
+async function cleanVariantArm(src, note) {
+  const master = '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360\n'
+    + 'https://video-edge-a.playlist.ttvnw.net/v1/playlist/variant.m3u8\n';
+  const realFetch = async (input) => {
+    const u = String((input && input.url) || input || '');
+    if (u.includes('gql.twitch.tv')) {
+      return new Response(JSON.stringify({ data: { streamPlaybackAccessToken: { value: 'v', signature: 's' } } }));
+    }
+    if (u.includes('/channel/hls/')) return new Response(master);
+    if (/\.m3u8/.test(u)) return new Response(UNMARKED_LIVE);
+    return new Response('', { status: 500 });
+  };
+  const url = await new Function(
+    'realFetch', 'debugLog',
+    "const __KO_GQL_URL='https://gql.twitch.tv/gql',__KO_CLIENT_ID='cid',__KO_GQL_HASH='h',"
+      + "__KO_PLAYER_TYPE='site',__KO_PLATFORM='web';\n"
+      + [grabConst('TWITCH_AD_MARKER', src), grab('playlistInfo', src), grab('parseVariants', src),
+        grabAsync('mintMasterUrl', src), grabAsync('findCleanHlsUrl', src), 'return findCleanHlsUrl("rodil");'].join('\n'),
+  )(realFetch, () => {});
+  if (note) note(String(url));
+  return url;
+}
+const GENERIC_STITCHED = [
+  '#EXTM3U',
+  '#EXT-X-DATERANGE:ID="ad-1",CLASS="stitched,ad",START-DATE="2026-11-27T00:00:00.000Z",DURATION=4.000',
+  '#EXTINF:2.000,live\na.ts',
+  '#EXTINF:2.000,live\nb.ts',
+].join('\n');
+function stripDatarangeArm(src, text = GENERIC_STITCHED) {
+  return new Function([
+    grabConst('TWITCH_AD_MARKER', src), grab('stripAds', src),
+    `return stripAds(${JSON.stringify(text)});`,
+  ].join('\n'))();
+}
+function prewarmBranchArm(src, note) {
+  const anchor = 'if (liveMedia && info.extinf > 0 && ';
+  const start = src.lastIndexOf(anchor, src.lastIndexOf('prewarmCleanSource(lastChannel)'));
+  if (start < 0) throw new Error('prewarm branch missing');
+  let i = src.indexOf('{', start);
+  let depth = 0;
+  for (; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}' && --depth === 0) break;
+  }
+  const ctx = { called: 0 };
+  new Function('liveMedia', 'info', 'adBypassActive', 'prewarmCleanSource', 'lastChannel', 'ctx',
+    `${src.slice(start, i + 1)}\nreturn ctx.called;`)(
+    true, { extinf: 6, adExtinf: 6, hasStitched: false, adOnly: false }, false,
+    () => { ctx.called++; }, 'rodil', ctx,
+  );
+  const kept = /postStandbyStart\(channel, fastUrl\)/.test(src);
+  if (note) note(JSON.stringify({ called: ctx.called, kept }));
+  return ctx.called === 1 && kept;
+}
+async function runAdPathArms() {
+  await redArmAsync('E10 RED: the old adExtinf trigger opens a pod on an unmarked live playlist',
+    podMutate('if (liveMedia && info.adExtinf > 0 && (info.hasStitched || info.adOnly)) {', 'if (liveMedia && info.adExtinf > 0) {'),
+    triggerArm);
+  check('E10: an unmarked live playlist opens no worker pod and its refusal is named in the ring', await triggerArm(SRC));
+  const marked = await workerPlaylistArm(SRC, MARKED_AD);
+  check('E10b: a marker-bearing live playlist still opens the worker pod',
+    marked.holds.length === 1 && marked.skips.length === 0,
+    JSON.stringify({ holds: marked.holds.length, skips: marked.skips.length }));
+  await redArmAsync('E11 RED: the old adExtinf===0 probe rejects an unmarked live variant',
+    podMutate('if (info.extinf > 0 && !info.hasStitched) return url;', 'if (info.extinf > 0 && info.adExtinf === 0) return url;'),
+    cleanVariantArm);
+  check('E11: findCleanHlsUrl accepts an unmarked live variant', (await cleanVariantArm(SRC)) !== null);
+  const dataRangeArm = (src, note) => {
+    const out = stripDatarangeArm(src);
+    if (note) note(out);
+    return !out.includes('#EXT-X-DATERANGE') && out.includes('#EXTINF:2.000,live');
+  };
+  await redArmAsync('E12 RED: the old duplicated DATARANGE regex leaves a generic stitched marker in the playlist',
+    podMutate("if (line.startsWith('#EXT-X-DATERANGE') && TWITCH_AD_MARKER.test(line)) {",
+      "if (line.startsWith('#EXT-X-DATERANGE') && /twitch-stitched-ad|X-TV-TWITCH-AD-URL/i.test(line)) {"),
+    dataRangeArm);
+  check('E12: stripAds strips a DATARANGE matching the owned marker under a generic stitched spelling', dataRangeArm(SRC));
+  check('E12b: stripAds leaves an unmarked playlist unchanged', stripDatarangeArm(SRC, MARKED_CLEAN) === MARKED_CLEAN);
+  await redArmAsync('E13 RED: the old prewarm predicate misses the unmarked live grace window',
+    podMutate('if (liveMedia && info.extinf > 0 && !info.hasStitched && !adBypassActive) {',
+      'if (liveMedia && info.extinf > 0 && info.adExtinf === 0 && !adBypassActive) {'), prewarmBranchArm);
+  check('E13: prewarm keys on the marker and keeps postStandbyStart', prewarmBranchArm(SRC));
+}
 
 const expected = [
   'a wrapper that is 0x0 with a permanent __wrapper-hidden class is still an ad when its container paints',
@@ -2040,6 +2202,8 @@ const expected = [
   'E2 RED: without the timer branch no pod end is reachable at the ceiling',
   'E2b: the worker ceiling clears its own flags and posts an ad-end with evidence',
   'E2b RED: a stopped fetch left the worker pod open with no ad-end',
+  "E2c: a pod end truly clears the bypass, not only this pod's own timer",
+  'E2c RED: a pod end that leaves the bypass armed refuses every later pod',
   'E3: a playlist pod reaches ad-ui-release pod-end at its ceiling',
   'E3 RED: pre-fix ad-ui-release was unreachable for a playlist-only pod',
   'E3b: a DOM ad leaving during a playlist pod is an independent end door',
@@ -2062,16 +2226,32 @@ const expected = [
   'the first XHR request says which transport the player uses, once',
   'a transport hit is not a playlist digest and cannot open a pod',
   'RED: without the transport row the loader is invisible again',
+  'E10 RED: the old adExtinf trigger opens a pod on an unmarked live playlist',
+  'E10: an unmarked live playlist opens no worker pod and its refusal is named in the ring',
+  'E10b: a marker-bearing live playlist still opens the worker pod',
+  'E11 RED: the old adExtinf===0 probe rejects an unmarked live variant',
+  'E11: findCleanHlsUrl accepts an unmarked live variant',
+  'E12 RED: the old duplicated DATARANGE regex leaves a generic stitched marker in the playlist',
+  'E12: stripAds strips a DATARANGE matching the owned marker under a generic stitched spelling',
+  'E12b: stripAds leaves an unmarked playlist unchanged',
+  'E13 RED: the old prewarm predicate misses the unmarked live grace window',
+  'E13: prewarm keys on the marker and keeps postStandbyStart',
 ];
-const missing = expected.filter((l) => !arms.includes(l));
-if (missing.length) {
-  failures += missing.length;
-  console.log(`  - FAIL arms that never printed: ${missing.join(' | ')}`);
-}
-console.log(`\nARMS ${arms.length}/${expected.length}`);
+(async () => {
+  await runAdPathArms();
+  const missing = expected.filter((l) => !arms.includes(l));
+  if (missing.length) {
+    failures += missing.length;
+    console.log(`  - FAIL arms that never printed: ${missing.join(' | ')}`);
+  }
+  console.log(`\nARMS ${arms.length}/${expected.length}`);
 
-if (failures) {
-  console.log(`\nRESULT FAIL ad-detect: ${failures} arm(s) failed`);
+  if (failures) {
+    console.log(`\nRESULT FAIL ad-detect: ${failures} arm(s) failed`);
+    process.exit(1);
+  }
+  console.log(`RESULT PASS ad-detect: the DOM detector sees the ad Twitch paints, and the media worker is hooked (failed=${failures})`);
+})().catch((e) => {
+  console.error(e && e.stack ? e.stack : e);
   process.exit(1);
-}
-console.log(`RESULT PASS ad-detect: the DOM detector sees the ad Twitch paints, and the media worker is hooked (failed=${failures})`);
+});

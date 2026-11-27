@@ -4344,7 +4344,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
       const M = new Function('window', 'document', 'location', 'navigator', code
         + '\n;return { KO, mount, kickSeekTo, kickSeekInputs, kickStartDvr, kickLoadReplayAt,'
         + ' kickGoLive, kickSetSource, ensureKick, showKickLayer, kickDvrRescue,'
-        + ' rectTick, probeKickLayer, updateKickBar };')(
+        + ' rectTick, probeKickLayer, updateKickBar, coldHoldActive, reconnect, teardown, syncMute };')(
         global, mountDoc, global.location, global.navigator,
       );
       M.mount();
@@ -4550,6 +4550,210 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     console.log('item 12 rescue: budget refusal prints numbers, never an implicit mint - OK');
   }
 
+  // The swCalls recorder is shared by every arm; each new arm reads only the
+  // rows it emitted, never a previous arm's accumulation.
+  const rowsFrom = (from, ev) => swCalls.slice(from)
+    .filter((m) => m && m.__koDiag && m.__koDiag.ev === ev)
+    .map((m) => m.__koDiag.data);
+  // 13. A refused go-live mint is not an offline verdict: the DVR behind the
+  // wrap was working and must keep playing while nobody answered the API.
+  {
+    const rejectingFetch = () => {
+      const real = global.fetch;
+      global.fetch = () => Promise.reject(new Error('net::ERR_GOLIVE_REFUSED'));
+      return () => { global.fetch = real; };
+    };
+    const setup = (A) => {
+      const K = A.K;
+      K.kickOnDvr = true;
+      K.kickDvrUrl = 'https://dvr.example/go-live-refusal';
+      K.activeUrl = 'https://dvr.example/go-live-refusal';
+      K.kickState = { state: 'Playing', pos: 120, lat: 30, dur: 600 };
+      K.kickUserSeekAt = 0;
+      K.kickPrewarm = null;
+    };
+    const run = async (A) => {
+      setup(A);
+      const restore = rejectingFetch();
+      try { await A.M.kickGoLive('chip'); } finally { restore(); }
+      return A;
+    };
+    const from = swCalls.length;
+    const A = await run(mkArm());
+    const refused = rowsFrom(from, 'kick-probe-refused');
+    assert.strictEqual(refused.length, 1, `item 13: exactly one refusal row, saw ${refused.length}`);
+    assert.strictEqual(refused[0].tried, 2, 'item 13: both mint endpoints were tried');
+    assert.ok(/ERR_GOLIVE_REFUSED/.test(String(refused[0].why)), 'item 13: the row carries the real failure');
+    assert.strictEqual(rowsFrom(from, 'go-live').filter((r) => r.err === 'offline').length, 0, 'item 13: no offline verdict from a refusal');
+    assert.ok(A.K.wrap, 'item 13: #ko-wrap survives the refused mint');
+    assert.strictEqual(A.K.kickOnDvr, true, 'item 13: the working replay is still on the DVR');
+    assert.strictEqual(A.posts.filter((m) => m && m.t === 'load').length, 0, 'item 13: no source reload was commanded');
+    // RED: restore the pre-fix order — fall through to `else if (!k || !k.live)`.
+    const redFrom = swCalls.length;
+    const red = await run(mkArm('  if (kickRefusal(k)) return;', '  // RED: a refusal fell through to the offline branch'));
+    assert.strictEqual(rowsFrom(redFrom, 'go-live').filter((r) => r.err === 'offline').length, 1, 'RED item 13: the old branch published "offline"');
+    assert.strictEqual(red.K.wrap, null, 'RED item 13: the old branch tore down the working replay');
+    console.log('item 13 go-live refusal: no offline verdict, no DVR teardown - OK');
+  }
+
+  // 14. The reconnect's mint has the same rule: a refusal is not a verdict and
+  // must never publish one through teardown or the reason string.
+  {
+    const rejectingFetch = () => {
+      const real = global.fetch;
+      global.fetch = () => Promise.reject(new Error('net::ERR_RECONNECT_REFUSED'));
+      return () => { global.fetch = real; };
+    };
+    const setup = (A) => {
+      const K = A.K;
+      K.enabled = true;
+      K.player = 'kick';
+      K.kickSlug = 's-channel';
+      K.kickOnDvr = false;
+      K.activeUrl = 'https://ivs.example/reconnect-refusal';
+      K.kickState = { state: 'Playing', pos: 10, lat: 0, dur: 100 };
+      K.reconnectCount = 0;
+    };
+    const run = async (A) => {
+      setup(A);
+      const restore = rejectingFetch();
+      try { await A.M.reconnect(); } finally { restore(); }
+      return A;
+    };
+    const from = swCalls.length;
+    const A = await run(mkArm());
+    const refused = rowsFrom(from, 'kick-probe-refused');
+    assert.strictEqual(refused.length, 1, 'item 14: exactly one refusal row');
+    assert.strictEqual(refused[0].tried, 2, 'item 14: both endpoints were tried');
+    assert.ok(/ERR_RECONNECT_REFUSED/.test(String(refused[0].why)), 'item 14: the row names the real failure');
+    assert.ok(A.K.wrap, 'item 14: no teardown on a refused reconnect');
+    assert.ok(rowsFrom(from, 'refused').some((r) => r.where === 'reconnect' && /refusals/.test(String(r.test))),
+      'item 14: the reason names the refusal, not a live/offline verdict');
+    // RED: restore `if (!k.live || !k.url)` as the first check after the mint.
+    const redLine = '  if (kickRefusal(k)) return typeof refuseValue === \'function\' ? refuseValue("reconnect", "k.refusals.length", undefined) : undefined;';
+    const redFrom = swCalls.length;
+    const red = await run(mkArm(redLine, '  // RED: the refusal fell into the offline teardown'));
+    assert.strictEqual(red.K.wrap, null, 'RED item 14: the old reconnect tore the layer down');
+    assert.ok(rowsFrom(redFrom, 'refused').some((r) => r.test === '!k.live || !k.url'), 'RED item 14: the old verdict reason was published');
+    console.log('item 14 reconnect refusal: no teardown, reason names the refusal - OK');
+  }
+
+  // 15. A route change DURING the 2 s backoff leaves KO.player === 'kick', so
+  // the old reconnect re-mounted the overlay on /<slug>/clips and restarted
+  // the keep-up clock that the route gate had just stopped.
+  {
+    const liveFetch = () => {
+      const real = global.fetch;
+      global.fetch = () => Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ livestream: { playback_url: 'https://ivs.example/backoff-route', id: 's' } }),
+      });
+      return () => { global.fetch = real; };
+    };
+    const from = swCalls.length;
+    const run = async (A) => {
+      const K = A.K;
+      K.enabled = true;
+      K.player = 'kick';
+      K.kickSlug = 's-channel';
+      K.kickOnDvr = false;
+      K.activeUrl = 'https://ivs.example/backoff-route';
+      K.kickState = { state: 'Playing', pos: 10, lat: 0, dur: 100 };
+      K.kickPrewarm = null;
+      K.reconnectCount = 0;
+      K.rectTimer = setInterval(() => {}, 100000); // the running keep-up clock
+      const oldPath = global.location.pathname;
+      const restore = liveFetch();
+      try {
+        const pending = A.M.reconnect();
+        await drain(); // let the mint resolve before the SPA navigation
+        global.location.pathname = '/s-channel/clips'; // no player slot
+        A.M.teardown(); // the route gate stops the clock and drops the wrap
+        K.enabled = true;
+        K.player = 'kick'; // the route gate tears down but never clears the player preference
+        assert.strictEqual(K.wrap, null, 'item 15 precondition: the route change tore down the wrap');
+        assert.strictEqual(K.rectTimer, null, 'item 15 precondition: the keep-up clock stopped');
+        await settle(2000);
+        await pending;
+        return {
+          wrap: K.wrap,
+          rectTimer: K.rectTimer,
+          rows: rowsFrom(from, 'refused').filter((r) => r.where === 'reconnect'),
+        };
+      } finally {
+        global.location.pathname = oldPath;
+        A.M.teardown();
+        restore();
+      }
+    };
+    const A = await run(mkArm());
+    assert.strictEqual(A.wrap, null, 'item 15: no #ko-wrap after the backoff on a non-player route');
+    assert.strictEqual(A.rectTimer, null, 'item 15: the keep-up clock was not restarted');
+    assert.ok(A.rows.some((r) => /overlayTargetRoute/.test(String(r.test))), 'item 15: the refusal names the route predicate');
+    // RED: restore the old post-await gate, without overlayTargetRoute().
+    const red = await run(mkArm(
+      "!KO.enabled || KO.player !== 'kick' || !overlayTargetRoute()",
+      "!KO.enabled || KO.player !== 'kick' /* RED: stale player flag survives the route change */",
+    ));
+    assert.ok(red.wrap, 'RED item 15: the old gate re-mounted the overlay on /clips');
+    assert.ok(red.rectTimer, 'RED item 15: the old gate restarted the keep-up clock');
+    console.log('item 15 reconnect backoff: a route change stops the recovery - OK');
+  }
+
+  // 16. `ytState` is a truthy object at boot and after every reset. Reading
+  // mere presence made coldHoldActive() vacuous, so a layer that never came
+  // paused the native for 8 s. Only product-written, non-default state counts.
+  {
+    const freshYt = () => ({ ready: false, playing: false, muted: true, live: false, ended: false, dur: 0, ct: 0, lat: 0, error: 0 });
+    const setup = (A) => {
+      const K = A.K;
+      const v = videoEl('tw-cold-hold');
+      v.paused = false;
+      fakeVideos.length = 0;
+      fakeVideos.push(v);
+      mountDoc.hidden = false;
+      K.player = 'kick';
+      K.enabled = true;
+      K.picSeenAt = 0;
+      K.picLostAt = 0;
+      K.bootAt = performance.now();
+      K.kickFrame = null;
+      K.kickPrewarm = null;
+      K.kickState = null;
+      K.activeUrl = null;
+      K.ytState = freshYt(); // the product's boot/reset default, not a layer signal
+      K.ytEmbedAt = 0;
+      K.ytHlsUrl = null;
+      K.ytLoadedUrl = null;
+      K.ownerAttr = undefined;
+      delete K.ytFrame; // test-only field: no product writes it
+      delete K.kickMountPending; // test-only field: no product writes it
+      return v;
+    };
+    const A = mkArm();
+    const v = setup(A);
+    assert.strictEqual(A.M.coldHoldActive(), false, 'item 16: fresh product state means no layer is coming');
+    A.M.syncMute();
+    assert.strictEqual(v.paused, false, 'item 16: the native is not paused for a layer that never came');
+    // The ad-hold contract is unchanged: a real prewarm still owns the screen.
+    v.paused = false;
+    A.K.kickPrewarm = Promise.resolve(null);
+    assert.strictEqual(A.M.coldHoldActive(), true, 'item 16: a product-written prewarm still starts the hold');
+    A.M.syncMute();
+    assert.strictEqual(v.paused, true, 'item 16: an ad hold still pauses the native picture');
+    // RED: restore the old predicate (test-only fields + object presence).
+    const red = mkArm(
+      '  const coming = !!(KO.kickFrame || KO.kickPrewarm || KO.kickState || ytComing);',
+      '  const coming = !!(KO.kickFrame || KO.ytFrame || KO.kickPrewarm || KO.kickState || KO.ytState || KO.kickMountPending); // RED',
+    );
+    const rv = setup(red);
+    assert.strictEqual(red.M.coldHoldActive(), true, 'RED item 16: the old predicate was true on a fresh ytState');
+    red.M.syncMute();
+    assert.strictEqual(rv.paused, true, 'RED item 16: the old predicate paused the native for 8 s');
+    fakeVideos.length = 0;
+    console.log('item 16 cold hold: only product-written signals count - OK');
+  }
+
   // ANTI-VACUITY. Every arm above prints one "<label> - OK" line, and a suite
   // whose arms silently stopped running still exits 0 today (that is how a
   // regression gets a green receipt). The expected labels are listed HERE, in
@@ -4564,6 +4768,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     'N3 ad park', 'N3d hidden pause',
     'item 2 dvr target', 'item 3 re-show', 'item 5/6 clocks', 'item 7 force', 'item 8 replay load',
     'item 9 go-live', 'item 10 frame watchdog', 'item 11 load grace', 'item 12 rescue',
+    'item 13 go-live refusal', 'item 14 reconnect refusal', 'item 15 reconnect backoff', 'item 16 cold hold',
   ];
   const printed = armLog.map((l) => String(l).trim());
   const missing = ARMS.filter((a) => !printed.some((l) => l.startsWith(a)));

@@ -107,9 +107,9 @@ function overlayAudioArm(source, cfg) {
   const events = [];
   const attrs = {
     'data-ko-audio-m': cfg.authorityMuted ? '1' : '0',
-    'data-ko-audio-v': '0.50',
     'data-ko-audio-policy': cfg.policy || '',
   };
+  if (!cfg.noVolume) attrs['data-ko-audio-v'] = cfg.volume == null ? '0.50' : String(cfg.volume);
   const root = { getAttribute: (k) => (k in attrs ? attrs[k] : null), setAttribute: (k, v) => { attrs[k] = String(v); } };
   const document = {
     documentElement: root,
@@ -124,14 +124,16 @@ function overlayAudioArm(source, cfg) {
     frame: {}, token: 'tok-1', audioRefused: !!cfg.refused,
     audioRefusalFor: cfg.forFrame || null, audioSent: null,
   };
-  const audioState = () => ({ muted: attrs['data-ko-audio-m'] === '1', volume: Number(attrs['data-ko-audio-v']), policy: String(attrs['data-ko-audio-policy'] || '') });
+  // The REAL derivation: Number(null) must never be allowed to stand in for a
+  // published level. The stub is gone; this arm reads twitch-adblock.js.
+  const realState = new Function('document', `${extract(source, '  function audioState() {')}\nreturn audioState;`)(document);
   const fn = new Function('overlay', 'document', 'CustomEvent', 'audioState', 'overlaySend', 'adLogState', 'adLog',
     `${policySrc}\n${fnSrc}\nreturn applyOverlayAudio;`)(
-    overlay, document, CustomEvent, audioState,
+    overlay, document, CustomEvent, realState,
     (m) => sent.push(m), (ev, d) => logs.push({ ev, d }), (ev, d) => logs.push({ ev, d }),
   );
   fn();
-  return { sent, logs, events, attrs, overlay };
+  return { sent, logs, events, attrs, overlay, run: fn };
 }
 
 // The ISOLATED-world intent bridge is lifted out of the shipped source. `null`
@@ -154,17 +156,30 @@ function bridgeIntentArm(source, detail) {
 // The policy listener in adblock-bridge.js decides who may ask the arbiter to
 // silence a surface. Run its real body against stubs: a refusal is a row, not
 // silence, and the author/frame are forwarded to setPolicy.
-function bridgePolicyArm(source, detail) {
+function bridgePolicyArm(source, detail, accepted = true) {
   const anchor = source.indexOf("      'ko-audio-frame-policy',");
-  assert(anchor >= 0, 'the frame-policy listener was not found');
   const a = source.indexOf('          const d = JSON.parse(String(ev && ev.detail));', anchor);
   const b = source.indexOf('        } catch {', a);
+  const echoAnchor = source.indexOf("      'ko-audio-policy',");
+  const ea = source.indexOf('          const d = JSON.parse(String(ev && ev.detail));', echoAnchor);
+  const eb = source.indexOf('        } catch {', ea);
   assert(a >= 0 && b > a, 'the frame-policy body was not found');
+  assert(ea >= 0 && eb > ea, 'the policy echo listener was not found');
   const calls = [];
   const rows = [];
   const attrs = {};
-  const audio = { setPolicy: (...args) => calls.push(args) };
   const root = { setAttribute: (k, v) => { attrs[k] = String(v); } };
+  const echoFn = new Function('ev', 'root', 'persist', 'String', 'JSON', source.slice(ea, eb));
+  // The authority stub echoes only an ACCEPTED ask, the way ko-audio.js does.
+  const audio = {
+    setPolicy: (surface, on, opts) => {
+      calls.push([surface, on, opts]);
+      if (accepted) {
+        echoFn({ detail: JSON.stringify({ on: !!on, author: opts.origin }) },
+          root, (rec) => rows.push(rec), String, JSON);
+      }
+    },
+  };
   new Function('ev', 'audio', 'root', 'persist', 'String', 'JSON', source.slice(a, b))(
     { detail: JSON.stringify(detail) }, audio, root, (rec) => rows.push(rec), String, JSON,
   );
@@ -330,6 +345,16 @@ async function main() {
     assert.strictEqual(arm.sent.filter((m) => m.t === 'mute').slice(-1)[0].m, false,
       `mute commands=${JSON.stringify(arm.sent)}`);
     assert(arm.logs.some((l) => l.ev === 'audio-refused' && l.d.why === 'frame-autoplay'), 'the refusal was not named');
+    const absent = overlayAudioArm(AD, { authorityMuted: false, noVolume: true });
+    const av = absent.sent.filter((m) => m.t === 'volume').slice(-1)[0];
+    assert(av && av.v === 1, `an absent level commanded ${av && av.v} instead of 1`);
+    const zero = overlayAudioArm(AD, { authorityMuted: false, volume: '0' });
+    const zv = zero.sent.filter((m) => m.t === 'volume').slice(-1)[0];
+    assert(zv && zv.v === 0, `a published zero commanded ${zv && zv.v}`);
+    delete zero.attrs['data-ko-audio-v'];
+    zero.run(); // the authority withdrew its opinion: keep the level already commanded
+    const after = zero.sent.filter((m) => m.t === 'volume').slice(-1)[0];
+    assert(after && after.v === zv.v, `withdrawing the level changed the command to ${after && after.v}`);
   });
   {
     const fixed = '    const muted = !!a.muted; // THE authority, never `|| overlay.audioRefused`';
@@ -338,6 +363,15 @@ async function main() {
     const arm = overlayAudioArm(mutant, { authorityMuted: false, refused: true, policy: '' });
     assert.strictEqual(arm.sent.filter((m) => m.t === 'mute').slice(-1)[0].m, true, 'the mutant did not mute the audible surface');
     red('overlay.audioRefused was ORed into the derived mute and commanded mute:true over a newer audible intent');
+  }
+  {
+    const fixed = "    const level = raw === '' ? null : Number(raw);";
+    const pre = "    const level = Number(root ? root.getAttribute('data-ko-audio-v') : null);";
+    const mutant = mutate(AD, fixed, pre, 'absent volume coercion');
+    const arm = overlayAudioArm(mutant, { authorityMuted: false, noVolume: true });
+    const v = arm.sent.filter((m) => m.t === 'volume').slice(-1)[0];
+    assert(v && v.v === 0, 'the mutant did not command volume 0 from an absent attribute');
+    red('an absent data-ko-audio-v became a real volume:0 command');
   }
 
   // 8. The frame's autoplay gate is asked of the authority, never posted
@@ -402,23 +436,37 @@ async function main() {
     assert(bad.rows.some((r) => r.ev === 'audio-refused' && r.d.why === 'unlabelled-frame-policy'),
       'an unlabelled ask was accepted silently');
     assert.strictEqual(bad.calls.length, 0, 'an unlabelled ask reached setPolicy');
-    const good = bridgePolicyArm(BRIDGE, { on: true, author: 'ad:autoplay', why: 'frame-autoplay', frame: 'f1' });
+    const good = bridgePolicyArm(BRIDGE, { on: true, author: 'ad:autoplay', why: 'frame-autoplay', frame: 'f1' }, true);
     assert(good.calls.some((c) => c[0] === 'ad' && c[1] === true && c[2].origin === 'ad:autoplay' && c[2].frame === 'f1'),
       `setPolicy calls=${JSON.stringify(good.calls)}`);
-    assert.strictEqual(good.attrs['data-ko-audio-policy'], 'ad:autoplay', 'the policy was not published to the frame');
+    assert.strictEqual(good.attrs['data-ko-audio-policy'], 'ad:autoplay', 'the accepted policy was not published to the frame');
+    const refused = bridgePolicyArm(BRIDGE, { on: true, author: 'ad:stale', why: 'dead-frame', frame: 'f2' }, false);
+    assert.strictEqual(refused.attrs['data-ko-audio-policy'], undefined,
+      `a refused ask published ${JSON.stringify(refused.attrs['data-ko-audio-policy'])}`);
   });
+  {
+    const fixed = "          audio.setPolicy('ad', d.on === true, { origin: author, why: String(d.why || ''), frame });";
+    const pre = `${fixed}\n          root.setAttribute('data-ko-audio-policy', d.on === true ? author : '');`;
+    const mutant = mutate(BRIDGE, fixed, pre, 'requested policy publish');
+    const arm = bridgePolicyArm(mutant, { on: true, author: 'ad:autoplay', frame: 'f1' }, false);
+    assert.strictEqual(arm.attrs['data-ko-audio-policy'], 'ad:autoplay', 'the mutant did not publish the requested policy');
+    red('the bridge published the frame-policy ask even though the arbiter refused it');
+  }
   check('a policy belongs to the frame it tested and dies with the claim', () => {
     const page = makeWorld();
     const fire = (d) => page.document.dispatchEvent(new CustomEvent('ko-audio-frame-policy', { detail: JSON.stringify(d) }));
     fire({ on: true, author: 'ad:autoplay', frame: 'f1' });
     assert(page.logsOf('audio-policy').some((l) => l.d.origin === 'ad:autoplay' && l.d.frame === 'f1'), 'the authored policy was not recorded');
-    fire({ on: true, author: 'ad:autoplay', frame: 'f2' });
+    assert.strictEqual(page.attrPolicy(), 'ad:autoplay', 'the accepted policy was not published to the frame');
+    fire({ on: true, author: 'ad:stale', why: 'dead-frame', frame: 'f2' });
     assert(page.logsOf('audio-refused').some((l) => l.d.why === 'stale-frame-policy'), 'a policy from another frame was accepted');
+    assert.strictEqual(page.attrPolicy(), 'ad:autoplay', `a refused ask published ${page.attrPolicy()}`);
     page.audio.setVisible('ad');
     assert.strictEqual(page.audio.wanted('ad').muted, true, 'the accepted policy did not silence its frame');
     page.audio.claim('ad');
     page.audio.claim(null);
     assert.strictEqual(page.audio.wanted('ad').muted, false, 'the refusal outlived the claim that owned its frame');
+    assert.strictEqual(page.attrPolicy(), '', 'the released policy stayed published to the frame');
   });
   {
     const page = makeWorld({ audioSource: global.__audioPreFix });

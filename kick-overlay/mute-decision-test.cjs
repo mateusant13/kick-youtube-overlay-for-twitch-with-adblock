@@ -25,6 +25,7 @@
 const fs = require('fs');
 const path = require('path');
 const clock = require('../_tools/test-clock.cjs');
+const nodeAssert = require('assert');
 
 const AD = fs.readFileSync(path.join(__dirname, 'twitch-adblock.js'), 'utf8');
 const AUDIO = fs.readFileSync(path.join(__dirname, 'ko-audio.js'), 'utf8');
@@ -540,6 +541,9 @@ function makeWorld(opts, extra) {
     attrMuted() {
       return docEl.getAttribute('data-ko-audio-m');
     },
+    attrPolicy() {
+      return String(docEl.getAttribute('data-ko-audio-policy') || '');
+    },
     logs: () => adLogs,
   };
   return api;
@@ -601,21 +605,33 @@ async function main() {
   {
     const page = makeWorld();
     await runPod(page, { mutedBeforeAd: true });
+    const audible = makeWorld();
+    await runPod(audible, { mutedBeforeAd: false });
+    audible.frameMsg(healthySt({ muted: false })); // the frame reports itself audible, not an autoplay retry
     check('a muted user is not unmuted at reveal', () => {
       assert(page.frame && page.frame.removed === false, 'clean frame was removed instead of revealed');
       assert(page.attrMuted() === '1', `authority published muted=${page.attrMuted()} for a muted user`);
       assert(!page.muteSent().includes(false), `sent mute:false -> ${JSON.stringify(page.muteSent())}`);
     });
     check('a muted user sees the click-to-sound badge', () => {
+      const heard = page.audio.visible();
+      nodeAssert.strictEqual(page.audio.wanted(heard).muted, true, 'precondition: the law says the muted user is silent');
       assert(/clique para som/.test(page.badge.textContent), `badge text: ${page.badge.textContent}`);
+      const aud = audible.audio.visible();
+      nodeAssert.strictEqual(audible.audio.wanted(aud).muted, false, 'precondition: the law says the other user is audible');
+      assert(!/clique para som/.test(audible.badge.textContent),
+        `badge offered click-to-sound to an audible surface: ${audible.badge.textContent}`);
     });
     check('a click elsewhere on the page does not unmute a muted user', () => {
       page.clickDocument();
       assert(!page.muteSent().includes(false), 'a generic page click restored the audio');
     });
     check('an explicit badge click unmutes the player and persists the choice', () => {
+      const heard = page.audio.visible();
+      nodeAssert.strictEqual(page.audio.wanted(heard).muted, true, 'precondition: the law had the heard surface muted');
       page.clickBadge();
-      assert(page.muteSent().includes(false), 'the badge click did not unmute');
+      nodeAssert.strictEqual(page.audio.wanted(heard).muted, false, 'the arbiter still derives a mute after the badge click');
+      nodeAssert.strictEqual(page.muteSent().slice(-1)[0], false, 'the last command to the frame still silences it');
       assert(page.audio.intent('twitch').muted === false, 'the unmute was not recorded as intent');
     });
     check('ad-end hands the native back at the intent the user set DURING the pod', () => {
@@ -743,6 +759,11 @@ async function main() {
       assert(!!claim, 'no audio-claim line');
       assert(!!claim.d.wanted, 'the claim does not say what it is silencing');
       assert(!!claim.d.intents, 'the claim does not publish the table it derives from');
+      const heard = page.audio.visible();
+      nodeAssert.deepStrictEqual(claim.d.wanted, page.audio.wanted(heard),
+        `claim=${JSON.stringify(claim.d.wanted)} law=${JSON.stringify(page.audio.wanted(heard))}`);
+      nodeAssert.strictEqual(page.audio.wanted(heard).muted, false, 'the heard frame is audible by law');
+      nodeAssert.strictEqual(page.audio.wanted('twitch').muted, true, 'the claim must silence the covered page by law');
     });
   }
 

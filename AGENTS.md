@@ -119,6 +119,7 @@ Cap: one visible pane per canonical project across workspaces/worktrees. The pan
 - Installed copy: `C:\Users\Administrador\Desktop\Nova pasta (3)\TESTE\VOD.RIP\vendor\kick-overlay`. Syncing this folder is part of the task; do not ask for permission.
 - Install/update: `_tools\ko-auto-install.cmd` (debug profile `C:\ChromeDebugProfile`).
 - Stage files and reload without a window: `node _tools\ko-reload-persistent.mjs --port=9222`. It prints `loaded`, `expected` and `after`; `after` must equal the manifest version. It compares VERSIONS only, so a rebuilt folder that keeps its version reads as current: for the byte-level answer use the shared `chrome-unpacked-extension-deploy` skill (`node <skill>/scripts/deploy.mjs status|reload --port 9222 --dir "<installed copy>"`), which reports `changed-since-last-load` and the loaded path.
+- **A commit that changes behaviour under `kick-overlay/` bumps `manifest.json` in the same commit.** Measured 2026-11-27: `7d2752a` and `fa0e193` were titled 0.8.136 and 0.8.137 and touched no manifest, so `ver` stayed `0.8.135` in the owner's own ring and the reload tool would have read a rebuilt 0.8.137 folder as current. The version is the only thing that says which bytes are installed.
 - Reload the content script of an open tab with `_tools\ko-cdp.mjs` + `Page.reload`. A page reload can trigger a Twitch preroll.
 - **The instruments this project runs live OUTSIDE it.** `project-revival/scripts/*.py` (recorder, map
   sync, blast-radius, sliders) is a shared, untracked tree; a repo-scoped `rg`/`fd`/`git ls-files` cannot

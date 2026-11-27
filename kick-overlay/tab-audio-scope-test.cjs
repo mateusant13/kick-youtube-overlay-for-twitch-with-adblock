@@ -326,23 +326,27 @@ check('swap to the kick player keeps an UNMUTED live unmuted', () => {
 });
 
 check('swap carries a MUTED live as muted, and back again', () => {
-  const { tab } = swapWorld();
+  const { tab, els, written } = swapWorld();
   tab.audio.setIntent('twitch', { muted: true, volume: 0.2 });
   tab.audio.setVisible('kick');
   assert.strictEqual(tab.audio.intent('kick').muted, true, 'a muted live stays muted on the new player');
   assert.strictEqual(tab.audio.intent('kick').volume, 0.2);
+  assert.deepStrictEqual(written.filter((w) => w[0] === 'kick').pop(), ['kick', true, 0.2], 'the new player was commanded muted, not audible');
   tab.audio.setVisible('twitch');
   assert.strictEqual(tab.audio.intent('twitch').muted, true, 'coming back stays muted');
+  assert.strictEqual(els.twitch.muted, true, 'the native was commanded muted on the return trip');
 });
 
 check('swap does not invent sound for a surface the user muted itself', () => {
-  const { tab } = swapWorld();
+  const { tab, els, written } = swapWorld();
   tab.audio.setIntent('twitch', { muted: true, volume: 0.5 });
   tab.audio.setVisible('kick');
   assert.strictEqual(tab.audio.intent('kick').muted, true, 'kick inherited the mute');
+  assert.deepStrictEqual(written.filter((w) => w[0] === 'kick').pop(), ['kick', true, 0.5], 'the inherited mute reached the frame as a command');
   tab.audio.setIntent('kick', { muted: false, volume: 0.5 }); // the user unmutes the overlay
   tab.audio.setVisible('twitch');
   assert.strictEqual(tab.audio.intent('twitch').muted, false, 'and the return trip carries the unmute');
+  assert.strictEqual(els.twitch.muted, false, 'the native was commanded audible by the return trip');
 });
 
 // ---- 3d. a machine mute is not the user's decision -----------------------

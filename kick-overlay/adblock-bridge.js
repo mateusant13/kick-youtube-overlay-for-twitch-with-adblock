@@ -225,6 +225,22 @@
       },
       true,
     );
+    // The arbiter echoes the policy it ACCEPTED, naming the author and frame
+    // it actually took. A refused frame-policy ask writes an audio-refused
+    // row and NO echo, so the MAIN world can never read an attribute that
+    // claims a policy the authority refused.
+    document.addEventListener(
+      'ko-audio-policy',
+      (ev) => {
+        try {
+          const d = JSON.parse(String(ev && ev.detail));
+          root.setAttribute('data-ko-audio-policy', d && d.on === true ? String(d.author || '') : '');
+        } catch {
+          /* malformed echo */
+        }
+      },
+      true,
+    );
     // The MAIN-world ad path cannot call the arbiter. It asks for a FRAME
     // policy here, naming its author and the frame that was actually refused.
     // An ask with no author or no frame is a machine write, refused out loud.
@@ -240,7 +256,6 @@
             return;
           }
           audio.setPolicy('ad', d.on === true, { origin: author, why: String(d.why || ''), frame });
-          root.setAttribute('data-ko-audio-policy', d.on === true ? author : '');
         } catch {
           persist({ ev: 'audio-refused', d: { why: 'malformed-frame-policy', surface: 'ad' } });
         }

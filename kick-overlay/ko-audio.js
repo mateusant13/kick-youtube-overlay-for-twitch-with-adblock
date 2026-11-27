@@ -501,6 +501,21 @@
     return KOAudio;
   }
 
+  // The bridge publishes ONLY what the authority accepted. The echo carries
+  // the author and frame that were actually taken; a refused ask logs
+  // audio-refused and emits nothing, so no attribute can claim that refusal.
+  const publishPolicy = (on, author, frame) => {
+    try {
+      if (typeof CustomEvent === 'function' && document && typeof document.dispatchEvent === 'function') {
+        document.dispatchEvent(new CustomEvent('ko-audio-policy', {
+          detail: JSON.stringify({ on: !!on, author: String(author || ''), frame: frame ? String(frame) : '' }),
+        }));
+      }
+    } catch {
+      /* early boot: the decision is still held by the authority */
+    }
+  };
+
   // Policy is the authority's OWN machine decision, never a second writer: a
   // caller may only ASK for it, and the ask must name its author and the frame
   // it tested. An unlabelled ask is refused out loud, not applied.
@@ -520,9 +535,11 @@
       }
       policyFrames.set(surface, frame);
       policy.add(surface);
+      publishPolicy(true, origin, frame);
     } else {
       policy.delete(surface);
       policyFrames.delete(surface);
+      publishPolicy(false, '', frame);
     }
     if (had !== !!on) {
       report('audio-policy', { surface, on: !!on, why, origin, frame, visible: visibleNow() });
