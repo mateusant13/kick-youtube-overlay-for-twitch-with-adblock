@@ -146,6 +146,18 @@ async function main() {
 
   const failed = checks.filter((c) => c.status === 'FAIL');
   console.log('');
+// ANTI-VACUITY: a suite that silently loses an arm reads as a quieter green.
+// The floor is the count every arm this file executes today; a deleted arm
+// (or one that stops running because an earlier await short-circuits) fails here
+// instead of printing PASS with a smaller number.
+function antiVacuity(actual, expected) {
+  if (actual !== expected) {
+    console.error(`\nANTI-VACUITY FAIL suite=channel-switch checks=${actual} expected=${expected}: an arm stopped running`);
+    process.exit(1);
+  }
+  console.log(`ANTI-VACUITY suite=channel-switch checks=${actual} expected=${expected}`);
+}
+antiVacuity(checks.length, 9);
   console.log(`RESULT ${failed.length ? 'FAIL' : 'PASS'} channel-switch checks=${checks.length} failed=${failed.length}`);
   process.exit(failed.length ? 1 : 0);
 }

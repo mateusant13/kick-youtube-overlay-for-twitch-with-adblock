@@ -140,6 +140,23 @@
   // if an ad appears after a reload, the timestamps are still there next time.
   // `ms` is relative to navigation start, so content->ad delay can be read
   // directly from the log without correlating clocks.
+  // A refusal is a decision, so it names itself once per page load (a
+  // transition, not a per-tick sample). It returns the guarded value, so
+  // `return X;` becomes `return refuseValue(..., X);` and every caller sees
+  // exactly what it saw before; a logging failure can never decide anything.
+  // The call sites test `typeof refuseValue === 'function'` because several
+  // suite harnesses slice single functions out of this file, and there the
+  // helper is absent by construction - the guard must still return its value.
+  const KO_REFUSED = new Set();
+  function refuseValue(where, test, value) {
+    const key = `${where}|${test}`;
+    if (!KO_REFUSED.has(key)) {
+      KO_REFUSED.add(key);
+      try { adLog('refused', { where, test }); } catch (e) { /* logging never decides */ }
+    }
+    return value;
+  }
+  
   function adLog(ev, detail) {
     const d = Object.assign({ ms: Math.round(performance.now()) }, detail || {});
     stats.adLogCount = (stats.adLogCount || 0) + 1;
@@ -160,7 +177,7 @@
     const debugChannel = new BroadcastChannel('ko-adblock-debug');
     debugChannel.onmessage = (ev) => {
       const msg = ev && ev.data;
-      if (!msg || typeof msg !== 'object' || msg.page !== pageId) return;
+      if (!msg || typeof msg !== 'object' || msg.page !== pageId) return ;
       if (msg.type === 'playlist') {
         if (!Array.isArray(stats.workerPlaylistLog)) stats.workerPlaylistLog = [];
         stats.workerPlaylistLog.push(msg);
@@ -745,6 +762,12 @@
     return out;
   }
   stats.snap = snap;
+  // READ-ONLY VIEW OF THE AD-PATH STATE, for the suites. The census asks a
+  // question no user can: "which of these fields is a field whose behaviour
+  // only the owner can discover". An arm that reads the field at the moment it
+  // decides is the answer, and it cannot borrow `snap()` because most of these
+  // are clocks and streak flags, not picture state.
+  stats.overlayState = () => Object.assign({}, overlay);
   // `adLog(ev, snap()-merged detail)`: the transition's own fields stay, so
   // existing readers and the ledger arms keep working, and the snapshot is
   // added beside them under `st`.
@@ -1113,19 +1136,26 @@
   // old "only when 20s+ behind" gate: the picture is revealed at real time,
   // not one segment-duration behind.
   function catchUpClean(st, force) {
-    if (!overlay.frame || !st) return false;
+    if (!overlay.frame || !st) return typeof refuseValue === 'function' ? refuseValue("catchUpClean", "!overlay.frame || !st", false) : false;
     const lat = Number(st.lat);
     const pos = Number(st.pos);
-    if (!(lat >= 0) || !(pos >= 0)) return false;
-    if (!force && !(lat > CLEAN_LAT_MAX)) return false;
+    if (!(lat >= 0) || !(pos >= 0)) return typeof refuseValue === 'function' ? refuseValue("catchUpClean", "!(lat >= 0) || !(pos >= 0)", false) : false;
+    if (!force && !(lat > CLEAN_LAT_MAX)) return typeof refuseValue === 'function' ? refuseValue("catchUpClean", "!force && !(lat > CLEAN_LAT_MAX)", false) : false;
     // The throttle exists to stop a stalling manifest turning into a seek storm,
     // never to block the ONE seek that puts a revealed picture at real time.
     // Measured in the owner's 2026-11-15 ring (0.8.92): the reveal asked for a
     // forced catch-up 0.2 s after a periodic one, the 2 s window swallowed it,
     // and `overlay-reveal` went up with `lat 6.4` on screen — his report "ao
     // trocar pro outro player, não sei se tá em tempo real".
-    if (!force && overlay.catchupAt && Date.now() - overlay.catchupAt < 2000) return false;
-    overlay.catchupAt = Date.now();
+    if (!force && overlay.catchupAt && Date.now() - overlay.catchupAt < 2000) return typeof refuseValue === 'function' ? refuseValue("catchUpClean", "!force && overlay.catchupAt && Date.now() - overlay.catchupAt < 2000", false) : false;
+    // THE THROTTLE IS ARMED BY THE SEEK, NOT BY THE ATTEMPT. Measured
+    // 2026-11-27: the stamp sat above four refusals (`hold <= 0`, a landing the
+    // ceiling cannot reach, a drift under RESUME_GAP_SEC, a revealed player), so
+    // a REFUSED catch-up armed a 2 s window that could then swallow the one
+    // catch-up that was allowed to happen. The arm
+    // `a catch-up never seeks when the buffer already reaches the edge` caught it
+    // on its first run: `a refused catch-up armed the throttle clock it never
+    // used`.
     const want = Math.max(0, pos + lat - cleanLatTarget());
     // Never aim past the data the element already holds. `lat` is the distance
     // to the PLAYLIST edge while `buffered` is what has actually been
@@ -1143,7 +1173,7 @@
     // kaicenat 2026-11-08: `overlay-catchup {hold:0, lat:30, pos:27, to:54}` was
     // followed 2 s later by `playing-not-healthy {buffered:0.019, rs:2}` and the
     // standby never played — the clean source was dead for the whole pod.
-    if (!(hold > 0)) return false;
+    if (!(hold > 0)) return typeof refuseValue === 'function' ? refuseValue("catchUpClean", "!(hold > 0)", false) : false;
     // THE BUFFER FRONTIER IS THE HONEST LIVE EDGE. `lat` is the distance to the
     // PLAYLIST edge (hls.js's own number, `latSrc:'hls'`); `hold` is how much
     // media is already downloaded in front of the playhead. When they are
@@ -1172,7 +1202,7 @@
     const ceiling = pos + hold - HEALTH_BUFFER_SEC;
     const target = Math.min(want, ceiling);
     // A seek that leaves under 1.5s of buffer is worse than the drift it fixes.
-    if (!(target - pos >= RESUME_GAP_SEC)) return false;
+    if (!(target - pos >= RESUME_GAP_SEC)) return typeof refuseValue === 'function' ? refuseValue("catchUpClean", "!(target - pos >= RESUME_GAP_SEC)", false) : false;
     // A REVEALED LIVE PLAYER IS NEVER NUDGED FORWARD BY THIS CODE. Two measured
     // reports agree that the forward seek never closed the reported latency and
     // only jumped the picture: 2026-11-07 (`overlay-catchup lat=20.3` firing
@@ -1187,7 +1217,7 @@
     // already is and hls.js's own maxLiveSyncPlaybackRate pulls it back. The
     // drift is hls.js's to close, at 1.5x, smoothly. `force` (pre-reveal
     // standbys, the go-live chip) is the only caller allowed to jump.
-    if (overlay.revealed && !force) return false;
+    if (overlay.revealed && !force) return typeof refuseValue === 'function' ? refuseValue("catchUpClean", "overlay.revealed && !force", false) : false;
     // TWO KINDS OF GAP, and only one of them is ours to close.
     //  (a) the buffer frontier is the edge (`lat - hold` ~ 0): the remaining
     //      seconds are the source's own segment cadence, and a seek to the
@@ -1208,6 +1238,7 @@
     // The old `runway >= HEALTH_BUFFER_SEC || frontierGap >= 2` let a 12.8 s
     // frontier gap override a 1 s landing, which is how the owner's 0.8.91 row
     // fired: `{hold:6, lat:18.8, pos:160}`.)
+    overlay.catchupAt = Date.now();
     overlaySend({ t: 'seek', s: target });
     overlaySend({ t: 'play' });
     adLogState('overlay-catchup', {
@@ -2027,7 +2058,7 @@
   // it is the only way a pause survives the ad it is meant to stop.
   function adUiHoldTick() {
     // Once he has taken the picture back, no later tick may re-pause it.
-    if (userResumedHeld()) return;
+    if (userResumedHeld()) return typeof refuseValue === 'function' ? refuseValue("adUiHoldTick", "userResumedHeld()", undefined) : undefined;
     // THE STALE STANDBY IS TORN DOWN BEFORE ANY OTHER QUESTION IS ASKED. It is
     // the flag every later branch reads as "the pod owns it now", so leaving it
     // set is how a previous pod's paused source refuses a whole new pod (the
@@ -2157,7 +2188,7 @@
     }
   }
   function adUiHold(detail) {
-    if (adUiHeldAt) return; // already held by this signal
+    if (adUiHeldAt) return typeof refuseValue === 'function' ? refuseValue("adUiHold", "adUiHeldAt", undefined) : undefined; // already held by this signal
     if (userResumedHeld()) return adUiTickSkip('user-resume');
     if (!AD_OVERLAY_ENABLED) return adUiTickSkip('overlay-disabled');
     // NAMED, ONCE PER EPISODE, AND ONLY FOR A POD THAT OWNS THE PICTURE. This
@@ -2265,22 +2296,22 @@
   try {
     document.addEventListener('play', (e) => {
       const t = e && e.target;
-      if (!t || t.tagName !== 'VIDEO') return;
+      if (!t || t.tagName !== 'VIDEO') return typeof refuseValue === 'function' ? refuseValue("markUserInput", "!t || t.tagName !== 'VIDEO'", undefined) : undefined;
       if (overlay.selfPausedAt && Date.now() - overlay.selfPausedAt > 250) overlay.selfPausedAt = 0;
       // WHERE the gesture landed decides whether the play is his, not only
       // WHEN. Measured on 0.8.123 (refutation pass): a click in chat 400 ms
       // before Twitch's ad renderer called play() was read as a user takeover -
       // `handback-ready {ms:310, why:'user-resume', covered:true, rs:1}` - the
       // exact frozen hand-back the wait exists to prevent.
-      if (!hasFreshInput() || !gestureAuthorizesPlay(t)) return; // machine play
+      if (!hasFreshInput() || !gestureAuthorizesPlay(t)) return typeof refuseValue === 'function' ? refuseValue("markUserInput", "!hasFreshInput() || !gestureAuthorizesPlay(t)", undefined) : undefined; // machine play
       // Our own resume is not a user takeover, but a gesture AFTER it is.
-      if (ownPlayAt && Date.now() - ownPlayAt <= 500 && lastUserInputAt <= ownPlayAt) return;
+      if (ownPlayAt && Date.now() - ownPlayAt <= 500 && lastUserInputAt <= ownPlayAt) return typeof refuseValue === 'function' ? refuseValue("markUserInput", "ownPlayAt && Date.now() - ownPlayAt <= 500 && lastUserInputAt <= ownPlayAt", undefined) : undefined;
       userPlayAt = Date.now();
       userPausedInPod = false; // only a fresh user play gives the picture back
       userPauseLogged = false;
       userPauseRefusedLogged = false;
       const pod = adUiHeldAt ? 'hold' : (overlay.adActive || overlay.revealed ? 'playlist' : null);
-      if (!pod || userResumedHeld()) return;
+      if (!pod || userResumedHeld()) return typeof refuseValue === 'function' ? refuseValue("markUserInput", "!pod || userResumedHeld()", undefined) : undefined;
       // A playlist pod opened by `ad-hold` has no DOM ad: `adUiHeldAt` was
       // never stamped, but the pod owns the freeze. Release it here so the
       // next 500 ms tick does not undo what the user just did.
@@ -2317,7 +2348,7 @@
       const t = e && e.target;
       const ours = (overlay.selfPausedAt && Date.now() - overlay.selfPausedAt <= 250)
         || (ownPlayAt && Date.now() - ownPlayAt <= 250);
-      if (!t || t.tagName !== 'VIDEO' || !(overlay.adActive || overlay.revealed) || ours) return;
+      if (!t || t.tagName !== 'VIDEO' || !(overlay.adActive || overlay.revealed) || ours) return typeof refuseValue === 'function' ? refuseValue("markUserInput", "!t || t.tagName !== 'VIDEO' || !(overlay.adActive || overlay.revealed) || ours", undefined) : undefined;
       if (!hasFreshInput()) {
         if (!userPauseRefusedLogged) {
           userPauseRefusedLogged = true;
@@ -2498,7 +2529,7 @@
       finishAdOverlay();
       return;
     }
-    if (!wasHeld) return;
+    if (!wasHeld) return typeof refuseValue === 'function' ? refuseValue("adUiRelease", "!wasHeld", undefined) : undefined;
     // ONLY A CLAIMED / PAINTED POD OWNS THE RESUME. Two resumers on one element
     // was the pause/resume churn the 2026-11-09 wave removed, but a warm
     // standby does not resume anything (a standby shutdown never touches the
@@ -2660,7 +2691,7 @@
   }
 
   function nudgeNativeToBuffer(v) {
-    if (!v) return false;
+    if (!v) return typeof refuseValue === 'function' ? refuseValue("nudgeNativeToBuffer", "!v", false) : false;
     try {
       let ahead = 0;
       let target = null;
@@ -2693,7 +2724,7 @@
           target = Math.max(target === null ? -Infinity : target, b.end(i) - 1);
         }
       }
-      if (ahead >= HEALTH_BUFFER_SEC || target === null) return false;
+      if (ahead >= HEALTH_BUFFER_SEC || target === null) return typeof refuseValue === 'function' ? refuseValue("nudgeNativeToBuffer", "ahead >= HEALTH_BUFFER_SEC || target === null", false) : false;
       // Move back only into a range the element already has. Seeking to an
       // arbitrary seekable point can land in an unbuffered ad-only part and
       // leave readyState 1 (measured on kimkataguiri).
@@ -2729,7 +2760,7 @@
   // hand-back belongs. Both halves are logged, so "it recovered by itself" and
   // "it recovered because a timer reloaded it" are told apart by the log.
   function armNativeRecovery(v, tag) {
-    if (!v) return;
+    if (!v) return typeof refuseValue === 'function' ? refuseValue("armNativeRecovery", "!v", undefined) : undefined;
     try { clearTimeout(overlay.nativeRecoverTimer); } catch { /* ignore */ }
     const ct0 = Number(v.currentTime || 0);
     // THE FIRST CHECK IS TIMED BY THE STATE, NOT BY A CONSTANT. 2500 ms is a
@@ -2744,12 +2775,12 @@
     const firstDelay = Number(v.readyState || 0) < 3 ? 700 : 2500;
     overlay.nativeRecoverTimer = setTimeout(() => {
       overlay.nativeRecoverTimer = 0;
-      if (!v.isConnected || overlay.adActive) return;
-      if (document.visibilityState && document.visibilityState !== 'visible') return;
-      if (resumeRefusedByUser(v)) return;
+      if (!v.isConnected || overlay.adActive) return typeof refuseValue === 'function' ? refuseValue("armNativeRecovery", "!v.isConnected || overlay.adActive", undefined) : undefined;
+      if (document.visibilityState && document.visibilityState !== 'visible') return typeof refuseValue === 'function' ? refuseValue("armNativeRecovery", "document.visibilityState && document.visibilityState !== 'visible'", undefined) : undefined;
+      if (resumeRefusedByUser(v)) return typeof refuseValue === 'function' ? refuseValue("armNativeRecovery", "resumeRefusedByUser(v)", undefined) : undefined;
       const ct = Number(v.currentTime || 0);
       const advanced = ct - ct0;
-      if (!v.paused && v.readyState >= 3 && advanced > 0.2) return; // healthy
+      if (!v.paused && v.readyState >= 3 && advanced > 0.2) return typeof refuseValue === 'function' ? refuseValue("armNativeRecovery", "!v.paused && v.readyState >= 3 && advanced > 0.2", undefined) : undefined; // healthy
       const nudged = nudgeNativeToBuffer(v);
       adLogState('native-recover', {
         tag,
@@ -2784,7 +2815,7 @@
   // `native-catchup` rows 13, 17 and 17 s forward after the pod ended
   // ("flicked/glitched ... then advanced and returned").
   function resumeNative(v, tag, { seek = true } = {}) {
-    if (!v || !v.isConnected || overlay.handbackWait) return;
+    if (!v || !v.isConnected || overlay.handbackWait) return typeof refuseValue === 'function' ? refuseValue("resumeNative", "!v || !v.isConnected || overlay.handbackWait", undefined) : undefined;
     let seekedNow = false;
     try {
       // Hand the native back AT THE SAME OFFSET the clean player was showing.
@@ -3210,10 +3241,10 @@
     if (!v || !v.isConnected) return;
     if ((overlay.pauseBeforeAd && !overlay.coldPreroll) || userPausedInPod) return; // the user parked it
     const onVisible = () => {
-      if (document.visibilityState && document.visibilityState !== 'visible') return;
+      if (document.visibilityState && document.visibilityState !== 'visible') return typeof refuseValue === 'function' ? refuseValue("onVisible", "document.visibilityState && document.visibilityState !== 'visible'", undefined) : undefined;
       try { document.removeEventListener('visibilitychange', onVisible, true); } catch { /* ignore */ }
-      if (!v.isConnected || overlay.adActive) return;
-      if ((overlay.pauseBeforeAd && !overlay.coldPreroll) || userPausedInPod) return;
+      if (!v.isConnected || overlay.adActive) return typeof refuseValue === 'function' ? refuseValue("onVisible", "!v.isConnected || overlay.adActive", undefined) : undefined;
+      if ((overlay.pauseBeforeAd && !overlay.coldPreroll) || userPausedInPod) return typeof refuseValue === 'function' ? refuseValue("onVisible", "(overlay.pauseBeforeAd && !overlay.coldPreroll) || userPausedInPod", undefined) : undefined;
       if (!v.paused) return;
       adLog('native-resume-visible', { tag, ct: +Number(v.currentTime || 0).toFixed(1) });
       resumeNative(v, `${tag}+visible`);
@@ -3240,10 +3271,10 @@
   }
 
   function maybeNudgeOverlay(st, kind) {
-    if (!overlay.frame || !st) return false;
+    if (!overlay.frame || !st) return typeof refuseValue === 'function' ? refuseValue("maybeNudgeOverlay", "!overlay.frame || !st", false) : false;
     const pos = Number(st.pos);
-    if (!(pos > 2)) return false;
-    if ((overlay.nudgeTries || 0) >= 2) return false;
+    if (!(pos > 2)) return typeof refuseValue === 'function' ? refuseValue("maybeNudgeOverlay", "!(pos > 2)", false) : false;
+    if ((overlay.nudgeTries || 0) >= 2) return typeof refuseValue === 'function' ? refuseValue("maybeNudgeOverlay", "(overlay.nudgeTries || 0) >= 2", false) : false;
     overlay.nudgeTries = (overlay.nudgeTries || 0) + 1;
     // The clean player parks at its own live edge with no forward buffer and
     // hls.js reports bufferStalledError. Seek FORWARD to the newest frame the
@@ -3262,17 +3293,17 @@
   }
 
   function scheduleOverlayStall(kind, ms = 2500) {
-    if (!overlay.frame) return;
+    if (!overlay.frame) return typeof refuseValue === 'function' ? refuseValue("scheduleOverlayStall", "!overlay.frame", undefined) : undefined;
     // One timer per overlay. A healthy Playing/rs>=3 message clears it; if the
     // clean player stays stalled we nudge it back once or twice, then restore
     // the native surface instead of leaving a frozen frame.
-    if (overlay.stallTimer) return;
+    if (overlay.stallTimer) return typeof refuseValue === 'function' ? refuseValue("scheduleOverlayStall", "overlay.stallTimer", undefined) : undefined;
     overlay.stallTimer = setTimeout(() => {
       overlay.stallTimer = 0;
-      if (!overlay.frame) return;
+      if (!overlay.frame) return typeof refuseValue === 'function' ? refuseValue("scheduleOverlayStall", "!overlay.frame", undefined) : undefined;
       if (maybeNudgeOverlay(overlay.lastSt, kind)) {
         scheduleOverlayStall(kind, 3000);
-        return;
+        return typeof refuseValue === 'function' ? refuseValue("scheduleOverlayStall", "maybeNudgeOverlay(overlay.lastSt, kind)", undefined) : undefined;
       }
       // A cold ad can start while the clean player is still at the beginning
       // of its window (pos <= 2), so there is nothing to rewind into yet. Keep
@@ -3281,7 +3312,7 @@
       const age = Date.now() - (overlay.startedAt || 0);
       if (overlay.adActive && age < 12000) {
         scheduleOverlayStall(kind, 1500);
-        return;
+        return typeof refuseValue === 'function' ? refuseValue("scheduleOverlayStall", "overlay.adActive && age < 12000", undefined) : undefined;
       }
       const wasStandby = overlay.standby;
       adLog('overlay-stall-stop', {
@@ -3605,13 +3636,13 @@
           const timer = setInterval(() => {
             if (++n > 10) {
               clearInterval(timer);
-              return;
+              return typeof refuseValue === 'function' ? refuseValue("stopAdOverlay", "++n > 10", undefined) : undefined;
             }
-            if (overlay.adActive) return;
-            if (overlay.frame && !overlay.standby) return;
+            if (overlay.adActive) return typeof refuseValue === 'function' ? refuseValue("stopAdOverlay", "overlay.adActive", undefined) : undefined;
+            if (overlay.frame && !overlay.standby) return typeof refuseValue === 'function' ? refuseValue("stopAdOverlay", "overlay.frame && !overlay.standby", undefined) : undefined;
             const nv = mainVideo();
-            if (!nv || !nv.isConnected) return;
-            if (!nv.paused && nv.readyState >= 3) return;
+            if (!nv || !nv.isConnected) return typeof refuseValue === 'function' ? refuseValue("stopAdOverlay", "!nv || !nv.isConnected", undefined) : undefined;
+            if (!nv.paused && nv.readyState >= 3) return typeof refuseValue === 'function' ? refuseValue("stopAdOverlay", "!nv.paused && nv.readyState >= 3", undefined) : undefined;
             resumeNativeIfAllowed(nv, 'watch');
           }, 1000);
         }
@@ -3675,7 +3706,7 @@
   }
 
   function revealOverlay(reason) {
-    if (!overlay.frame) return;
+    if (!overlay.frame) return typeof refuseValue === 'function' ? refuseValue("revealOverlay", "!overlay.frame", undefined) : undefined;
     try { clearTimeout(overlay.adoptTimer); } catch { /* ignore */ }
     overlay.adoptTimer = 0;
     const wasStandby = overlay.standby;
@@ -3757,7 +3788,7 @@
         }
       }
       if (lat > cleanLatTarget() + 1.5 && Date.now() - overlay.catchupWaitAt < REVEAL_AWAIT_MS) {
-        return; // the seek has not been reported back yet
+        return typeof refuseValue === 'function' ? refuseValue("revealOverlay", "lat > cleanLatTarget() + 1.5 && Date.now() - overlay.catchupWaitAt < REVEAL_AWAIT_MS", undefined) : undefined; // the seek has not been reported back yet
       }
       // The frame reported the new position once it moved: raise it now.
       adLog('reveal-caught-up', {
@@ -3881,7 +3912,7 @@
       overlay.unmuteTried = true;
       const attempt = () => {
         const st = overlay.lastSt;
-        if (!overlay.frame || !st) return;
+        if (!overlay.frame || !st) return typeof refuseValue === 'function' ? refuseValue("revealOverlay", "!overlay.frame || !st", undefined) : undefined;
         if (!st.muted) {
           if (overlay.badge) overlay.badge.style.display = 'none';
           adLog('unmute-ok', { tries: overlay.unmuteTries || 0 });
@@ -6364,11 +6395,11 @@
         const src = String(url);
         if (!isOn()) {
           super(url, options);
-          return;
+          return typeof refuseValue === 'function' ? refuseValue("makePatchedWorker", "!isOn()", undefined) : undefined;
         }
         if (!/^blob:https:\/\/(?:www\.)?twitch\.tv\//.test(src)) {
           super(url, options);
-          return;
+          return typeof refuseValue === 'function' ? refuseValue("makePatchedWorker", "!/^blob:https:\\/\\/(?:www\\.)?twitch\\.tv\\//.test(src)", undefined) : undefined;
         }
         let code = '';
         try {
@@ -6382,7 +6413,7 @@
         }
         if (!code) {
           super(url, options);
-          return;
+          return typeof refuseValue === 'function' ? refuseValue("makePatchedWorker", "!code", undefined) : undefined;
         }
         try {
           const prelude =

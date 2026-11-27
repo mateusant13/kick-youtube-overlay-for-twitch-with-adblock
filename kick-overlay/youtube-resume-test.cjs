@@ -217,6 +217,14 @@ async function runArm(arm) {
   process.stdout.write(pre.stdout + pre.stderr);
   process.stdout.write(post.stdout + post.stderr);
   const ok = pre.status === 0 && post.status === 0;
+  // ANTI-VACUITY: the two arms are child processes, so a deleted or
+  // short-circuited arm leaves one verdict line and a passing parent.
+  const armLines = ((pre.stdout || '') + (post.stdout || '')).match(/^(GREEN|RED)/gm) || [];
+  if (armLines.length !== 2) {
+    console.error(`\nANTI-VACUITY FAIL suite=youtube-resume arms=${armLines.length} expected=2: an arm stopped running`);
+    process.exit(1);
+  }
+  console.log(`ANTI-VACUITY suite=youtube-resume arms=${armLines.length} expected=2`);
   console.log(ok ? 'RESULT PASS youtube-resume (RED before, GREEN after)' : 'RESULT FAIL youtube-resume');
   process.exit(ok ? 0 : 1);
 })();

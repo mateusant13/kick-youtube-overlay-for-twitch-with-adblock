@@ -29,6 +29,21 @@ const fs = require('fs');
 const path = require('path');
 const { makeWorld, makePage, settle, healthySt } = require('./mute-decision-test.cjs');
 const clock = require('../_tools/test-clock.cjs');
+// SINGLE FLIGHT: this suite is the box's heaviest single-file job (one `new Function`
+// compile of the 6 500-line product per arm, ~196 checks). Measured 2026-11-27: the
+// landing gate and the edit loop's deep tier spawned it at the SAME time and the pair
+// was named the top pressure (watcher DM dm-f77bd3e66a863677296f, `I:` at 419.9 % busy
+// with a 50.7 ms queue). The second copy is refused in <1 ms and names the holder;
+// one copy finishes in the same 7.5 s the pair needed, with half the work.
+// The landing gate QUEUES (KO_HEAVY_WAIT_MS set by _tools/gate/checks/suites.mjs) because
+// its run must land; the edit loop REFUSES, because a feedback loop must never block.
+const HEAVY_WAIT_MS = Number(process.env.KO_HEAVY_WAIT_MS || 0) || 0;
+const heavyLock = require('../_tools/ko-heavy-lock.cjs').singleFlight('ad-time-continuity', { waitMs: HEAVY_WAIT_MS });
+if (!heavyLock.ok) {
+  console.error(`HEAVY-LOCK refused: ad-time-continuity is already running (pid ${heavyLock.pid}, ${(heavyLock.since / 1000).toFixed(1)}s ago) - one heavy job at a time on this box`);
+  process.exit(3);
+}
+process.on('exit', () => heavyLock.release());
 
 // The checkout is CRLF; every mutation below is written LF-only, so the source
 // is normalised once here and handed to the stub DOM already normalised.
@@ -1048,7 +1063,7 @@ async function main() {
   // RED: the location test removed -> a click outside the player authorizes the
   // page's own play.
   const RED_ANY_INPUT = mutate([[
-    '      if (!hasFreshInput() || !gestureAuthorizesPlay(t)) return; // machine play\n',
+    '      if (!hasFreshInput() || !gestureAuthorizesPlay(t)) return typeof refuseValue === \'function\' ? refuseValue("markUserInput", "!hasFreshInput() || !gestureAuthorizesPlay(t)", undefined) : undefined; // machine play\n',
     '      if (!hasFreshInput()) return; // machine play\n',
   ]]);
   await redArm('RED: without the location test any fresh input authorizes a machine play', RED_ANY_INPUT, async (src) => {
@@ -1107,6 +1122,8 @@ async function main() {
   });
   const RED_RETRY_BEHIND_WAIT = mutate([
     ["        return adLogState('handback-wait', { reason: wait.reason, rs: wrs,", "        adLogState('handback-wait', { reason: wait.reason, rs: wrs,"],
+    ["    if (!v || !v.isConnected || overlay.handbackWait) return typeof refuseValue === 'function' ? refuseValue(\"resumeNative\", \"!v || !v.isConnected || overlay.handbackWait\", undefined) : undefined;",
+      "    if (!v || !v.isConnected || overlay.handbackWait) return;"],
     ['    if (!v || !v.isConnected || overlay.handbackWait) return;', '    if (!v || !v.isConnected) return;'],
   ]);
   await redArm('RED: a retry resumes the native while the wait is armed', RED_RETRY_BEHIND_WAIT, async (src) => {
@@ -1274,6 +1291,8 @@ async function main() {
   });
   const RED_SECOND_RESUME = mutate([
     ['    if (overlay.adActive) return;\n    if (overlay.frame && !overlay.standby) return;\n', ''],
+    ["    if (!v || !v.isConnected || overlay.handbackWait) return typeof refuseValue === 'function' ? refuseValue(\"resumeNative\", \"!v || !v.isConnected || overlay.handbackWait\", undefined) : undefined;",
+      "    if (!v || !v.isConnected || overlay.handbackWait) return;"],
     ['    if (!v || !v.isConnected || overlay.handbackWait) return;', '    if (!v || !v.isConnected) return;'],
   ]);
   await redArm('RED: a second writer resumes the native behind the wait', RED_SECOND_RESUME, async (src) => {
@@ -1541,12 +1560,18 @@ async function main() {
       const rows = page.logsOf('overlay-catchup');
       assert(rows.length === 0, `catch-up fired ${rows.length}x on an edge the buffer already reaches: ${JSON.stringify(rows.map((r) => r.d))}`);
       assert(page.seeks().length === before, `the clean player was seeked ${page.seeks().length - before}x`);
+      const st = page.stats().overlayState();
+      // The decision is made from the NEWEST report, and the throttle clock
+      // proves the refusals above were the buffer rule and not the 2 s gate.
+      assert(st.lastSt && Math.abs(Number(st.lastSt.pos) - 37.2 - 3 * 2.2) < 0.01,
+        `the catch-up did not read the newest report: lastSt=${JSON.stringify(st.lastSt && st.lastSt.pos)}`);
+      assert(!st.catchupAt, 'a refused catch-up armed the throttle clock it never used');
     });
   }
   {
     // RED: drop the buffer-frontier rule and the same samples DO jump.
     const page = makeWorld({
-      adSource: mutate([['    if (overlay.revealed && !force) return false;', '    if (false) return false;']]),
+      adSource: mutate([['    if (overlay.revealed && !force) return typeof refuseValue === \'function\' ? refuseValue("catchUpClean", "overlay.revealed && !force", false) : false;', '    if (false) return false;']]),
     });
     page.bypass({ type: 'ad-hold' });
     page.bypass({ type: 'ad-start', url: 'https://clean.example/live.m3u8', channel: 'rodil' });
@@ -1939,6 +1964,8 @@ async function main() {
       assert(lag[0].d.sentAgeMs != null && lag[0].d.sentAgeMs < 400, `sentAgeMs=${lag[0].d.sentAgeMs}`);
       assert(page.logsOf('audio-mismatch').length === 0, 'a lagging report was logged as a real disagreement');
       assert(page.muteSent().filter((m) => m === false).length > before, 'the unmute was not re-sent');
+      assert(page.stats().overlayState().audioStaleLogged === true,
+        'the lag row was emitted without the field that keeps it to one per streak');
     });
   }
   {
@@ -1964,6 +1991,9 @@ async function main() {
       assert(mm[0].d.heldMs >= 400, `heldMs=${mm[0].d.heldMs}`);
       assert(page.logsOf('audio-stale-report').length === 1, 'the streak did not start as a lag row');
       assert(page.muteSent().filter((m) => m === false).length > before, 'the unmute was not re-sent');
+      const st = page.stats().overlayState();
+      assert(st.audioMismatchLogged === true, 'the mismatch row was not recorded as one per streak');
+      assert(st.audioDisagreeSince > 0, 'the disagreement clock the streak is measured from was never started');
     });
   }
   {
@@ -2435,7 +2465,7 @@ async function main() {
     const blind = mutate([
       ['if (b.end(i) - b.start(i) >= HEALTH_BUFFER_SEC + 0.5 && b.end(i) - ct < HEALTH_BUFFER_SEC) {',
         'if (b.end(i) - b.start(i) >= 2 && b.end(i) - ct < 0.5) {'],
-      ['if (ahead >= HEALTH_BUFFER_SEC || target === null) return false;', 'if (ahead >= 0.5 || target === null) return false;'],
+      ['      if (ahead >= HEALTH_BUFFER_SEC || target === null) return typeof refuseValue === \'function\' ? refuseValue("nudgeNativeToBuffer", "ahead >= HEALTH_BUFFER_SEC || target === null", false) : false;', 'if (ahead >= 0.5 || target === null) return false;'],
     ]);
     const page = makeWorld({ adSource: blind });
     // 1.0 s of runway: above the old 0.5 s gate and below the health gate's 3 s,
@@ -3718,6 +3748,9 @@ async function main() {
     await settle(20);
     record('one progressing sample reveals on a dense heartbeat', moving.logsOf('overlay-reveal').length === 1,
       `the progressing sample did not reveal: ${JSON.stringify(moving.logsOf('overlay-reveal'))}`);
+    record('the sample that revealed is counted as healthy',
+      moving.stats().overlayState().healthyTicks >= 1,
+      `healthyTicks=${moving.stats().overlayState().healthyTicks} after a reveal`);
 
     const stalled = pod();
     await settle(20);
@@ -3729,6 +3762,9 @@ async function main() {
     record('a stalled sample still needs two dense heartbeats',
       stalled.logsOf('overlay-reveal').length === 0 && stalled.logsOf('playing-not-healthy').length > 0,
       `a frozen frame was revealed: ${JSON.stringify(stalled.logsOf('overlay-reveal'))}`);
+    record('a frame that never reports healthy never advances the health count',
+      stalled.stats().overlayState().healthyTicks === 0,
+      `healthyTicks=${stalled.stats().overlayState().healthyTicks} on a frame that never played`);
 
     const sparse = pod();
     await settle(20);
@@ -3929,6 +3965,11 @@ async function main() {
   console.log(`ARMS ${ARMS.length - missing.length}/${ARMS.length} present`);
   const failed = checks.filter((c) => c.status === 'FAIL');
   console.log('');
+  // The compile cache is the suite's own cost lever (337 KB of ad path through
+  // `new Function` once per world). Hits/misses are printed so a reader can see the
+  // work is not redone, and KO_COMPILE_CACHE=0 is the BEFORE arm of that lever.
+  const cs = require('./mute-decision-test.cjs').compileStats;
+  console.log(`COMPILE cache ${process.env.KO_COMPILE_CACHE === '0' ? 'off' : 'on'} hits=${cs.hits} misses=${cs.misses}`);
   console.log(`RESULT ${failed.length ? 'FAIL' : 'PASS'} ad-time-continuity checks=${checks.length} failed=${failed.length}`);
   process.exit(failed.length ? 1 : 0);
 }

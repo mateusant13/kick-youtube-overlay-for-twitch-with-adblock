@@ -35,6 +35,46 @@ const PRE_FIX_MUTATION = [
   'muted: !!(policy.has(surface) || visibleNow() !== surface),',
 ];
 
+// ---- compiled-source cache ------------------------------------------------
+// Compiling the ad path is the suite's dominant cost: 337 KB of source through
+// `new Function` once per world, and this harness builds a world per arm (134 in
+// ad-time-continuity alone, so ~536 compiles). The FACTORY is pure - it takes every
+// environment binding as an argument and closes over nothing - so compiling the
+// same source twice is pure waste, which is the owner's own rule ("do it once").
+// Measured 2026-11-27 on this box while the watcher named this suite the top
+// pressure (DM dm-0716345b35046e097d68): see the compile-cache line the suite prints.
+// Bounded at 32 sources: every distinct mutation is a distinct source, and the
+// cache must not accumulate the whole run in memory.
+const COMPILE_CACHE_MAX = 32;
+const COMPILED = new Map();
+const compileStats = { hits: 0, misses: 0 };
+// KO_COMPILE_CACHE=0 is the optimisation's own BEFORE arm (cost only, never a
+// behavioural switch): both settings must print the same verdict.
+const COMPILE_CACHE_ON = process.env.KO_COMPILE_CACHE !== '0';
+
+function compile(source, name) {
+  const key = `${name}\u0000${source}`;
+  if (COMPILE_CACHE_ON) {
+    const hit = COMPILED.get(key);
+    if (hit) {
+      compileStats.hits += 1;
+      return hit;
+    }
+  }
+  compileStats.misses += 1;
+  const factory = new Function(
+    'window', 'document', 'location', 'navigator', 'performance', 'BroadcastChannel',
+    'CustomEvent', 'MutationObserver', 'XMLHttpRequest', 'Blob', 'URL', 'btoa', 'chrome',
+    'console', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date',
+    `${source}\n//# sourceURL=${name}`,
+  );
+  if (COMPILE_CACHE_ON) {
+    if (COMPILED.size >= COMPILE_CACHE_MAX) COMPILED.delete(COMPILED.keys().next().value);
+    COMPILED.set(key, factory);
+  }
+  return factory;
+}
+
 // ---- the world ------------------------------------------------------------
 // makeWorld({ audioSource, adSource, autoLoad }) — `adSource`/`autoLoad` exist so
 // the negative arms of ad-time-continuity-test.cjs can run mutated copies of the
@@ -327,12 +367,7 @@ function makeWorld(opts, extra) {
   };
 
   const run = (source, name) => {
-    const factory = new Function(
-      'window', 'document', 'location', 'navigator', 'performance', 'BroadcastChannel',
-      'CustomEvent', 'MutationObserver', 'XMLHttpRequest', 'Blob', 'URL', 'btoa', 'chrome',
-      'console', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date',
-      `${source}\n//# sourceURL=${name}`,
-    );
+    const factory = compile(source, name);
     factory(
       window, document, location, { userAgent: 'node' }, clock.performance,
       BroadcastChannel, CustomEvent, MutationObserver, XMLHttpRequest, class Blob {}, URLStub,
@@ -1668,6 +1703,19 @@ async function main() {
 
   const failed = checks.filter((c) => c.status === 'FAIL');
   console.log('');
+// ANTI-VACUITY: a suite that silently loses an arm reads as a quieter green.
+// The floor is the count every arm this file executes today; a deleted arm
+// (or one that stops running because an earlier await short-circuits) fails here
+// instead of printing PASS with a smaller number.
+function antiVacuity(actual, expected) {
+  if (actual !== expected) {
+    console.error(`\nANTI-VACUITY FAIL suite=mute-decision checks=${actual} expected=${expected}: an arm stopped running`);
+    process.exit(1);
+  }
+  console.log(`ANTI-VACUITY suite=mute-decision checks=${actual} expected=${expected}`);
+}
+antiVacuity(checks.length, 95);
+  console.log(`COMPILE cache ${COMPILE_CACHE_ON ? 'on' : 'off'} hits=${compileStats.hits} misses=${compileStats.misses} max=${COMPILE_CACHE_MAX}`);
   console.log(`RESULT ${failed.length ? 'FAIL' : 'PASS'} mute-decision checks=${checks.length} failed=${failed.length}`);
   process.exit(failed.length ? 1 : 0);
 }
@@ -1698,5 +1746,5 @@ if (require.main === module) {
   });
 } else {
   // makePage is the historical name used by ad-time-continuity-test.cjs.
-  module.exports = { makeWorld, makePage: makeWorld, runPod, settle, healthySt };
+  module.exports = { makeWorld, makePage: makeWorld, runPod, settle, healthySt, compileStats };
 }

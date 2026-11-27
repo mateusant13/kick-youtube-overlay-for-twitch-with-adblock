@@ -523,7 +523,7 @@ function nativeStallRefuse(why, data) {
   nat.logged = false;
   nat.failed = false;
   nat.from = null;
-  if (!first) return;
+  if (!first) return typeof refuseValue === 'function' ? refuseValue("nativeStallRefuse", "!first", undefined) : undefined;
   nat.refuse = why;
   diag('native-stall-refused', Object.assign({ why }, data || {}));
 }
@@ -745,7 +745,7 @@ function nudgeInsideHeldMedia(v) {
 // owns the picture, never on a DVR/VOD position, never a loop.
 function nativeStallWatch(v, now, sample) {
   const nat = (KO.nat = KO.nat || { since: 0, tries: 0, lastAt: 0, why: '', logged: false, failed: false, from: null, refuse: '' });
-  if (!KO.enabled || !v || !v.isConnected) return nativeStallIdle();
+  if (!KO.enabled || !v || !v.isConnected) return typeof refuseValue === 'function' ? refuseValue("nativeStallWatch", "!KO.enabled || !v || !v.isConnected", nativeStallIdle()) : nativeStallIdle();
   const rs = Number(v.readyState || 0);
   const ct = +Number(v.currentTime || 0).toFixed(2);
   const runway = +nativeRunway(v).toFixed(2);
@@ -768,7 +768,7 @@ function nativeStallWatch(v, now, sample) {
   // state this tick changed.
   const screenOwner = coldHoldActive() ? 'cold-hold' : overlayOwnsPicture() ? 'overlay-owned' : adPathOwnsScreen() ? 'ad-owned' : '';
   if (screenOwner) {
-    if (!stalledShape) return nativeStallIdle();
+    if (!stalledShape) return typeof refuseValue === 'function' ? refuseValue("nativeStallWatch", "!stalledShape", nativeStallIdle()) : nativeStallIdle();
     return nativeStallRefuse(screenOwner, { ct, rs, buf: runway, paused: !!v.paused });
   }
   // A THIN FORWARD BUFFER IS THE HEALTHY STATE OF A TWITCH LIVE, not a stall.
@@ -800,7 +800,7 @@ function nativeStallWatch(v, now, sample) {
       // Resuming it can undo the user's own pause, so a starved one is refused
       // with a row - and a parked element with media in front of it is simply
       // parked, which is not an episode at all.
-      if (!starved) return nativeStallIdle();
+      if (!starved) return typeof refuseValue === 'function' ? refuseValue("nativeStallWatch", "!starved", nativeStallIdle()) : nativeStallIdle();
       return nativeStallRefuse('unattributed-pause', { ct, rs, buf: runway });
     }
     const fresh = p.inputAgeMs != null && p.inputAgeMs <= NATIVE_USER_PAUSE_MS;
@@ -816,7 +816,7 @@ function nativeStallWatch(v, now, sample) {
     // refusal, and once it is back the pause is due for recovery (below).
     if (p.hidden && document.hidden) return nativeStallRefuse('hidden', { ct, rs, buf: runway });
     hidPause = !!p.hiddenAt && !document.hidden && now - p.at >= NATIVE_STALL_MS;
-    if (p.ours) return nativeStallIdle(); // we parked it: by design
+    if (p.ours) return typeof refuseValue === 'function' ? refuseValue("nativeStallWatch", "p.ours", nativeStallIdle()) : nativeStallIdle(); // we parked it: by design
     // A PAUSE THE AD PATH MADE GETS ITS BUDGET, THEN THE PICTURE IS THE USER'S.
     // The ad path declares its own park (`data-ko-adpark`, stamped above), and
     // while it owns the screen the branch above already refused. What is left is
@@ -845,7 +845,7 @@ function nativeStallWatch(v, now, sample) {
       // NATIVE_STALL_MS, is the freeze this line used to hide.
       return nativeStallIdle();
     }
-    if (now - p.at < NATIVE_STALL_MS) return; // give the page's own reload a beat
+    if (now - p.at < NATIVE_STALL_MS) return typeof refuseValue === 'function' ? refuseValue("nativeStallWatch", "now - p.at < NATIVE_STALL_MS", undefined) : undefined; // give the page's own reload a beat
   } else if (!(rs < 3 || sample.frozen)) {
     // `starved` deliberately absent: a thin forward buffer on an ADVANCING
     // element is hls.js's steady state, and poking it is the jump-cut. Only a
@@ -857,7 +857,7 @@ function nativeStallWatch(v, now, sample) {
     nat.since = now - Math.max(0, Math.min(Number(sample.movedMs) || 0, 600000));
     nat.from = ct;
   }
-  if (now - nat.since < NATIVE_STALL_MS) return;
+  if (now - nat.since < NATIVE_STALL_MS) return typeof refuseValue === 'function' ? refuseValue("nativeStallWatch", "now - nat.since < NATIVE_STALL_MS", undefined) : undefined;
   if (!nat.logged) {
     nat.logged = true;
     nat.why = v.paused
@@ -880,7 +880,7 @@ function nativeStallWatch(v, now, sample) {
       owner: KO.ownerAttr || null,
     });
   }
-  if (nat.lastAt && now - nat.lastAt < NATIVE_RECOVER_GAP_MS) return;
+  if (nat.lastAt && now - nat.lastAt < NATIVE_RECOVER_GAP_MS) return typeof refuseValue === 'function' ? refuseValue("nativeStallWatch", "nat.lastAt && now - nat.lastAt < NATIVE_RECOVER_GAP_MS", undefined) : undefined;
   if (nat.tries >= NATIVE_RECOVER_MAX) {
     if (!nat.failed) {
       nat.failed = true;
@@ -949,7 +949,7 @@ function nativeStallWatch(v, now, sample) {
 // must stay side-effect free); it dispatches, and this forwards. One listener,
 // attached once, so a second copy of content.js cannot double every audio line.
 function listenAudioLog() {
-  if (window.__koAudioLog) return;
+  if (window.__koAudioLog) return typeof refuseValue === 'function' ? refuseValue("listenAudioLog", "window.__koAudioLog", undefined) : undefined;
   window.__koAudioLog = true;
   try {
     document.addEventListener(
@@ -967,6 +967,23 @@ function listenAudioLog() {
   } catch {
     /* document gone */
   }
+}
+
+// A refusal is a decision, so it names itself once per page load (a
+// transition, not a per-tick sample). It returns the guarded value, so
+// `return X;` becomes `return refuseValue(..., X);` and every caller sees
+// exactly what it saw before; a logging failure can never decide anything.
+// The call sites test `typeof refuseValue === 'function'` because several
+// suite harnesses slice single functions out of this file, and there the
+// helper is absent by construction - the guard must still return its value.
+const KO_REFUSED = new Set();
+function refuseValue(where, test, value) {
+  const key = `${where}|${test}`;
+  if (!KO_REFUSED.has(key)) {
+    KO_REFUSED.add(key);
+    try { diag('refused', { where, test }); } catch (e) { /* logging never decides */ }
+  }
+  return value;
 }
 
 function diag(ev, data) {
@@ -1014,7 +1031,7 @@ const NOT_CHANNEL = new Set([
 
 // Build marker for the diag stream — lets us tell which code a tab runs
 // (content scripts of pre-reload tabs survive extension reloads).
-const KO_VER = '0.8.129';
+const KO_VER = '0.8.130';
 // How long a lost picture may last before the native player is allowed to
 // reclaim the screen (owner 2026-11-11: an ad and the player fighting).
 const OWNER_GRACE_MS = 6000;
@@ -1617,9 +1634,9 @@ async function ensureYtHls() {
 }
 
 function ensureYtIframe() {
-  if (document.getElementById('ko-yt')) return;
+  if (document.getElementById('ko-yt')) return typeof refuseValue === 'function' ? refuseValue("ensureYtIframe", "document.getElementById('ko-yt')", undefined) : undefined;
   if (!KO.wrap) mount();
-  if (!KO.ytHlsUrl) return;
+  if (!KO.ytHlsUrl) return typeof refuseValue === 'function' ? refuseValue("ensureYtIframe", "!KO.ytHlsUrl", undefined) : undefined;
   const iframe = document.createElement('iframe');
   iframe.id = 'ko-yt';
   const token = crypto.randomUUID();
@@ -1643,7 +1660,7 @@ function ensureYtIframe() {
     // stealing keystrokes mid-edit is worse than no focus. Only focus a
     // freshly-built frame when the yt layer is shown and the user is not
     // editing (mirror of the kick leg).
-    if (typeof KO.frameSeq === 'number' && KO.ytFocusSeq === KO.frameSeq) return;
+    if (typeof KO.frameSeq === 'number' && KO.ytFocusSeq === KO.frameSeq) return typeof refuseValue === 'function' ? refuseValue("ensureYtIframe", "typeof KO.frameSeq === 'number' && KO.ytFocusSeq === KO.frameSeq", undefined) : undefined;
     KO.ytFocusSeq = KO.frameSeq;
     try {
       const ae = document.activeElement;
@@ -2192,7 +2209,7 @@ function ensureKick(url, opts) {
 // bootstrap needs the page's playbackVideoId, which the overlay — running on
 // the Twitch page — cannot see.)
 async function kickFetchDvr() {
-  if (!KO.activeUrl || KO.dvrFetchedFor === KO.activeUrl) return;
+  if (!KO.activeUrl || KO.dvrFetchedFor === KO.activeUrl) return typeof refuseValue === 'function' ? refuseValue("kickFetchDvr", "!KO.activeUrl || KO.dvrFetchedFor === KO.activeUrl", undefined) : undefined;
   KO.dvrFetchedFor = KO.activeUrl;
   try {
     const vids = await (await fetch(`https://kick.com/api/v2/channels/${encodeURIComponent(KO.kickSlug)}/videos`, { signal: AbortSignal.timeout(12000), credentials: 'omit' })).json();
@@ -2642,7 +2659,7 @@ function syncOwner() {
     KO.ownerPos = 0;
   }
   const want = owned ? KO.player : '';
-  if (KO.ownerAttr === want) return;
+  if (KO.ownerAttr === want) return typeof refuseValue === 'function' ? refuseValue("syncOwner", "KO.ownerAttr === want", undefined) : undefined;
   const prev = KO.ownerAttr;
   KO.ownerAttr = want;
   try { document.documentElement.setAttribute('data-ko-owner', want); } catch { /* teardown */ }
@@ -2692,10 +2709,10 @@ function bootProvenance() {
 function recoverStale() {
   let live = '';
   try { live = chrome.runtime.getManifest().version; } catch { return; }
-  if (!live || live === KO_VER) return;
+  if (!live || live === KO_VER) return typeof refuseValue === 'function' ? refuseValue("recoverStale", "!live || live === KO_VER", undefined) : undefined;
   let tried = '';
   try { tried = sessionStorage.getItem('ko.staleReload') || ''; } catch { /* private */ }
-  if (tried === live) return;
+  if (tried === live) return typeof refuseValue === 'function' ? refuseValue("recoverStale", "tried === live", undefined) : undefined;
   if (!document.hidden) {
     if (!KO.staleShown) {
       KO.staleShown = true;
@@ -2881,7 +2898,7 @@ function syncMute() {
   // A hidden tab changes nothing: not the ownership attribute, not the pause.
   // Every timer it would reason about is throttled, so any decision it took
   // there was a decision about a stale sample (owner 2026-11-12, alt-tab).
-  if (document.hidden) return;
+  if (document.hidden) return typeof refuseValue === 'function' ? refuseValue("syncMute", "document.hidden", undefined) : undefined;
   const ownedPicture = overlayOwnsPicture();
   const cold = !ownedPicture && coldHoldActive();
   if (ownedPicture || cold) {
@@ -2930,7 +2947,7 @@ function syncMute() {
 }
 
 function resumeTwitchIfOurs() {
-  if (!KO.twWasPlaying) return;
+  if (!KO.twWasPlaying) return typeof refuseValue === 'function' ? refuseValue("resumeTwitchIfOurs", "!KO.twWasPlaying", undefined) : undefined;
   KO.twWasPlaying = false;
   // Resume ONLY the element this extension paused. KO.twWasPlaying is a
   // document-wide flag: a secondary (PBP / preview) video paused by the
@@ -2944,7 +2961,7 @@ function resumeTwitchIfOurs() {
   for (const el of KO.twPaused) {
     if (!el || !el.isConnected || !el.paused) KO.twPaused.delete(el);
   }
-  if (!v || !KO.twPaused.has(v)) return;
+  if (!v || !KO.twPaused.has(v)) return typeof refuseValue === 'function' ? refuseValue("resumeTwitchIfOurs", "!v || !KO.twPaused.has(v)", undefined) : undefined;
   KO.twPaused.delete(v);
   diag('native-resume', { why: KO.player === 'twitch' ? 'player-twitch' : 'layer-lost-picture', pic: overlayHasPicture(), own: overlayOwnsPicture(), cold: coldHoldActive() });
   try {
@@ -3118,14 +3135,14 @@ function setupHotBar(wrap) {
   // 2026-11-16: "hover nao mostrava o player" - and the vocabulary that decides
   // where to look for the row that explains it is this one.
   const armHot = (src) => {
-    if (!KO.hotWrap) return;
+    if (!KO.hotWrap) return typeof refuseValue === 'function' ? refuseValue("armHot", "!KO.hotWrap", undefined) : undefined;
     const wasHot = KO.hotWrap.classList.contains('ko-hot');
     KO.hotWrap.classList.add('ko-hot');
     if (!wasHot) diag('bar-arm', { src: src || 'page' });
     clearTimeout(KO.hotTimer);
     KO.hotTimer = setTimeout(() => {
       if (!KO.hotWrap) return;
-      if (KO.hotWrap.classList.contains('ko-hot-lock')) return; // the mouse is still ON the bar
+      if (KO.hotWrap.classList.contains('ko-hot-lock')) return typeof refuseValue === 'function' ? refuseValue("armHot", "KO.hotWrap.classList.contains('ko-hot-lock')", undefined) : undefined; // the mouse is still ON the bar
       KO.hotWrap.classList.remove('ko-hot');
       diag('bar-hide', { why: 'timer' });
     }, 2600);
@@ -3133,9 +3150,9 @@ function setupHotBar(wrap) {
   KO._hotArm = armHot;
   KO._hotArmDoc = (e) => {
     const w = KO.hotWrap;
-    if (!w || w.style.display === 'none') return;
+    if (!w || w.style.display === 'none') return typeof refuseValue === 'function' ? refuseValue("armHot", "!w || w.style.display === 'none'", undefined) : undefined;
     const r = w.getBoundingClientRect();
-    if (!r.width || !r.height) return;
+    if (!r.width || !r.height) return typeof refuseValue === 'function' ? refuseValue("armHot", "!r.width || !r.height", undefined) : undefined;
     if (e.clientX >= r.left && e.clientX <= r.left + r.width &&
         e.clientY >= r.top && e.clientY <= r.top + r.height) armHot('page');
   };
@@ -3148,7 +3165,7 @@ function setupHotBar(wrap) {
   wrap.addEventListener('pointerenter', () => {
     clearTimeout(KO.hotTimer);
     KO.hotTimer = null;
-    if (!KO.hotWrap) return;
+    if (!KO.hotWrap) return typeof refuseValue === 'function' ? refuseValue("armHot", "!KO.hotWrap", undefined) : undefined;
     armHot('bar');
     KO.hotWrap.classList.add('ko-hot-lock');
   });
@@ -3622,10 +3639,10 @@ async function reconnect() {
   if (!k.live || !k.url) {
     teardown();
     setBadge('KICK', '#6b7280');
-    return;
+    return typeof refuseValue === 'function' ? refuseValue("reconnect", "!k.live || !k.url", undefined) : undefined;
   }
   await new Promise((r) => setTimeout(r, 2000)); // back off, then re-attach
-  if (!KO.enabled || KO.player !== 'kick') return;
+  if (!KO.enabled || KO.player !== 'kick') return typeof refuseValue === 'function' ? refuseValue("reconnect", "!KO.enabled || KO.player !== 'kick'", undefined) : undefined;
   // FORCE: the stall that asked for this reconnect was a frozen picture, and
   // the url is the same one the dead element already has. A no-op here is the
   // whole defect (`stall {ct:10262}` repeating while the picture never moved).
@@ -3749,7 +3766,7 @@ function updateKickBar() {
 }
 
 function setPlayer(p) {
-  if (p === KO.player) return;
+  if (p === KO.player) return typeof refuseValue === 'function' ? refuseValue("setPlayer", "p === KO.player", undefined) : undefined;
   const from = KO.player;
   KO.player = p;
   const a = window.KOAudio;
@@ -4005,9 +4022,9 @@ async function probeKickLayer() {
 // channel - that was the old black-box path. The preference stays 'youtube'
 // in storage; this is a session-only fallback, exactly like the hls failure.
 async function tryKickFallback(reason) {
-  if (KO.host === 'yt' || !KO.kickSlug) return false;
+  if (KO.host === 'yt' || !KO.kickSlug) return typeof refuseValue === 'function' ? refuseValue("tryKickFallback", "KO.host === 'yt' || !KO.kickSlug", false) : false;
   const now = Date.now();
-  if (now - (KO.ytKickFallbackAt || 0) < 5000) return false;
+  if (now - (KO.ytKickFallbackAt || 0) < 5000) return typeof refuseValue === 'function' ? refuseValue("tryKickFallback", "now - (KO.ytKickFallbackAt || 0) < 5000", false) : false;
   KO.ytKickFallbackAt = now;
   const k = await kickPlaybackUrl(KO.kickSlug);
   if (!k.live || !k.url) return false;
@@ -4138,7 +4155,7 @@ async function apply() {
 }
 
 function toggleOverlayFullscreen() {
-  if (!KO.wrap || KO.player === 'twitch' || KO.wrap.style.display === 'none') return;
+  if (!KO.wrap || KO.player === 'twitch' || KO.wrap.style.display === 'none') return typeof refuseValue === 'function' ? refuseValue("toggleOverlayFullscreen", "!KO.wrap || KO.player === 'twitch' || KO.wrap.style.display === 'none'", undefined) : undefined;
   if (document.fullscreenElement === KO.wrap) document.exitFullscreen().catch(() => {});
   else KO.wrap.requestFullscreen().catch((err) => diag('fullscreen', { err: String(err).slice(0, 100) }));
 }
@@ -4529,7 +4546,7 @@ function rectFromHost() {
 function rectTick() {
   if (!KO.wrap) {
     stopRectLoop();
-    return;
+    return typeof refuseValue === 'function' ? refuseValue("rectTick", "!KO.wrap", undefined) : undefined;
   }
     ensureAttached(KO.wrap); // the host may re-render its layout root — re-parent if dropped
     const tv = onYtHost() ? null : twitchVideo();

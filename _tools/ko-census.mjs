@@ -114,8 +114,31 @@ function censusFile(rel) {
   // (not only in this one) is what separates a real silence from a helper call:
   // without this, `nativeStallWatch` — the one function in the tree written to
   // the rule, 18 exits and every refusal named — read as 15 silent guards.
+  // The helper relation is TRANSITIVE: measured 2026-11-27, `dispSample` refused
+  // through `nativeStallHiddenRefuse()` (a helper whose only job is to write the
+  // row through `nativeStallRefuse()`), so the exit sat on a line of its own with
+  // a logging call one indirection away and read as silent. A function is a
+  // helper when it logs itself or when its body hands control to a helper; the
+  // fixpoint is bounded by the number of functions in the file.
+  const calls = new Map();
+  for (let i = 0; i < maskedLines.length; i++) {
+    const fn = owner[i];
+    if (!fn) continue;
+    if (!calls.has(fn)) calls.set(fn, new Set());
+    for (const m of maskedLines[i].matchAll(/\b([A-Za-z_$][\w$]*)\s*\(/g)) {
+      if (m[1] !== fn) calls.get(fn).add(m[1]);
+    }
+  }
   const helpers = new Set();
   for (const [fn, n] of logsByFn) if (n > 0) helpers.add(fn);
+  for (let round = 0; round < 8; round++) {
+    let grew = false;
+    for (const [fn, callees] of calls) {
+      if (helpers.has(fn)) continue;
+      for (const c of callees) if (helpers.has(c)) { helpers.add(fn); grew = true; break; }
+    }
+    if (!grew) break;
+  }
   // Column offsets -> line numbers, computed once.
   const starts = [];
   let at = 0;
@@ -141,18 +164,41 @@ function censusFile(rel) {
   for (const m of masked.matchAll(/\b(return|continue)\b/g)) {
     const idx = lineOf(m.index);
     const fn = owner[idx];
-    if (!fn) continue;
+    if (!fn || fn === 'refuseValue' || fn === 'adLog') continue;
     const text = lines[idx] || '';
     // A `return` that hands control to a logging helper is explained by it.
     const callsHelper = [...helpers].some((h) => h !== fn && new RegExp(`\\b${h}\\s*\\(`).test(text));
-    const near = maskedLines.slice(Math.max(0, idx - 3), idx + 2).some((l) => LOG.test(l));
+    // The window is the exit and the STATEMENT that leads to it. A log call is a
+    // multi-line object literal here, so a 3-line window missed the row that was
+    // written twelve lines above the `return` it explains (measured 2026-11-27:
+    // `nativeStallWatch`, `catchUpClean` and `stopAdOverlay` all read as silent
+    // with their own row sitting inside the same statement). The walk stops at a
+    // blank line or at the opening of a new block, so it explains the enclosing
+    // branch and nothing further up.
+    let back = idx;
+    for (let k = idx - 1; k >= 0 && idx - k <= 14; k--) {
+      const prev = maskedLines[k] || '';
+      if (!prev.trim()) break;
+      back = k;
+      const hit = LOG.test(prev) || [...helpers].some((h) => new RegExp(`\\b${h}\\s*\\(`).test(prev));
+      if (hit) break;
+    }
+    const window = maskedLines.slice(back, idx + 2).join('\n');
+    const near = LOG.test(window) || [...helpers].some((h) => h !== fn && new RegExp(`\\b${h}\\s*\\(`).test(window));
     const fnLogs = logsByFn.get(fn) || 0;
+    // A VALUE-PRODUCTION exit is not a decision. `return new Promise(…)`,
+    // `return { … }`, `return class … extends Native` and `return function …`
+    // BUILD the thing the caller asked for; they do not choose between doing
+    // and refusing something the user can see. Measured 2026-11-27: four of the
+    // remaining 18 "guard-shaped" exits were exactly these, and converting one
+    // into a refusal row would have been a lie in the ring.
+    const buildsValue = /^return\s+(new\s|class\s|\{|\[|function\s|[-\d'"`])/.test(text.trim());
     exits.push({
       line: idx + 1,
       fn,
       text: text.trim().slice(0, 90),
       loggedNearby: near || callsHelper,
-      guardShaped: fnLogs > 0 && !near && !callsHelper,
+      guardShaped: fnLogs > 0 && !near && !callsHelper && !buildsValue,
     });
   }
   return {

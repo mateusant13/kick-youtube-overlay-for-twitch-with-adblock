@@ -1676,6 +1676,23 @@
     "`node --check kick-overlay/twitch-adblock.js` and `node --check kick-overlay/ad-time-continuity-test.cjs` -> clean; both files LF-only (`CR=0`)"
    ],
    "next": "OWED live half: a pod on the owner's Chrome with 0.8.129 -- after `ad-fail` (or a 180 s `timeout`) ends a pod whose picture is revealed, `node _tools/ko-adlog-window.mjs 9222 1200 --keep handback-wait,handback-ready,native-resume,ad-fail` must show `handback-wait {reason:'ad-fail'}` followed by `handback-ready {why:'ready'|'cap'}` and no `native-resume {rs<3}` before it."
+  },
+  {
+   "id": "KO-20261127-05",
+   "title": "A refused catch-up armed the 2 s throttle it never used, so the one catch-up that was allowed could be swallowed",
+   "state": "fixed",
+   "author": "REPLAY",
+   "reported": "2026-11-27",
+   "fixed_in": "0.8.130",
+   "commit": null,
+   "hypothesis": "`catchUpClean()` stamped `overlay.catchupAt = Date.now()` immediately after the throttle test and BEFORE four refusals (`hold <= 0`, a landing the buffer ceiling cannot reach, a drift under RESUME_GAP_SEC, a revealed player). Every refused attempt therefore opened a 2 s window in which a legitimate catch-up was refused for the wrong reason - the class the owner reported as 'ao trocar pro outro player, nao sei se ta em tempo real' (0.8.92/0.8.93).",
+   "falsifier": "A refusal must leave the throttle clock alone. Arm `a catch-up never seeks when the buffer already reaches the edge` (ad-time-continuity) asserts `overlayState().catchupAt` is unset after four refused samples and `overlayState().lastSt` is the newest report; it failed on the pre-fix code with `a refused catch-up armed the throttle clock it never used`.",
+   "evidence": [
+    "ad-time-continuity-test.cjs: the arm above, red on the pre-fix ordering, green after the stamp moved to the seek (RESULT PASS checks=196 failed=0)",
+    "twitch-adblock.js catchUpClean: `overlay.catchupAt = Date.now()` moved immediately before `overlaySend({t:'seek'})`",
+    "node _tools/ko-census.mjs --gate -> RESULT PASS guardShaped=4 unexercisedState=24"
+   ],
+   "next": "OWED live half: a pod on the owner's Chrome where a periodic catch-up is refused (row `refused {where:'catchUpClean'}`) and the next allowed catch-up still seeks inside 2 s - `node _tools/ko-adlog-window.mjs 9222 600 --keep overlay-catchup,refused`."
   }
  ]
 }

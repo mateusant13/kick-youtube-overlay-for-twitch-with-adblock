@@ -22,6 +22,19 @@ design redoes work is the worst available answer.
 - **Never leave a guest, a scan, or a watcher spawned as a side effect of a measurement.** The probe is
   part of the job: `stop` when the numbers are taken. A probe left running is the freeze the owner
   reports two hours later.
+- **One heavy job at a time is ENFORCED, not remembered (measured 2026-11-27).** The landing gate and the
+  edit loop's deep tier each spawned `node kick-overlay/ad-time-continuity-test.cjs`, so TWO copies of a
+  196-check suite (one `new Function` compile of the 6 500-line product per arm) ran at once on a box at
+  64 % CPU with `I:` at 419.9 % busy and a 50.7 ms queue; the pair was the top pressure the owner felt as a
+  stutter (watcher DM `dm-f77bd3e66a863677296f`). The suite now takes a single-flight lock
+  (`_tools/ko-heavy-lock.cjs`): the edit loop is REFUSED in <1 ms with the holder's pid
+  (`LOOP DEFERRED <suite>`, exit 3), the landing gate QUEUES (`KO_HEAVY_WAIT_MS`, set in
+  `_tools/gate/checks/suites.mjs`) so its run still lands, and a dead holder is stolen from instead of
+  wedging the lane. Gate check `heavy-lock` runs the lock's own selftest
+  (`_tools/gate/heavy-lock-selftest.mjs`, 4 arms: refuse / queue / stale / release) and refuses if the
+  suite stops holding it. Proven both ways: the same selftest against a no-op lock prints
+  `RESULT FAIL heavy-lock checks=10 failed=5`. Whatever the loop cannot run is DEFERRED, never silently
+  green — the landing gate is the run of record.
 - **Reuse before re-running: key by CONTENT.** A measurement whose inputs did not change is a cache
   hit, not a new data point. `node _tools/ko-verify.mjs` takes ~60 s and `content-fix-test.cjs` ~2 s —
   run the narrow instrument once (the file you touched), the whole gate once per version bump, never in

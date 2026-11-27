@@ -1,8 +1,13 @@
 {
-  "_comment": "Measured 2026-11-20 by `node _tools/ko-census.mjs --json` on build 0.8.107. The gate refuses growth of one class: a DECISION that returns with no row of its own. Every defect this project spent a wave on had that shape (adUiHoldTick bailing out silently while a 62.6 s ad played; three freeze defects behind a green suite). Not every silent exit is a defect - `nativeStallIdle()` is silent by design (nothing happened, so nothing to report) - which is why the tool reports and the budget rules. Counts are a CEILING: lower them as a silent guard gets its row or its arm; never raise one without a ruling in AGENTS.md naming which new silence is acceptable. Tightened to the measured count on 2026-11-26 (content.js 50->44, twitch-adblock.js 63->61, unexercisedState 39->30): a ceiling 6 above the real count accepts 6 new silences without a word, and `--budget-red 1` could only fire on a file whose cap was already below zero.",
+  "_comment": "Measured 2026-11-20 by `node _tools/ko-census.mjs --json` on build 0.8.107. The gate refuses growth of one class: a DECISION that returns with no row of its own. Every defect this project spent a wave on had that shape (adUiHoldTick bailing out silently while a 62.6 s ad played; three freeze defects behind a green suite). Not every silent exit is a defect - `nativeStallIdle()` is silent by design (nothing happened, so nothing to report) - which is why the tool reports and the budget rules. Counts are a CEILING: lower them as a silent guard gets its row or its arm; never raise one without a ruling in AGENTS.md naming which new silence is acceptable. Tightened to the measured count on 2026-11-27 after (a) every conditional exit that decides about the picture, the audio or the pod was routed through `refuseValue()`, and (b) the classifier learned two things it was wrong about: a logging HELPER explains an exit even one indirection away, the window is the enclosing STATEMENT rather than three lines (a refusal row is a multi-line object here), and a value-production exit (`return {…}`, `return class …`) is not a decision. Both banks are proven with plants: a silent guard in `adUiHoldTick` and a guard one blank line below a row are still named. content.js 44->3, twitch-adblock.js 61->1 (the three `nativeStallIdle()` refusals are idle by design and the one left is a scheduled reveal that writes its row later). u",
+  "baseline": {
+    "_comment": "Measured 2026-11-20 on build 0.8.107, the run that created this budget (content.js 50 + twitch-adblock.js 63). The observability slider scores progress from HERE: a fixed denominator is the only form that can rise when a guard gets its row and fall when a new silent one is added.",
+    "date": "2026-11-20",
+    "guardShaped": 113
+  },
   "guardShaped": {
-    "kick-overlay/content.js": 44,
-    "kick-overlay/twitch-adblock.js": 61,
+    "kick-overlay/content.js": 3,
+    "kick-overlay/twitch-adblock.js": 1,
     "kick-overlay/player-bridge.js": 0
   },
   "unexercisedState": 30

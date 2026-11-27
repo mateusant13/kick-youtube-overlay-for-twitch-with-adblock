@@ -435,6 +435,18 @@ async function main() {
   }
 
   console.log('');
+// ANTI-VACUITY: a suite that silently loses an arm reads as a quieter green.
+// The floor is the count every arm this file executes today; a deleted arm
+// (or one that stops running because an earlier await short-circuits) fails here
+// instead of printing PASS with a smaller number.
+function antiVacuity(actual, expected) {
+  if (actual !== expected) {
+    console.error(`\nANTI-VACUITY FAIL suite=audio-authority checks=${actual} expected=${expected}: an arm stopped running`);
+    process.exit(1);
+  }
+  console.log(`ANTI-VACUITY suite=audio-authority checks=${actual} expected=${expected}`);
+}
+antiVacuity(checks.length, 13);
   console.log(`RESULT PASS audio-authority checks=${checks.length} failed=0`);
   console.log(`REDS ${reds.length}:`);
   for (const r of reds) console.log(`  RED ${r}`);

@@ -460,6 +460,15 @@ async function main() {
   server.close();
   const failed = checks.filter((c) => c.status === 'FAIL');
   console.log('');
+// ANTI-VACUITY: a suite that silently loses an arm reads as a quieter green.
+function antiVacuity(actual, expected) {
+  if (actual !== expected) {
+    console.error(`\nANTI-VACUITY FAIL suite=cold-cover-fixture checks=${actual} expected=${expected}: an arm stopped running`);
+    process.exit(1);
+  }
+  console.log(`ANTI-VACUITY suite=cold-cover-fixture checks=${actual} expected=${expected}`);
+}
+antiVacuity(checks.length, 18);
   console.log(`RESULT ${failed.length ? 'FAIL' : 'PASS'} cold-cover-fixture checks=${checks.length} failed=${failed.length}`);
   process.exit(failed.length ? 1 : 0);
 }

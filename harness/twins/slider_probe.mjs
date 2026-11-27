@@ -223,6 +223,16 @@ function antiVacuitySuites() {
   return { total: suites.length, covered: covered.length, names: covered };
 }
 
+function baselineGuardShaped() {
+  try {
+    const b = JSON.parse(readText(join(ROOT, '_tools', 'ko-census-budget.json')));
+    const n = Number(b && b.baseline && b.baseline.guardShaped);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
 function observability(censusResult, failFastResult) {
   let facts;
   try {
@@ -230,7 +240,18 @@ function observability(censusResult, failFastResult) {
   } catch (error) {
     return cannot(error.message, CENSUS_CMD);
   }
-  const refusals = facts.guardShaped ? 100 * facts.guardNamed / facts.guardShaped : 0;
+  // A FIXED DENOMINATOR, or the fact cannot rise. `named / guardShaped` is the
+  // same defect as the old `named / every return`: `guardShaped` is defined as
+  // the exits that carry NO row of their own, so the ratio is 0 by
+  // construction and a tree that names every one of them still reads 0/0.
+  // Measured 2026-11-27 with 105 conversions in place: `refusals 0 (0/4 guards
+  // carry a row)`. The baseline is the 2026-11-20 measurement recorded in
+  // `_tools/ko-census-budget.json`; a missing baseline is CANNOT-MEASURE, never
+  // an invented denominator.
+  const baseline = baselineGuardShaped();
+  const refusals = baseline == null
+    ? null
+    : 100 * Math.max(0, Math.min(1, 1 - facts.guardShaped / baseline));
   const state = facts.stateDeclared ? 100 * (facts.stateDeclared - facts.stateUnexercised) / facts.stateDeclared : 0;
   const suites = antiVacuitySuites();
   const suiteScore = suites.total ? 100 * suites.covered / suites.total : 0;
@@ -243,8 +264,9 @@ function observability(censusResult, failFastResult) {
       hangDetail = `findings=${report.total_findings}/${report.files_scanned} files`;
     } catch { hangDetail = `unparsable (rc=${failFastResult.rc})`; }
   }
+  if (refusals == null) return cannot('`_tools/ko-census-budget.json` carries no `baseline.guardShaped`', CENSUS_CMD);
   const score = (refusals + state + suiteScore + hang) / 4;
-  return measured(score, `refusals ${round(refusals, 1)} (${facts.guardNamed}/${facts.guardShaped} guards carry a row)`
+  return measured(score, `refusals ${round(refusals, 1)} (guardShaped ${facts.guardShaped} of baseline ${baseline}; lower is progress)`
     + `; state ${round(state, 1)} (${facts.stateDeclared - facts.stateUnexercised}/${facts.stateDeclared} fields referenced by an arm)`
     + `; suites ${round(suiteScore, 1)} (${suites.covered}/${suites.total} anti-vacuity)`
     + `; hang ${hang} (${hangDetail})`,

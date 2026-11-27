@@ -69,4 +69,34 @@ export const instrumentChecks = [
       return `${uniq.length} published attribute(s) each with a writer, SURFACE=FRAME branch present; probe NOT spawned (static contract only)`;
     },
   },
+  {
+    // ---- 6c. one heavy job at a time --------------------------------------
+    // Measured 2026-11-27 (watcher DM dm-f77bd3e66a863677296f, owner order "é pra
+    // sempre verificar o maior culpado do stutter"): `node kick-overlay/
+    // ad-time-continuity-test.cjs` was the box's named top pressure while TWO copies
+    // ran at once - this gate's suite check and the edit loop's deep tier - on a box
+    // at 64 % CPU with `I:` at 419.9 % busy / 50.7 ms latency. One copy costs the
+    // same wall as the pair and half the compile work and spindle queue.
+    // The suite now takes a single-flight lock (refuse for the loop, queue for this
+    // gate) and this check pins the lock's own contract: refuse names the holder in
+    // <200 ms, a queued caller waits instead of stealing, a dead holder is stolen
+    // from. Proven both ways - the same selftest against a no-op lock prints
+    // `RESULT FAIL heavy-lock checks=10 failed=5`.
+    name: 'heavy-lock',
+    run(ctx) {
+      const tool = path.join(ctx.ROOT, '_tools/gate/heavy-lock-selftest.mjs');
+      ctx.assert(existsSync(tool), 'missing _tools/gate/heavy-lock-selftest.mjs');
+      const r = spawnSync(process.execPath, [tool], { timeout: 60000, killSignal: 'SIGKILL', cwd: ctx.ROOT, encoding: 'utf8' });
+      const out = String(r.stdout || '') + String(r.stderr || '');
+      ctx.assert(r.status === 0, `heavy-lock selftest refused:\n${out.trim().slice(-500)}`);
+      const m = /RESULT PASS heavy-lock checks=(\d+) failed=0 arms=(\d+)\/4/.exec(out);
+      ctx.assert(m, `selftest printed no verdict:\n${out.trim().slice(-400)}`);
+      // The suite must still HOLD the lock, or the whole check is decoration.
+      const suite = ctx.read('kick-overlay/ad-time-continuity-test.cjs');
+      ctx.assert(/singleFlight\('ad-time-continuity'/.test(suite), 'the heavy suite no longer takes its single-flight lock');
+      const gate = ctx.read('_tools/gate/checks/suites.mjs');
+      ctx.assert(/KO_HEAVY_WAIT_MS: '300000'/.test(gate), 'the gate no longer queues for the heavy suite (it would be refused mid-landing)');
+      return `single-flight lock proven (${m[1]} checks, ${m[2]} arms): refuse <200ms naming the holder, queue waits, dead holder stolen; the heavy suite holds it and this gate queues`;
+    },
+  },
 ];

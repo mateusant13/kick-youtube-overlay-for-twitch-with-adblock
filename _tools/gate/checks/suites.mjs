@@ -10,10 +10,15 @@ import { existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 
-function runSuite(ctx, check, rel, { maxBuffer } = {}) {
+function runSuite(ctx, check, rel, { maxBuffer, env } = {}) {
   ctx.assert(existsSync(path.join(ctx.ROOT, rel)), `missing ${rel}`);
   const opts = { cwd: path.join(ctx.ROOT, 'kick-overlay'), encoding: 'utf8' };
   if (maxBuffer) opts.maxBuffer = maxBuffer;
+  // A suite that declares a single-flight lock QUEUES for the gate: the landing run
+  // must land, and it must never run the same heavy compile twice alongside the edit
+  // loop (measured 2026-11-27: two concurrent copies of ad-time-continuity were the
+  // box's named top pressure - watcher DM dm-f77bd3e66a863677296f).
+  if (env) opts.env = { ...process.env, ...env };
   // 300 s is a HANG ceiling, never a performance bound: a suite that runs longer
   // than this has a wedged child, and the gate must refuse instead of waiting.
   const r = spawnSync(process.execPath, [path.join(ctx.ROOT, rel)], { timeout: 300000, killSignal: 'SIGKILL', ...opts });
@@ -178,7 +183,7 @@ export const suiteChecks = [
     name: 'ad-time-continuity',
     run(ctx) {
       const rel = 'kick-overlay/ad-time-continuity-test.cjs';
-      const r = runSuite(ctx, 'ad-time-continuity', rel);
+      const r = runSuite(ctx, 'ad-time-continuity', rel, { env: { KO_HEAVY_WAIT_MS: '300000' } });
       ctx.assert(r.status === 0, `${rel}: ${lastLines(r, 320)}`);
       return 'reveal at real time + hand-off at the same offset + user mute intent + no resume of a paused/hidden player; four pre-fix arms go RED';
     },

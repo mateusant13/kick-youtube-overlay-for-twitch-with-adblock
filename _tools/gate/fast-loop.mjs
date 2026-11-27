@@ -15,7 +15,7 @@
 // product file has no suite mapping; 2 nothing was impacted (an explicit
 // `--files` naming only documentation is a caller error, not a pass).
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -41,6 +41,41 @@ const SUITES = {
 };
 // Files with no behavioural suite of their own: the loop still syntax-checks
 // them, and the gate's own checks cover their contract.
+// A DEEP SUITE RUNS WHEN THE EDIT TOUCHES A LINE IT MUTATES. The heavy
+// landing suite is absent from SUITES on purpose (7.5 s per edit), but a suite
+// that mutates an exact source line is exactly the suite an edit to that line
+// breaks - measured 2026-11-27: the 105-exit codemod passed this loop and left
+// `ad-time-continuity` red on four mutation targets that no longer matched.
+// Reading the suite's own targets keeps the loop cheap (1.1 s) for edits
+// elsewhere and honest (the deep suite runs) where it can actually break.
+const DEEP = {
+  'kick-overlay/twitch-adblock.js': ['ad-time-continuity-test.cjs'],
+};
+
+function suiteTargets(suite) {
+  const abs = path.join(OVERLAY, suite);
+  if (!existsSync(abs)) return [];
+  const text = readFileSync(abs, 'utf8');
+  const out = [];
+  for (const m of text.matchAll(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"/g)) {
+    const lit = m[0];
+    let body = lit.slice(1, -1);
+    if (lit[0] === '"') { try { body = JSON.parse(lit); } catch { continue; } }
+    else body = body.replace(/\\n/g, '\n').replace(/\\'/g, "'").replace(/\\\\/g, '\\');
+    if (body.length >= 20 && /\b(return|if \()/.test(body)) out.push(body);
+  }
+  return out;
+}
+
+function changedLines(rel) {
+  const r = spawnSync('git', ['-C', ROOT, 'diff', '-U0', '--', rel], { encoding: 'utf8', timeout: 60000 });
+  if (r.status !== 0) return [];
+  return String(r.stdout).split('\n')
+    .filter((l) => (l.startsWith('+') || l.startsWith('-')) && !l.startsWith('+++') && !l.startsWith('---'))
+    .map((l) => l.slice(1).trim())
+    .filter((l) => l.length >= 20);
+}
+
 const SYNTAX_ONLY = /^(kick-overlay\/(background|popup)\.js|_tools\/|harness\/|cookie-extension\/|instagram-followguard\/)/;
 // State and prose, not code: the gate validates these through its own checks
 // (budgets, feature map, ledger), so the edit loop has nothing to run.
@@ -82,6 +117,14 @@ function runSuite(suite) {
   const out = `${r.stdout || ''}${r.stderr || ''}`;
   const verdict = /RESULT PASS|ALL CONTENT\.JS FIX CHECKS PASSED/.test(out);
   const failLine = (out.split('\n').filter((l) => /RESULT FAIL|HARNESS FAIL|FAIL |Error:/.test(l)).pop() || '').trim();
+  // A suite holding the single-flight lock is already running (the landing gate owns
+  // it). A feedback loop must not block AND must not read a refusal as a pass: this
+  // is DEFERRED, its own verdict and its own exit code (measured 2026-11-27: two
+  // concurrent copies of ad-time-continuity were the box's named top pressure).
+  if (/HEAVY-LOCK refused/.test(out)) {
+    const holder = (out.split('\n').find((l) => /HEAVY-LOCK refused/.test(l)) || '').trim();
+    return { ok: true, deferred: true, ms: Date.now() - started, detail: holder.slice(0, 240) };
+  }
   return { ok: r.status === 0 && verdict, ms: Date.now() - started, detail: failLine.slice(0, 240) };
 }
 
@@ -125,6 +168,18 @@ if (files && !all && files.length > 12) {
     else if (SYNTAX_ONLY.test(rel)) syntax.push(rel);
     else if (FORMATS.test(rel) || /\.(json|html)$/.test(rel)) unmapped.push(rel);
   }
+  // Deep tier: only when a changed line is one the suite mutates.
+  for (const [prod, deepSuites] of Object.entries(DEEP)) {
+    if (!files.includes(prod)) continue;
+    const lines = changedLines(prod);
+    if (!lines.length) continue;
+    for (const suite of deepSuites) {
+      if (suites.has(suite)) continue;
+      const targets = suiteTargets(suite);
+      const hit = lines.some((l) => targets.some((t) => t.includes(l) || t.trim() === l));
+      if (hit) suites.add(suite);
+    }
+  }
   let failed = 0;
   for (const rel of [...new Set(syntax)]) {
     const r = checkSyntax(rel);
@@ -135,6 +190,7 @@ if (files && !all && files.length > 12) {
     console.error(`LOOP FAIL: no suite mapped for ${unmapped.join(', ')} — add it to SUITES in this file`);
   }
   const ran = [];
+  const deferred = [];
   for (const suite of suites) {
     if (!existsSync(path.join(OVERLAY, suite))) {
       failed += 1;
@@ -143,15 +199,19 @@ if (files && !all && files.length > 12) {
     }
     const r = runSuite(suite);
     ran.push({ suite, ...r });
-    if (!r.ok) { failed += 1; console.error(`LOOP FAIL ${suite} (${r.ms}ms): ${r.detail}`); }
+    if (r.deferred) { deferred.push(suite); console.log(`LOOP DEFERRED ${suite}: ${r.detail}`); }
+    else if (!r.ok) { failed += 1; console.error(`LOOP FAIL ${suite} (${r.ms}ms): ${r.detail}`); }
   }
   const wall = Date.now() - started;
-  const verdict = failed > 0 ? 'FAIL' : (ran.length + syntax.length > 0 ? 'PASS' : 'NOTHING');
+  const verdict = failed > 0 ? 'FAIL'
+    : (deferred.length > 0 ? 'DEFERRED'
+      : (ran.length + syntax.length > 0 ? 'PASS' : 'NOTHING'));
   if (json) {
-    console.log(JSON.stringify({ loop: verdict, wall_ms: wall, suites: ran, syntax, failed }));
+    console.log(JSON.stringify({ loop: verdict, wall_ms: wall, suites: ran, syntax, deferred, failed }));
   } else {
     console.log(`LOOP impacted=${files.length} suites=${ran.length} syntax=${syntax.length} wall=${wall}ms verdict=${verdict}`);
   }
   if (verdict === 'NOTHING') process.exitCode = 2;
   else if (verdict === 'FAIL') process.exitCode = 1;
+  else if (verdict === 'DEFERRED') process.exitCode = 3;
 }

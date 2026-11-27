@@ -384,5 +384,17 @@ try {
     `ct=${red.video.currentTime}`);
 }
 
+// ANTI-VACUITY: a suite that silently loses an arm reads as a quieter green.
+// The floor is the count every arm this file executes today; a deleted arm
+// (or one that stops running because an earlier await short-circuits) fails here
+// instead of printing PASS with a smaller number.
+function antiVacuity(actual, expected) {
+  if (actual !== expected) {
+    console.error(`\nANTI-VACUITY FAIL suite=bridge-handshake checks=${actual} expected=${expected}: an arm stopped running`);
+    process.exit(1);
+  }
+  console.log(`ANTI-VACUITY suite=bridge-handshake checks=${actual} expected=${expected}`);
+}
+antiVacuity(checks, 30);
 console.log(`\nRESULT ${failed ? 'FAIL' : 'PASS'} bridge-handshake checks=${checks} failed=${failed}`);
 process.exit(failed ? 1 : 0);

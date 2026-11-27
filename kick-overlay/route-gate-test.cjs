@@ -146,12 +146,14 @@ const setLoc = (href) => {
   location.search = u.search;
   location.hostname = u.hostname;
 };
+let routeChecks = 0;
 const check = (label, cond, extra) => {
   if (!cond) {
     console.error(`FAIL ${label}${extra ? ' — ' + JSON.stringify(extra) : ''}`);
     process.exitCode = 1;
     throw new Error(label);
   }
+  routeChecks++;
   console.log(`PASS ${label}`);
 };
 
@@ -274,6 +276,14 @@ const check = (label, cond, extra) => {
   check('twitchVideo falls back to the largest visible video', api.twitchVideo() === clipModal);
   pageSel.clear();
 
+  // ANTI-VACUITY: the suite was one verdict line with no count, so an arm that
+  // stopped running could not be told from an arm that passed. The floor is the
+  // 39 checks every path of this file executes today.
+  if (routeChecks !== 39) {
+    console.error(`\nANTI-VACUITY FAIL suite=route-gate checks=${routeChecks} expected=39: an arm stopped running`);
+    process.exit(1);
+  }
+  console.log(`ANTI-VACUITY suite=route-gate checks=${routeChecks} expected=39`);
   console.log('\nRESULT PASS route gate: contract + hide + no-mount + no-ghost-anchor');
   process.exit(process.exitCode || 0);
 })().catch((e) => {

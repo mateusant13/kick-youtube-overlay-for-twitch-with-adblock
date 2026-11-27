@@ -377,5 +377,17 @@ check('mutation: applying a shared row from storage.onChanged is caught', () => 
   assert.ok(/setIntent/.test(body), 'the fence sees the intent write');
 });
 
+// ANTI-VACUITY: a suite that silently loses an arm reads as a quieter green.
+// The floor is the count every arm this file executes today; a deleted arm
+// (or one that stops running because an earlier await short-circuits) fails here
+// instead of printing PASS with a smaller number.
+function antiVacuity(actual, expected) {
+  if (actual !== expected) {
+    console.error(`\nANTI-VACUITY FAIL suite=tab-audio-scope checks=${actual} expected=${expected}: an arm stopped running`);
+    process.exit(1);
+  }
+  console.log(`ANTI-VACUITY suite=tab-audio-scope checks=${actual} expected=${expected}`);
+}
+antiVacuity(checks, 19);
 console.log(`\nRESULT ${failed ? 'FAIL' : 'PASS'} tab-audio-scope checks=${checks} failed=${failed}`);
 process.exit(failed ? 1 : 0);
