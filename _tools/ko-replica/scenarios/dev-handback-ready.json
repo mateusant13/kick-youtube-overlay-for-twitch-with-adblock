@@ -1,0 +1,132 @@
+{
+  "name": "dev-handback-ready",
+  "split": "dev",
+  "channel": "replicach",
+  "durationMs": 39000,
+  "tailMs": 4000,
+  "events": [
+    {
+      "at": 10000,
+      "kind": "midroll",
+      "ms": 14000,
+      "ui": "wrapper"
+    }
+  ],
+  "stall": {
+    "atMs": 0,
+    "ms": 25400,
+    "on": "native",
+    "allowFirst": 2
+  },
+  "samples": [
+    {
+      "at": 4000,
+      "pixel": true
+    },
+    {
+      "at": 8000,
+      "pixel": true
+    },
+    {
+      "at": 11500,
+      "pixel": true
+    },
+    {
+      "at": 22000,
+      "pixel": true
+    }
+  ],
+  "expect": [
+    {
+      "type": "row",
+      "ev": "worker-playlist",
+      "min": 1
+    },
+    {
+      "type": "row",
+      "ev": "ad-ui-hold",
+      "min": 1
+    },
+    {
+      "type": "row",
+      "ev": "overlay-reveal",
+      "min": 1
+    },
+    {
+      "type": "probe",
+      "at": 8000,
+      "path": "video.rs",
+      "op": "lt",
+      "value": 3
+    },
+    {
+      "type": "probe",
+      "at": 22000,
+      "path": "video.rs",
+      "op": "lt",
+      "value": 3
+    },
+    {
+      "type": "row",
+      "ev": "handback-wait",
+      "min": 1
+    },
+    {
+      "type": "rowsAtMost",
+      "ev": "handback-wait",
+      "max": 2
+    },
+    {
+      "type": "rowField",
+      "ev": "handback-wait",
+      "field": "rs",
+      "op": "lt",
+      "value": 3
+    },
+    {
+      "type": "row",
+      "ev": "handback-ready",
+      "min": 1
+    },
+    {
+      "type": "rowsAtMost",
+      "ev": "handback-ready",
+      "max": 1
+    },
+    {
+      "type": "rowField",
+      "ev": "handback-ready",
+      "field": "why",
+      "op": "in",
+      "value": [
+        "ready",
+        "cap"
+      ]
+    },
+    {
+      "type": "within",
+      "from": "handback-wait",
+      "to": "handback-ready",
+      "maxMs": 4000
+    },
+    {
+      "type": "row",
+      "ev": "ad-ui-release",
+      "min": 1
+    },
+    {
+      "type": "row",
+      "ev": "native-handoff",
+      "min": 1
+    },
+    {
+      "type": "row",
+      "ev": "native-resume",
+      "min": 1
+    },
+    {
+      "type": "noReload"
+    }
+  ],
+  "note": "The `why:'ready'` limb of the hand-back wait, MEASURED 2026-11-26 (dev-handback-ready 1795738550085): the native edge serves init + two segments and then refuses native media until 25.4 s, so the midroll (10-24 s) starves the element below HAVE_FUTURE_DATA and the wait arms at rs=2 (`handback-wait {ms:24551, rs:2}`); the edge RESUMES 0.85 s after the pod end and the element reaches rs=4, so the wait exits at 907 ms with `handback-ready {capped:false, rs:4, why:'ready'}` instead of hitting the 3000 ms ceiling. dev-handback-wait keeps the `why:'cap'` limb (its edge refuses for 30 s). The pixel/cover arms live there: with a 907 ms window, fixed sample instants cannot fall inside it, and an arm that grades the wrong instants is a defect of the arm."
+}
