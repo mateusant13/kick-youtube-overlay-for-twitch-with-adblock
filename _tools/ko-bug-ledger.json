@@ -1704,22 +1704,13 @@
    "commit": null,
    "hypothesis": "The ad path proves a clean playlist by patching the page's own player worker. MEASURED live 2026-11-27 (guest Chrome, muted, off-screen, twitch.tv/twitch, 0.8.130, four page loads): three episodes reported `worker-hooked=worker+worker` and the fourth reported `worker-hooked=NONE` with the ring's own explanation, 'no patch row survived in this episode (the player started no worker, or the row was evicted) - a clean playlist could not be proven'. That episode still fetched playlists (`worker-playlist=2`), so if an ad had been served there the extension could not have seen it. The ring naming the gap is correct; the open question is whether it must also name WHICH case it was (evicted vs never started), because that is the difference between a sleeping page and a hole in the defence.",
    "falsifier": "A live page load must either hook the player worker or write a row naming why it could not (no worker started vs row evicted). Arm to add: a fixture episode with the worker absent asserts a `worker-unhookable` row instead of silence.",
-   "evidence": {
-    "instrument": "node _tools/ko-adlog-verdict.mjs --port=9446 --episodes=4",
-    "build": "0.8.130",
-    "episodes": 4,
-    "worker_hooked": [
-     "worker+worker",
-     "worker+worker",
-     "worker+worker",
-     "NONE"
-    ],
-    "ad_ui_on": 0,
-    "ad_hold": 0,
-    "frozen_s": 0.0,
-    "jumps": 0
-   },
-   "live_proof": "partial: the extension ran 3+ minutes on a real Twitch live stream with zero freezes, zero jumps and zero sound changes by code (mute by USER=0 CODE=0 unattributed=0), and refused every ungestured write (refused: stale-input). No ad was served in the window (ad-ui-on=0 ad-hold=0), so the ad path itself stays OWED, not verified."
+   "evidence": [
+    "live ring, node _tools/ko-adlog-verdict.mjs --port=9446 --episodes=4 (guest Chrome, muted, off-screen, twitch.tv/twitch, build 0.8.130): episodes 1-3 `worker-hooked=worker+worker`, episode 4 `worker-hooked=NONE` while carrying `worker-playlist=2`",
+    "producer proof: the `worker-playlist` row is posted to ko-adblock-debug from inside workerMain() (kick-overlay/twitch-adblock.js:5649), the prelude stringified into the patched worker's blob, so one playlist row is proof the hook ran",
+    "arms: _tools/gate/adlog-verdict-selftest.mjs, 8 checks / 4 arms, PASS; RED mutant (reader restored to the ambiguous line) -> RESULT FAIL adlog-verdict checks=8 failed=3",
+    "gate check `adlog-verdict` runs those arms: node _tools/ko-verify.mjs"
+   ],
+   "next": "OWED live: an episode with an actual ad (this run served none: ad-ui-on=0 ad-hold=0), so the ad path itself stays unverified; the reader now names evicted-vs-never-started instead of claiming blindness."
   }
  ]
 }

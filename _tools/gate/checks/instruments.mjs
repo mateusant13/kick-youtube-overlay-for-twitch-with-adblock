@@ -148,4 +148,28 @@ export const instrumentChecks = [
 
     },
   },
+  {
+    // A READER THAT REPORTS BLINDNESS IT CAN LIFT IS A DEFECT IN THE INSTRUMENT.
+    //
+    // MEASURED live 2026-11-27: an episode printed `worker-hooked=NONE ... could not be
+    // proven` while carrying `worker-playlist=2`; a playlist row is posted from inside
+    // `workerMain()`, the prelude stringified into the patched worker's blob, so it is
+    // proof the hook ran. The reader now says EVICTED and counts the evidence. This check
+    // runs its arms (three fixture rings, ~1 s, no browser) and refuses if the reader
+    // goes back to claiming it cannot tell.
+    name: 'adlog-verdict',
+    run(ctx) {
+      const tool = path.join(ctx.ROOT, '_tools/gate/adlog-verdict-selftest.mjs');
+      ctx.assert(existsSync(tool), 'missing _tools/gate/adlog-verdict-selftest.mjs');
+      const r = spawnSync(process.execPath, [tool], { timeout: 120000, killSignal: 'SIGKILL', cwd: ctx.ROOT, encoding: 'utf8' });
+      const out = String(r.stdout || '') + String(r.stderr || '');
+      ctx.assert(r.status === 0, `adlog-verdict selftest refused:\n${out.trim().slice(-500)}`);
+      const m = /RESULT PASS adlog-verdict checks=(\d+) failed=0 arms=4\/4/.exec(out);
+      ctx.assert(m, `selftest printed no verdict:\n${out.trim().slice(-400)}`);
+      const src = ctx.read('_tools/ko-adlog-verdict.mjs');
+      ctx.assert(/worker-hooked=EVICTED/.test(src), 'the reader no longer reports EVICTED');
+      return `verdict reader proven (${m[1]} checks, 4 arms): playlists without a hook row read EVICTED with the count, a surviving hook is named by kind, a genuinely silent load keeps NONE and still exits 1, EVICTED exits 0`;
+
+    },
+  },
 ];

@@ -689,12 +689,23 @@ function reportEpisode(ep, idx) {
   }
   if (!defence.hooks.length) {
     // `worker-hook` is written WHEN the constructor is patched, so an empty list
-    // has two causes this reader cannot separate: the player started no worker
-    // at all, or the rows were evicted before this episode was read (the ring
-    // holds 1200 entries and a busy load evicts the first seconds). The line
-    // used to assert "never patched", which was wrong on every long ring.
+    // has two causes: the player started no worker at all, or the row was
+    // evicted before this episode was read (the ring holds 1200 entries and a
+    // busy load evicts the first seconds). The line used to assert "never
+    // patched", which was wrong on every long ring.
+    //
+    // THIS READER CAN SEPARATE THEM, from its own data (added 2026-11-27 after a
+    // live episode printed the ambiguous line while `worker-playlist=2`): a
+    // `worker-playlist` row is posted to `ko-adblock-debug` from INSIDE
+    // `workerMain()`, the prelude that is stringified into the patched worker's
+    // blob. Nothing else knows that channel, so ONE playlist row is proof the
+    // patched worker ran in this episode - the hook was not missing, its row
+    // aged out. Reporting "could not be proven" over that evidence is the
+    // reader being blind to a fact it holds.
     lines.push(
-      '    worker-hooked=NONE: no patch row survived in this episode (the player started no worker, or the row was evicted) - a clean playlist could not be proven',
+      defence.playlists > 0
+        ? `    worker-hooked=EVICTED: ${defence.playlists} playlist row(s) in this episode, and only the patched worker posts them, so the hook ran here - its \`worker-hook\` row aged out of the ring (the ad defence was live; the kind of worker is what is unknown)`
+        : '    worker-hooked=NONE: no patch row and no playlist row in this episode (the player started no worker, or none survived the ring) - a clean playlist could not be proven',
     );
   }
   const ramps = collapsed.filter((c) => /RAMP/.test(c.text));

@@ -10,7 +10,18 @@
       "target": 85,
       "counterpart": "Gate rigor & hygiene",
       "proof_cmd": "python \"$S/landing_ratio_check.py\" --repo . --balance-score",
-      "evidence": "landing_ratio_check --balance-score after the rulebook split: score_0_100=100 band=Product-Led subs product 40/40 telemetry 25/25 hygiene 20/20 cadence 15/15; AGENTS.md 2790 -> 390 lines, history verbatim in docs/AGENTS-archive-2026-11-27.md (2413); product_commits=33/40 (82.5%)"
+      "evidence": "landing_ratio_check --balance-score after the rulebook split: score_0_100=100 band=Product-Led subs product 40/40 telemetry 25/25 hygiene 20/20 cadence 15/15; AGENTS.md 2790 -> 390 lines, history verbatim in docs/AGENTS-archive-2026-11-27.md (2413); product_commits=33/40 (82.5%)",
+      "rubric": {
+        "measurement": "Count product changes in the last 20 non-merge commits by inspecting their shipped behavior. Keep product tests and mandatory protections in the measured window.",
+        "anchors": {
+          "60": "50% product commits",
+          "70": "60% product commits",
+          "80": "70% product commits",
+          "90": "80% product commits (4:1)",
+          "100": "90% product commits and remaining infrastructure changes tied to measured product blockers"
+        },
+        "falsifier": "Git history and diff classification for the same 20-commit window."
+      }
     },
     {
       "id": "observability",
@@ -20,7 +31,18 @@
       "target": 90,
       "counterpart": "Runtime overhead (<2%)",
       "proof_cmd": "node harness/twins/slider_probe.mjs observability",
-      "evidence": "node _tools/ko-census.mjs --json -> guardShaped=4 of baseline 113 => refusals 96.5; state 44/68 fields referenced by an arm = 64.7; 12/12 suites carry an anti-vacuity floor = 100; fail_fast_audit scan --gate --all-code -> findings 0/105 files = 100"
+      "evidence": "node _tools/ko-census.mjs --json -> guardShaped=4 of baseline 113 => refusals 96.5; state 44/68 fields referenced by an arm = 64.7; 12/12 suites carry an anti-vacuity floor = 100; fail_fast_audit scan --gate --all-code -> findings 0/105 files = 100",
+      "rubric": {
+        "measurement": "Inject one representative fault into each named product stage (overlay provider selection, message normalization, render and disconnect recovery). Count stages with a typed outcome, phase timing, and an explicit missing-source state. Compare against the same successful path at <=2% runtime overhead.",
+        "anchors": {
+          "60": "40% of stages emit a typed outcome",
+          "70": "60% emit an outcome and phase timing",
+          "80": "80% expose failure and timing",
+          "90": "100% expose outcomes in one external report.json",
+          "100": "All also preserve fault attribution on failure, retry and an unavailable collector"
+        },
+        "falsifier": "Compare each fault receipt with the successful path and check the external report independently."
+      }
     },
     {
       "id": "inner_loop_speed",
@@ -30,7 +52,18 @@
       "target": 90,
       "counterpart": "Live calibration freshness",
       "proof_cmd": "node harness/twins/slider_probe.mjs inner_loop_speed",
-      "evidence": "node _tools/gate/fast-loop.mjs --files kick-overlay/twitch-adblock.js -> rc=0 wall=2820.9ms best-of-3 samples=[12731, 2820.9, 5384.2]ms; deep tier added a 7.1s suite only when a mutated line changed"
+      "evidence": "node _tools/gate/fast-loop.mjs --files kick-overlay/twitch-adblock.js -> rc=0 wall=2820.9ms best-of-3 samples=[12731, 2820.9, 5384.2]ms; deep tier added a 7.1s suite only when a mutated line changed",
+      "rubric": {
+        "measurement": "Measure p95 edit-to-verdict over at least 10 warm runs on each revision using the paired overlay replay with recorded provider events. Hold input, cache policy and host-pressure band fixed.",
+        "anchors": {
+          "60": "<=60 s",
+          "70": "<=30 s",
+          "80": "<=20 s",
+          "90": "<=15 s with no live dependency in smoke",
+          "100": "<=5 s with verified stale-fixture refusal and live calibration outside smoke"
+        },
+        "falsifier": "Timed main/HEAD smoke output and an adverse replay with a stale fixture."
+      }
     },
     {
       "id": "architecture_coherence",
@@ -40,7 +73,18 @@
       "target": 85,
       "counterpart": "Migration blast radius",
       "proof_cmd": "node harness/twins/slider_probe.mjs architecture_coherence",
-      "evidence": "python feature_map_sync.py --repo . --gate -> {\"verdict\": \"PASS\", \"problems\": []}, unmapped 0/159, 2 features each with inputs/outputs/how_it_works"
+      "evidence": "python feature_map_sync.py --repo . --gate -> {\"verdict\": \"PASS\", \"problems\": []}, unmapped 0/159, 2 features each with inputs/outputs/how_it_works",
+      "rubric": {
+        "measurement": "Trace actual production callers through the named stages (overlay provider selection, message normalization, render and disconnect recovery). Count stage ownership, state authority and exercised fallback paths.",
+        "anchors": {
+          "60": "60% traced to the consumer",
+          "70": "70% traced with explicit owner",
+          "80": "80% traced with one authority per shared state",
+          "90": "100% of named stages traced with ownership and fallback identified",
+          "100": "All traced normal and fallback paths are exercised and incompatible state writers are excluded"
+        },
+        "falsifier": "Trace the entrypoints against features/INDEX.md and drive each real fallback once."
+      }
     },
     {
       "id": "metric_gate_coverage",
@@ -50,7 +94,18 @@
       "target": 90,
       "counterpart": "Gate wall time (<60s)",
       "proof_cmd": "node harness/twins/slider_probe.mjs metric_gate_coverage",
-      "evidence": "benchmarks/budgets.json read through benchmark_history.py run --tier basic --gate -> basic.syntax_check_ms, basic.census_ms, basic.import_or_boot_ms all YES and inside budget"
+      "evidence": "benchmarks/budgets.json read through benchmark_history.py run --tier basic --gate -> basic.syntax_check_ms, basic.census_ms, basic.import_or_boot_ms all YES and inside budget",
+      "rubric": {
+        "measurement": "Count required benchmarks/budgets.json metrics for overlay provider selection, message normalization, render and disconnect recovery with an executable check and failing arm, including E2E. Keep the fast gate within 60 s.",
+        "anchors": {
+          "60": "60% of metric rows have checks",
+          "70": "70% of metric rows have checks",
+          "80": "80% of metric rows have checks",
+          "90": "All required rows have executable checks and failing arms",
+          "100": "All also reject malformed, missing and stale evidence inside the gate-time budget"
+        },
+        "falsifier": "Match current budget rows to check output, an injected regression and a gate timing."
+      }
     },
     {
       "id": "harness_falsifiers",
@@ -60,7 +115,18 @@
       "target": 85,
       "counterpart": "Maintenance burden",
       "proof_cmd": "node harness/twins/slider_probe.mjs harness_falsifiers",
-      "evidence": "harness/angles.tsv -> qualified 24/25 across 5 families; the one dropped angle is 'ad-path/no ad for a whole page load' (needs a real pod, cannot be summoned offline)"
+      "evidence": "harness/angles.tsv -> qualified 24/25 across 5 families; the one dropped angle is 'ad-path/no ad for a whole page load' (needs a real pod, cannot be summoned offline)",
+      "rubric": {
+        "measurement": "Count every applicable harness/angles.tsv feature-angle combination for overlay provider selection, message normalization, render and disconnect recovery. A combination counts only with an observed passing and failing arm.",
+        "anchors": {
+          "60": "60% of applicable combinations",
+          "70": "70% of applicable combinations",
+          "80": "80% of applicable combinations",
+          "90": "90% with recovery, timeouts and steady-state cases exercised",
+          "100": "100% including failure injection into the evaluator"
+        },
+        "falsifier": "Match harness receipts to the declared combinations and inspect exclusions."
+      }
     },
     {
       "id": "reversibility_safety",
@@ -70,7 +136,18 @@
       "target": 95,
       "counterpart": "Staging step friction",
       "proof_cmd": "node harness/twins/slider_probe.mjs reversibility_safety",
-      "evidence": "python git_checkpoint.py --help -> rc 0; checkpoints=1, wt-new=yes, wt-land(--receipt,--gate-cmd)=yes, rollback(--confirm)=yes, met 4/4"
+      "evidence": "python git_checkpoint.py --help -> rc 0; checkpoints=1, wt-new=yes, wt-land(--receipt,--gate-cmd)=yes, rollback(--confirm)=yes, met 4/4",
+      "rubric": {
+        "measurement": "Count risky changes in the active wave affecting provider fallback and overlay state restoration. Proof requires a positive rehearsal and an interrupted or disabled arm with durable state intact.",
+        "anchors": {
+          "60": "60% of risky changes have rehearsed recovery",
+          "70": "70% covered",
+          "80": "80% covered",
+          "90": "All risky changes have rehearsed rollback and off-arm proof",
+          "100": "All also recover after interruption without lost durable state or duplicate work"
+        },
+        "falsifier": "Rehearse rollback or off-arm on disposable data and compare resulting state with its checkpoint."
+      }
     },
     {
       "id": "autonomy_end_to_end",
@@ -80,7 +157,18 @@
       "target": 95,
       "counterpart": "Safety boundary discipline",
       "proof_cmd": "node harness/twins/slider_probe.mjs autonomy_end_to_end",
-      "evidence": "revival/FRICTION.json -> youtube_live_dep, browser_live_wait, twitch_live_dep all VERIFIED through offline twins, each with its verify_cmd"
+      "evidence": "revival/FRICTION.json -> youtube_live_dep, browser_live_wait, twitch_live_dep all VERIFIED through offline twins, each with its verify_cmd",
+      "rubric": {
+        "measurement": "Count the named product stages (overlay provider selection, message normalization, render and disconnect recovery) that the supported entrypoint runs in a bounded, owned environment with no owner input.",
+        "anchors": {
+          "60": "60% of stages run unaided",
+          "70": "70% run unaided",
+          "80": "80% run unaided",
+          "90": "100% of core stages run unaided on real or calibrated replay inputs",
+          "100": "Core and recovery stages run unaided and fail explicitly for stale or missing evidence"
+        },
+        "falsifier": "Run the supported entrypoint in a disposable environment with success, failure and recovery inputs."
+      }
     }
   ],
   "natural_unit_pairs": [
