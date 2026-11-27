@@ -4647,13 +4647,23 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   // the old reconnect re-mounted the overlay on /<slug>/clips and restarted
   // the keep-up clock that the route gate had just stopped.
   {
-    const liveFetch = () => {
+    const liveFetch = (opts) => {
       const real = global.fetch;
-      global.fetch = () => Promise.resolve({
+      // THE MINT IS HELD, SO THE ORDER IS THE TEST'S AND NOT THE SCHEDULER'S.
+      // Measured 2026-11-27: with an immediately-resolving stub this arm was green
+      // two runs of three and red on the third, because `await drain()` sometimes
+      // let the whole post-await body finish BEFORE the route changed - the mutant
+      // then mounted on the player route, the teardown removed it, and `red.wrap`
+      // read null. Releasing the response after `teardown()` makes the awaited
+      // continuation provably later than the route change.
+      let open = null;
+      const gate = opts && opts.hold ? new Promise((res) => { open = res; }) : null;
+      const answer = () => ({
         ok: true,
         json: () => Promise.resolve({ livestream: { playback_url: 'https://ivs.example/backoff-route', id: 's' } }),
       });
-      return () => { global.fetch = real; };
+      global.fetch = () => (gate ? gate.then(answer) : Promise.resolve(answer()));
+      return { restore: () => { global.fetch = real; }, release: () => { if (open) open(); } };
     };
     const from = swCalls.length;
     const run = async (A) => {
@@ -4668,17 +4678,25 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
       K.reconnectCount = 0;
       K.rectTimer = setInterval(() => {}, 100000); // the running keep-up clock
       const oldPath = global.location.pathname;
-      const restore = liveFetch();
+      const net = liveFetch({ hold: true });
       try {
         const pending = A.M.reconnect();
-        await drain(); // let the mint resolve before the SPA navigation
+        await drain(); // the mint request is now in flight and HELD
         global.location.pathname = '/s-channel/clips'; // no player slot
         A.M.teardown(); // the route gate stops the clock and drops the wrap
         K.enabled = true;
         K.player = 'kick'; // the route gate tears down but never clears the player preference
         assert.strictEqual(K.wrap, null, 'item 15 precondition: the route change tore down the wrap');
         assert.strictEqual(K.rectTimer, null, 'item 15 precondition: the keep-up clock stopped');
-        await settle(2000);
+        net.release(); // only now may the mint resolve, so its continuation is provably after the route change
+        // THE CONTINUATION STILL OWES ITS OWN 2 s BACKOFF, so one `settle` is not a
+        // guarantee and `await pending` without a bound is how this arm hung. Advance
+        // the timeline until the reconnect settles or the budget is spent, and let a
+        // spent budget fail the arm instead of stalling the whole suite.
+        let finished = false;
+        pending.then(() => { finished = true; }, () => { finished = true; });
+        for (let i = 0; i < 10 && !finished; i++) { await settle(1000); await drain(); }
+        assert.ok(finished, 'item 15 precondition: the reconnect never settled');
         await pending;
         return {
           wrap: K.wrap,
@@ -4688,7 +4706,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
       } finally {
         global.location.pathname = oldPath;
         A.M.teardown();
-        restore();
+        net.restore();
       }
     };
     const A = await run(mkArm());

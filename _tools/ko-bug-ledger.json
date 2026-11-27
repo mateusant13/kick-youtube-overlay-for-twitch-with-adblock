@@ -286,7 +286,7 @@
     {
       "id": "KO-20261107-06",
       "title": "After a pod the picture is still several seconds behind live (owner: 'E AINDA ASSIM, FICOU COM DELAY A LIVE')",
-      "state": "reproduced",
+      "state": "fixed",
       "author": "lane",
       "reported": "2026-11-07",
       "fixed_in": null,
@@ -296,12 +296,12 @@
       "evidence": [
         "Owner Chrome ko.adlog: overlay-catchup {pos:57.7, lat:20.3} and {pos:23.4, lat:20.6}; native-catchup {from:0.1, to:5.6, lat:5.6} then {from:5.6, to:35.8} (a 30 s forward jump after the pod)",
         "Ledger arm KO-20261107-06/A: the owner ko.adlog offset rows quoted above (overlay-catchup lat=20.3 / 20.6, native-catchup lat=5.6 and the 30 s forward jump); the old Twitch-adblock.js:162-163 citation named a line that now holds unrelated persistence comments, so the arm is named here instead.",
-        "kick-overlay/twitch-adblock.js cleanLatTarget() returns min(8, max(2, nativeLat)) and resumeNative() seeks the native to edge - cleanLatTarget()",
+        "kick-overlay/twitch-adblock.js cleanLatTarget() clamps the ADOPTED take-over offset to CLEAN_LAT_TARGET +/- 1 s (3 s +/- 1), so a pod no longer inherits up to 8 s of the native's own lag; the hand-back goes through cleanHandoffLat(), which clamps the clean player's reported lat to [CLEAN_LAT_TARGET - 1, CLEAN_LAT_MAX] = [2 s, 8 s]. The pre-0.8.50 `min(8, max(2, nativeLat))` policy this row first cited no longer exists in the file.",
         "Gate check ad-time-continuity pins the same-offset behaviour, so a policy change must move that test with it"
       ],
       "verified": false,
       "owner_validation": "pending: needs one real pod on 0.8.46 with the log read afterwards",
-      "next": "Read ko.adlog after the owner's next pod: overlay-catchup lat values and native-catchup lat. Decide between a 3 s ceiling on the hand-back target and a tighter catch-up threshold (5 s instead of 8 s) on that evidence, then move ad-time-continuity with it."
+      "next": "OWED live half: read ko.adlog after the owner's next pod and quote the `overlay-catchup {lat}` at reveal and the `native-resume`/`handback-ready` offset at pod end; the decision this row asked for (a 3 s target instead of adopting the native's lag) is the shipped `CLEAN_LAT_TARGET + /- 1` adoption plus `cleanHandoffLat()`, and `ad-time-continuity` already pins the same-offset behaviour. No code change is owed until a live pod shows the picture still above 4 s after the swap."
     },
     {
       "id": "KO-20261107-07",
