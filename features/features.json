@@ -1,10 +1,10 @@
 {
   "schema": "revival.features/v1",
-  "repo": "kicktwitchyoutube_instagram",
-  "git_head": "178e1ef",
-  "generated_at": "2026-11-27T15:33:33Z",
-  "total_tracked_files": 167,
-  "feature_count": 2,
+  "repo": "AdoptAngles-kick",
+  "git_head": "9e55eb2",
+  "generated_at": "2026-11-27T23:26:33Z",
+  "total_tracked_files": 179,
+  "feature_count": 3,
   "features": [
     {
       "id": "_tools",
@@ -31,8 +31,8 @@
         "_tools/gate/fast-loop.mjs",
         "_tools/gate/guest-load-guard-selftest.mjs",
         "_tools/gate/harness-tools-selftest.mjs",
-        "_tools/gate/ledger-invariant-selftest.mjs",
         "_tools/gate/heavy-lock-selftest.mjs",
+        "_tools/gate/ledger-invariant-selftest.mjs",
         "_tools/gate/load-check-test.mjs",
         "_tools/gate/load-sample.mjs",
         "_tools/gate/load-verdict.mjs",
@@ -44,7 +44,6 @@
         "_tools/gate/timed-suite-selftest.mjs",
         "_tools/harness-cwd.mjs",
         "_tools/harness-plant.mjs",
-        "_tools/property-harness.mjs",
         "_tools/ko-adlog-verdict.mjs",
         "_tools/ko-adlog-window.mjs",
         "_tools/ko-auto-install.ps1",
@@ -83,19 +82,21 @@
         "_tools/ko-twitch-net.mjs",
         "_tools/ko-verify.mjs",
         "_tools/ko-yt-net.mjs",
+        "_tools/property-harness.mjs",
         "_tools/relay.mjs",
         "_tools/test-clock.cjs"
       ],
-      "file_count": 67,
-      "recent_commit_touches": 180,
+      "file_count": 74,
+      "recent_commit_touches": 208,
       "recent_commit_subjects": [
-        "gate: split ko-verify into modules; test the load pre-flight; refuse vacuous PASS",
-        "revival v3.0.1 P0-04..P0-08: virtual clock, ledger truth, gate hardening",
-        "fix(ad): end a playlist pod when the ad UI leaves, and stop starting the standby at 360p (0.8.111)",
-        "fix(overlay): native stall watchdog, arrow seek parity, ad standby silence (0.8.110)",
+        "tools: the CDP client is the repo's own, and it answers `evaluate`",
         "verdict: the reader stops claiming blindness it can lift",
+        "verdict: read the squeeze, his gestures and the DVR rescue",
+        "verdict: print pod age in seconds, not seconds squared",
+        "gate: one definition per concept, and a crash can no longer leave a PASS",
         "Bound every hang-capable call in the tooling, and add the impacted fast loop",
-        "pre-flight: a refusal names the ceiling that broke, not the ones that held"
+        "pre-flight: a refusal names the ceiling that broke, not the ones that held",
+        "gate: the node gate reads a suite's printed verdict too"
       ],
       "how_it_works": "Instruments, never product: (1) `ko-verify.mjs` runs every static suite plus the ledger, census, artifact and revival gates and writes `_evidence/ko-verify-latest.md`; (2) `ko-census.mjs` parses the three product scripts and refuses growth of decisions that return with no log row; (3) `ko-adlog-verdict.mjs` / `ko-adlog-window.mjs` read the extension's own ring (`ko.adlog`) and print per-page-load verdicts (ON SCREEN, FROZEN, JUMPS, SOUND, POD FREEZE, DISPLAY, REPEATS, HOLD EXPIRY, RELOADS, BUILDS IN THIS RING); (4) `ko-snapshot.mjs` reads the attributes the page publishes without touching the tab; (5) `ko-harness.mjs` drives a guest Chrome (port 9446, marker `G:/Temp/ko-harness/guest.json`) for kickparity/muteauthor/parity; (6) `ko-replica/` is an offline, deterministic Twitch watch page + ad delivery (HTTPS with a self-signed cert, HLS playlists served with a sliding ad window, a player worker, the real ad DOM shapes) so a pod can be replayed without a live stream; (7) `ko-load-check.mjs` is the pre-flight ceiling reading; (8) `ko-real-capture.mjs` + `ko-replica/compare.mjs` diff a real capture against the replica.",
       "inputs": [
@@ -151,13 +152,16 @@
         "kick-overlay/youtube-resume-test.cjs",
         "kick-overlay/yt-route-test.cjs"
       ],
-      "file_count": 24,
-      "recent_commit_touches": 308,
+      "file_count": 25,
+      "recent_commit_touches": 313,
       "recent_commit_subjects": [
-        "0.8.135: every timing metric refuses on a starved box, and the ad decision reads the marker",
+        "0.8.140: a token rewrite that threw says so, and the route arm stops measuring a flag",
+        "0.8.139: a sustained refusal is one row, not one row per poll",
+        "gate: close the four reds the first full run found",
+        "0.8.138: the ad decision and the ad action read the same evidence",
+        "refactor(harness): rename angles matrix to angulos.tsv",
         "0.8.134: name the transport and the host refusal, so \"no ad\" stops meaning four things",
-        "0.8.130: one heavy job at a time is enforced, and the suite stops recompiling the product",
-        "Put the content.js suite on a virtual clock, bound the extension's fetches, and repair two slider probes"
+        "gate: the node gate reads a suite's printed verdict too"
       ],
       "how_it_works": "Three worlds, one page. The ISOLATED content script (`content.js`) mounts the kick/YouTube layer in an iframe (`player.html`), arbitrates ownership of the screen (`data-ko-owner`, `overlayOwnsPicture`, `OWNER_GRACE_MS`), pauses/resumes the page's own `<video>` through the stall watchdog (`nativeStallWatch`, which refuses with a named row), publishes the display clock verdicts (LIVE/BEHIND/REPEAT/FROZEN/PAUSED), sets the toolbar badge (`setBadge` -> `chrome.action`) and heals a stale tab only while it is hidden. `ko-audio.js` is the single writer of mute/volume (intent x policy x visible surface), persisted per tab in sessionStorage. The MAIN-world ad path (`twitch-adblock.js`) detects an ad by paint + slate text + the worker-hooked playlist, opens a pod, mints a clean source over Twitch's GQL usher, covers the native with the clean picture only once it is decoding at the sync target (`cleanLatTarget`, reveal waits for the caught-up report), freezes the page element for the pod's duration, and hands back exactly once (timeline-reset detection, buffered-edge or wall-clock target, `handback-wait` until `rs >= 3` or 3 s). `adblock-bridge.js` crosses the world boundary in both directions; `background.js` installs the DNR rules and the packaged resources (it holds no storage record and no badge).",
       "inputs": [
@@ -188,13 +192,17 @@
       "id": "scripts",
       "name": " scripts",
       "status": "active",
-      "file_count": 1,
       "files": [
+        "scripts/angles-gate.py",
         "scripts/gate.py"
       ],
-      "recent_commit_touches": 3,
+      "file_count": 2,
+      "recent_commit_touches": 5,
       "recent_commit_subjects": [
-        "gate: one command that runs this repo's real fast checks"
+        "gate: run the angle matrix in the default stage set",
+        "Add revival stages and enforce gate.toml ceilings",
+        "gate: refuse printed red verdicts and kill timed-out child trees",
+        "gate: one command, and a stage that cannot run is a refusal, not a pass"
       ],
       "how_it_works": "`scripts/gate.py` is the repo-owned fast gate named in `revival/COMMANDS.md:14`: one stdlib Python driver that runs the repo's own instruments (JS syntax checks, `ko-census --gate`, the two product suites and the gate's selftests) with explicit per-stage timeouts and a named verdict per stage. `--json` prints one object, `--stage <name>` runs one stage, and the minute-scale `ko_verify` stage is opt-in so the driver can never become a second heavy job.",
       "inputs": [

@@ -198,6 +198,13 @@ def stages(repo: Path) -> list[Stage]:
         argv, ceiling = _wrap_ceiling(name, base, timeout)
         out.append(Stage(name, argv, timeout, pattern, ceiling=ceiling,
                          note=f"Project Revival {name}; ceiling declared on the verdict line"))
+    out.append(Stage(
+        "angles", (sys.executable, "scripts/angles-gate.py", "--repo", str(repo),
+                   "--matrix", "harness/angulos.tsv", "--stage-budget", "180",
+                   "--row-timeout", "60"),
+        210.0, r"ANGLES PASS rows=\d+ holes=\d+",
+        ceiling="row-timeout<=60s stage-ceiling=180s gate-timeout=210s",
+        note="15 command-bearing harness/angulos.tsv rows; HOLE rows are not passes"))
     out.append(Stage("pytest", (), 30.0,
                      note="no pytest suite in this repo: typed CANNOT-MEASURE, never PASS",
                      ceiling="none (in-process file count; no child launched, stage budget=30s)",
