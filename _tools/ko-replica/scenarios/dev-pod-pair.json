@@ -1,0 +1,59 @@
+{
+  "name": "dev-pod-pair",
+  "split": "dev",
+  "channel": "replicach",
+  "durationMs": 32000,
+  "tailMs": 4000,
+  "events": [
+    {
+      "at": 4000,
+      "kind": "midroll",
+      "ms": 5000,
+      "ui": "wrapper"
+    },
+    {
+      "at": 10000,
+      "kind": "midroll",
+      "ms": 12000,
+      "ui": "wrapper"
+    }
+  ],
+  "stall": {
+    "atMs": 0,
+    "ms": 30000,
+    "on": "native",
+    "allowFirst": 2
+  },
+  "samples": [
+    { "at": 3000, "pixel": true },
+    { "at": 8000, "pixel": true },
+    { "at": 18000, "pixel": true },
+    { "at": 20000, "pixel": true },
+    { "at": 22000, "pixel": true }
+  ],
+  "expect": [
+    { "type": "row", "ev": "worker-playlist", "min": 1 },
+    { "type": "row", "ev": "ad-ui-hold", "min": 1 },
+    { "type": "row", "ev": "overlay-reveal", "min": 1 },
+    { "type": "row", "ev": "handback-wait", "min": 1 },
+    {
+      "type": "rowField",
+      "ev": "handback-wait",
+      "field": "rs",
+      "op": "lt",
+      "value": 3
+    },
+    { "type": "row", "ev": "handback-wait-cancelled", "min": 1 },
+    {
+      "type": "rowField",
+      "ev": "handback-wait-cancelled",
+      "field": "why",
+      "op": "in",
+      "value": ["ad-hold", "ad-start"]
+    },
+    { "type": "rowsAtMost", "ev": "handback-wait", "max": 2 },
+    { "type": "rowsAtMost", "ev": "handback-ready", "max": 1 },
+    { "type": "noReload" }
+  ],
+  "note": "MEASURED 2026-11-26 with this scenario: pod A ends at rs=2 (`handback-wait {ms:10269, rs:2}`), the second pod`s DOM hold cancels it 877 ms later (`handback-wait-cancelled {ms:877, why:'ad-hold'}`) and its picture reveals, and the only `handback-ready` is pod B`s OWN capped exit 12 s later - so `rowsAtMost handback-ready 1` is the discriminating half: if the cancel had not run, A`s wait would have capped too and there would be two. TWO pods inside one hand-back wait: the native edge serves only init + one segment and then refuses native media for 30 s, so pod A ends with rs<3 and the wait arms; pod B's ad UI opens about a second later, and `ad-start` must CANCEL the wait rather than tear the replacement frame down (0.8.123, refuted limb: with the cancel removed, the next 150 ms poll computed !covered and killed pod B's frame). The `why` vocabulary is per PRODUCER: a DOM hold cancels with `why:'ad-hold'`, a worker `ad-start` (the `need-source` answer) with `why:'ad-start'` - both are the same single canceller. Timings are scenario knobs (midroll A 4-9 s, B 14-24 s): pod A's `ad-end` needs two clean playlist refreshes, which is what places the cancel one second into the wait."
+}
