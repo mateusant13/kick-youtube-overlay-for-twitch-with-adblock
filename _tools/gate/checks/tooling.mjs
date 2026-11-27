@@ -71,7 +71,7 @@ export const toolingChecks = [
     // its quoting at cmd.exe (`expected ',', got '<eof>'`) - the arms below use a
     // FILE probe, which is the shape `angles.tsv` already passes.
     //
-    // 9 arms, 23 checks, measured ~1.3 s: it starts no suite, only two tiny probes.
+    // 17 arms, 62 checks, measured ~2.8 s: it starts no suite, only small fixtures.
     name: 'harness-tools',
     run(ctx) {
       const rel = '_tools/gate/harness-tools-selftest.mjs';
@@ -82,9 +82,57 @@ export const toolingChecks = [
       const out = `${r.stdout || ''}${r.stderr || ''}`;
       ctx.capture('harness-tools', rel, r);
       ctx.assert(r.status === 0, `${rel} failed:\n${out.trim().slice(-600)}`);
-      const m = /RESULT PASS harness-tools checks=(\d+) failed=0 arms=(\d+)\/9/.exec(out);
-      ctx.assert(m, `${rel}: no PASS verdict with all 9 arms counted:\n${out.trim().slice(-400)}`);
-      return `plant + cwd launchers proven (${m[1]} checks, ${m[2]} arms counted): a plant restores after the child, the mutation is visible while it runs, a stale/ambiguous/empty anchor and a missing falsifier refuse rc 3, and the cwd launcher refuses rc 2 while its child runs from the declared directory`;
+      const m = /RESULT PASS harness-tools checks=(\d+) failed=0 arms=(\d+)\/17/.exec(out);
+      ctx.assert(m, `${rel}: no PASS verdict with all 17 arms counted:\n${out.trim().slice(-400)}`);
+      return `plant + cwd launchers proven (${m[1]} checks, ${m[2]} arms counted): a plant restores after the child, a restore mismatch outranks a child exit 0, signals and a crash replay a target-derived journal, a stale/ambiguous/empty anchor and a missing falsifier refuse rc 3, and the cwd launcher refuses rc 2 while its child runs from the declared directory`;
+    },
+  },
+  {
+    // Measured 2026-11-27 (audit A3GateRevival): `prepareReceipt` ran outside
+    // `runCheck`, so a throw there aborted before `finalizeReceipt` - and JSON is
+    // written only by `finalizeReceipt`, leaving the PREVIOUS receipt on disk as
+    // `result: PASS` beside a crashed run. The gate's own artifact lied about the
+    // gate. `crashReceipt` now writes FAIL; this check proves both directions and
+    // that the happy path was not disturbed.
+    name: 'crash-receipt',
+    run(ctx) {
+      const rel = '_tools/gate/crash-receipt-selftest.mjs';
+      const script = path.join(ctx.ROOT, rel);
+      ctx.assert(existsSync(script), `missing ${rel}`);
+      const r = spawnSync(process.execPath, [script],
+        { timeout: 120000, killSignal: 'SIGKILL', cwd: ctx.ROOT, encoding: 'utf8' });
+      const out = `${r.stdout || ''}${r.stderr || ''}`;
+      ctx.capture('crash-receipt', rel, r);
+      ctx.assert(r.status === 0, `${rel} failed:\n${out.trim().slice(-600)}`);
+      const m = /RESULT PASS crash-receipt checks=(\d+) failed=0/.exec(out);
+      ctx.assert(m, `${rel}: no PASS verdict for the crash path:\n${out.trim().slice(-400)}`);
+      const arms = /ARMS (\d+)\/3 present/.exec(out);
+      ctx.assert(arms && arms[1] === '3', `${rel}: expected 3 entered arms, saw ${arms ? arms[1] : 'none'}`);
+      return `crash path proven both ways (${m[1]} checks, 3 arms): a throw outside a check body writes a FAIL receipt, the pre-fix sequence provably leaves a stale PASS on disk, and the happy path still writes PASS`;
+    },
+  },
+  {
+    // Measured 2026-11-27 (audit A3GateRevival): `verified` and `state` were two
+    // predicates for one claim, decided in three files. `state:'fixed',
+    // verified:true` was counted as verified-with-evidence, skipped by the
+    // artifact binding, and absent from FIXED-NOT-VERIFIED. `bug-state.mjs` is now
+    // the single definition and `ledger-evidence` refuses any row where the two
+    // sides disagree. This check proves the definition and both hole directions.
+    name: 'ledger-invariant',
+    run(ctx) {
+      const rel = '_tools/gate/ledger-invariant-selftest.mjs';
+      const script = path.join(ctx.ROOT, rel);
+      ctx.assert(existsSync(script), `missing ${rel}`);
+      const r = spawnSync(process.execPath, [script],
+        { timeout: 120000, killSignal: 'SIGKILL', cwd: ctx.ROOT, encoding: 'utf8' });
+      const out = `${r.stdout || ''}${r.stderr || ''}`;
+      ctx.capture('ledger-invariant', rel, r);
+      ctx.assert(r.status === 0, `${rel} failed:\n${out.trim().slice(-600)}`);
+      const m = /RESULT PASS ledger-invariant checks=(\d+) failed=0/.exec(out);
+      ctx.assert(m, `${rel}: no PASS verdict for the invariant:\n${out.trim().slice(-400)}`);
+      const arms = /ARMS (\d+)\/4 present/.exec(out);
+      ctx.assert(arms && arms[1] === '4', `${rel}: expected 4 entered arms, saw ${arms ? arms[1] : 'none'}`);
+      return `one definition of "verified" proven (${m[1]} checks, 4 arms): both divergence directions are refused, and a dated claim or an idle row agrees on both sides`;
     },
   },
 ];

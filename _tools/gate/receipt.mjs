@@ -10,6 +10,7 @@ import path from 'node:path';
 import { PRODUCT_JS } from './product.mjs';
 import { MEASURED_LIVE, notMeasured } from './receipt-data.mjs';
 import { writeArmArtifacts } from './arms.mjs';
+import { isVerifiedClaim } from './bug-state.mjs';
 
 export function prepareReceipt(ctx) {
   const { state, ROOT } = ctx;
@@ -18,7 +19,9 @@ export function prepareReceipt(ctx) {
   });
   const gitHead = String(head.stdout || '').trim() || 'unknown';
   state.gitHead = gitHead;
-  state.unverified = state.ledger.bugs.filter((b) => b.state === 'fixed' && b.verified !== true);
+  state.unverified = state.ledger.bugs.filter((b) => b.state === 'fixed' && !isVerifiedClaim(b));
+  // LIVE PENDING is narrower than "carries an artifact": a `verified` row already
+  // had its live validation, so only `arm-verified` still owes the owner run.
   state.livePending = state.ledger.bugs.filter((b) => b.state === 'arm-verified');
   state.notMeasured = notMeasured(ROOT);
 
@@ -43,6 +46,61 @@ export function prepareReceipt(ctx) {
   mkdirSync(state.evidenceDir, { recursive: true });
   writeArmArtifacts(ctx);
   return payload;
+}
+
+// A throw outside `runCheck` — in `prepareReceipt` (a missing PRODUCT_JS file,
+// `writeArmArtifacts`) or in the receipt writers — aborts before
+// `finalizeReceipt`, so the PREVIOUS receipt stays on disk. A reader then sees
+// `result: PASS` beside a crashed run: the one artifact the gate must never
+// leave behind. This writes a FAIL receipt from whatever state exists.
+export function crashReceipt(ctx, error) {
+  const { state } = ctx;
+  const detail = String(error && error.stack ? error.stack : error);
+  const results = state.results.concat([{ name: 'gate-crashed', status: 'FAIL', detail }]);
+  const payload = {
+    schema: 1,
+    generated_at: new Date().toISOString(),
+    elapsed_ms: Date.now() - state.started,
+    git_head: state.gitHead || 'unknown',
+    version: state.manifest ? state.manifest.version : null,
+    result: 'FAIL',
+    checks: results,
+    source_sha256: {},
+    bugs: state.ledger && state.ledger.bugs ? state.ledger.bugs : [],
+    not_measured: state.notMeasured || [],
+    measured_live: MEASURED_LIVE,
+  };
+  try {
+    mkdirSync(state.evidenceDir, { recursive: true });
+    writeFileSync(path.join(state.evidenceDir, 'ko-verify-latest.json'), JSON.stringify(payload, null, 2) + '\n');
+    const lines = [
+      '# KO fast verification receipt',
+      '',
+      `- generated: ${payload.generated_at}`,
+      `- git: ${payload.git_head}`,
+      `- extension: ${payload.version}`,
+      '- result: **FAIL**',
+      `- elapsed: ${payload.elapsed_ms} ms`,
+      '',
+      '## Checks',
+      '',
+      '| Check | Status | Detail |',
+      '| --- | --- | --- |',
+      ...results.map((r) => `| ${r.name} | ${r.status} | ${String(r.detail).replace(/\|/g, '\\|')} |`),
+      '',
+      'The gate aborted before it could finalize. A throw outside a check body',
+      'would otherwise leave the previous receipt on disk as a stale PASS, so this',
+      'receipt is written by the crash path itself and the exit code is 1.',
+      '',
+    ];
+    writeFileSync(path.join(state.evidenceDir, 'ko-verify-latest.md'), lines.join('\n'));
+  } catch (writeError) {
+    console.error('FAIL gate-crashed  could not write a receipt:', writeError && writeError.message);
+  }
+  console.error(`FAIL gate-crashed  ${detail.split('\n')[0]}`);
+  console.log(`RESULT FAIL  checks=${results.length}  failed=${results.filter((r) => r.status === 'FAIL').length}`);
+  console.log('  - gate-crashed: a throw outside the check bodies aborted the run before finalize');
+  process.exitCode = 1;
 }
 
 export function finalizeReceipt(ctx) {

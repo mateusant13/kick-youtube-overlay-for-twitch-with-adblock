@@ -21,8 +21,17 @@
 //   6. cwd missing dir-> rc 2, refusal names the directory
 //   7. cwd no args    -> rc 2, refusal prints the usage
 //   8. cwd runs child -> a relative read that only resolves one directory down
-import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+//   9. cwd runs child -> (continued) `manifest.json` resolves from kick-overlay
+//  10. restore mismatch-> child exits 0 but a failed restore wins: rc 4, journal kept
+//  11. red: the pre-fix ordering prints a mismatch yet still exits 0
+//  12. handlers/throws -> SIGINT, SIGTERM, SIGHUP and uncaughtException restore bytes
+//  13. red: with no handler an in-process SIGTERM changes nothing
+//  14. SIGTERM kill -> a hard kill leaves a journal that the next run restores
+//  15. red: the pre-fix plant leaves a mutated file and no journal after a kill
+//  16. pre-existing journal -> honoured and deleted on the next run
+//  17. red: the pre-fix plant ignores a journal left by a dead plant
+import { spawn, spawnSync } from 'node:child_process';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -47,16 +56,46 @@ function ok(cond, label, detail = '') {
   }
 }
 
-function run(args, cwd = ROOT) {
-  const r = spawnSync(process.execPath, args, { cwd, encoding: 'utf8', timeout: 60000, killSignal: 'SIGKILL' });
+function run(args, cwd = ROOT, env = {}) {
+  const r = spawnSync(process.execPath, args, {
+    cwd, encoding: 'utf8', timeout: 60000, killSignal: 'SIGKILL', env: { ...process.env, ...env },
+  });
   return { rc: r.status, out: `${r.stdout || ''}${r.stderr || ''}` };
 }
 
+async function killMidChild(args, marker) {
+  const proc = spawn(process.execPath, args, { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
+  let out = '';
+  proc.stdout.on('data', (d) => { out += d.toString(); });
+  proc.stderr.on('data', (d) => { out += d.toString(); });
+  const deadline = Date.now() + 5000;
+  while (!existsSync(marker) && Date.now() < deadline) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+  }
+  const wasRunning = existsSync(marker);
+  proc.kill('SIGTERM');
+  const rc = await new Promise((resolve) => {
+    const timer = setTimeout(() => { proc.kill('SIGKILL'); resolve('timeout'); }, 5000);
+    proc.once('close', (code) => { clearTimeout(timer); resolve(code); });
+  });
+  return { rc, out, wasRunning };
+}
+
 const SUBJECT = path.join(SCRATCH, 'subject.txt');
+const JOURNAL = `${SUBJECT}.plant-journal`;
+const CHMOD_PROBE = path.join(SCRATCH, 'chmod-probe.mjs');
+const KILL_PROBE = path.join(SCRATCH, 'kill-probe.mjs');
+const EMIT_PRELOAD = path.join(SCRATCH, 'emit-signal.cjs');
+const PREFIX_PLANT = path.join(SCRATCH, 'prefix-ordering-plant.mjs');
 const SUBJECT_BODY = 'const ANCHOR = "plant-me";\nconst DUPLICATE = "twice";\nconst DUPLICATE = "twice";\n';
 
 function resetSubject() {
   mkdirSync(SCRATCH, { recursive: true });
+  if (existsSync(JOURNAL)) unlinkSync(JOURNAL);
+  // A mismatch arm leaves the fixture read-only; make it writable before reuse.
+  if (existsSync(SUBJECT)) {
+    try { chmodSync(SUBJECT, 0o666); } catch { /* already writable */ }
+  }
   writeFileSync(SUBJECT, SUBJECT_BODY, 'utf8');
 }
 resetSubject();
@@ -75,6 +114,50 @@ try {
     'import { readFileSync } from "node:fs";\n'
     + 'const s = readFileSync(process.argv[2], "utf8");\n'
     + 'console.log(s.includes("MUTANT") ? "CHILD-SAW-MUTANT" : "CHILD-SAW-ORIGINAL");\n', 'utf8');
+  // The pre-fix replica isolates the OLD ordering/exit code so each new arm has a
+  // measured RED side without mutating the shipped plant or anything tracked.
+  writeFileSync(CHMOD_PROBE, 'import { chmodSync } from "node:fs";\nchmodSync(process.argv[2], 0o444);\n', 'utf8');
+  writeFileSync(KILL_PROBE,
+    'import { writeFileSync } from "node:fs";\n'
+    + 'writeFileSync(process.argv[2], "ready");\n'
+    + 'setTimeout(() => {}, 1200);\n', 'utf8');
+  // Windows delivers cross-process SIGTERM as TerminateProcess, so in-process
+  // delivery is the only deterministic way to exercise the handlers themselves.
+  writeFileSync(EMIT_PRELOAD,
+    'const fs = require("node:fs");\n'
+    + 'const write = fs.writeFileSync;\n'
+    + 'let fired = false;\n'
+    + 'fs.writeFileSync = function (p, data, ...rest) {\n'
+    + '  const result = write.call(this, p, data, ...rest);\n'
+    + '  if (!fired && String(data).includes("MUTANT")) {\n'
+    + '    fired = true;\n'
+    + '    const sig = process.env.EMIT_SIGNAL;\n'
+    + '    if (sig === "THROW") throw new Error("injected-after-mutation");\n'
+    + '    process.emit(sig);\n'
+    + '  }\n'
+    + '  return result;\n'
+    + '};\n', 'utf8');
+  writeFileSync(PREFIX_PLANT, [
+    "import { spawnSync } from 'node:child_process';",
+    "import { readFileSync, writeFileSync } from 'node:fs';",
+    "const [target, from, to, ...cmd] = process.argv.slice(2);",
+    "const original = readFileSync(target);",
+    "writeFileSync(target, Buffer.from(original.toString('utf8').replace(from, to)));",
+    "let status = null;",
+    "try {",
+    "  const r = spawnSync(cmd[0], cmd.slice(1), { shell: true, encoding: 'utf8' });",
+    "  status = r.status === null ? 124 : r.status;",
+    "} finally {",
+    "  try {",
+    "    writeFileSync(target, original);",
+    "    console.log('PLANT restored=' + (Buffer.compare(readFileSync(target), original) === 0));",
+    "  } catch {",
+    "    console.log('PLANT restored=false (MISMATCH)');",
+    "  }",
+    "}",
+    "process.exitCode = status === null ? 124 : status;",
+    "",
+  ].join('\n'), 'utf8');
 
   // ---- arm 1: plant, run the falsifier, restore ----------------------------
   arm('1-plant-restore');
@@ -183,12 +266,122 @@ try {
     ok(r.rc === 0, 'cwd: the child exits 0', `rc=${r.rc}`);
     ok(/CWD_HAS true/.test(r.out), 'cwd: `manifest.json` resolves, so the child ran from kick-overlay', r.out.trim().slice(-120));
   }
+
+  // ---- arm 10: a restore mismatch outranks the child's exit 0 --------------
+  arm('10-plant-restore-mismatch-exit4');
+  {
+    resetSubject();
+    // chmod 0o444 on Windows makes the restore write fail with EPERM (measured),
+    // while the child still exits 0 -- exactly the case that used to read green.
+    const r = run(['_tools/harness-plant.mjs', '--file', SUBJECT,
+      '--from', 'const ANCHOR = "plant-me";', '--to', 'const ANCHOR = "MUTANT";',
+      '--', 'node', CHMOD_PROBE, SUBJECT]);
+    ok(r.rc === 4, 'plant: a restore mismatch outranks a child exit 0 (rc 4)', `rc=${r.rc} out=${r.out.trim().slice(-160)}`);
+    ok(/PLANT restored=false/.test(r.out) && /MISMATCH/.test(r.out), 'plant: the mismatch is printed', r.out.trim().slice(-160));
+    ok(existsSync(JOURNAL), 'plant: the journal is kept when the restore failed so a later run can recover');
+  }
+
+  // ---- arm 11: RED, the old ordering reported mismatch but exited 0 --------
+  arm('11-red-prefix-ordering-exit0');
+  {
+    resetSubject();
+    const r = run([PREFIX_PLANT, SUBJECT, 'const ANCHOR = "plant-me";',
+      'const ANCHOR = "MUTANT";', 'node', CHMOD_PROBE, SUBJECT]);
+    ok(r.rc === 0, 'red: the pre-fix ordering exits 0 despite a printed MISMATCH (the defect)', `rc=${r.rc} out=${r.out.trim().slice(-160)}`);
+    ok(/PLANT restored=false/.test(r.out), 'red: the replica really produced a restore mismatch', r.out.trim().slice(-160));
+    ok(readFileSync(SUBJECT, 'utf8').includes('MUTANT'), 'red: the subject stays mutated after the failed restore');
+  }
+
+  // ---- arm 12: handlers restore on SIGINT/SIGTERM/SIGHUP/throw -------------
+  arm('12-plant-signal-handlers-restore');
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', 'THROW']) {
+    resetSubject();
+    const r = run(['_tools/harness-plant.mjs', '--file', SUBJECT,
+      '--from', 'const ANCHOR = "plant-me";', '--to', 'const ANCHOR = "MUTANT";',
+      '--', 'node', RAN_PROBE], ROOT, { NODE_OPTIONS: `--require ${EMIT_PRELOAD}`, EMIT_SIGNAL: sig });
+    const label = sig === 'THROW' ? 'uncaughtException' : `signal ${sig}`;
+    const line = sig === 'THROW' ? /PLANT uncaughtException/ : new RegExp(`PLANT signal=${sig}`);
+    ok(r.rc !== 0, `plant: ${label} exits nonzero`, `rc=${r.rc} out=${r.out.trim().slice(-160)}`);
+    ok(line.test(r.out), `plant: ${label} is handled`, r.out.trim().slice(-160));
+    ok(readFileSync(SUBJECT, 'utf8') === SUBJECT_BODY, `plant: ${label} restored the exact bytes`);
+    ok(!existsSync(JOURNAL), `plant: ${label} removed the journal`);
+  }
+
+  // ---- arm 13: RED, no handler means the signal changes nothing -----------
+  arm('13-red-no-signal-handler');
+  {
+    resetSubject();
+    const r = run([PREFIX_PLANT, SUBJECT, 'const ANCHOR = "plant-me";',
+      'const ANCHOR = "MUTANT";', 'node', RAN_PROBE], ROOT,
+    { NODE_OPTIONS: `--require ${EMIT_PRELOAD}`, EMIT_SIGNAL: 'SIGTERM' });
+    ok(r.rc === 0, 'red: with no handler an in-process SIGTERM is a no-op and the child rc wins', `rc=${r.rc}`);
+    ok(!/PLANT signal=SIGTERM/.test(r.out), 'red: the replica printed no handler line', r.out.trim().slice(-160));
+  }
+
+  // ---- arm 14: SIGTERM mid-child survives via the target-derived journal --
+  arm('14-plant-sigterm-kill-journal');
+  {
+    resetSubject();
+    const marker = path.join(SCRATCH, 'kill-ready.flag');
+    const args = ['_tools/harness-plant.mjs', '--file', SUBJECT,
+      '--from', 'const ANCHOR = "plant-me";', '--to', 'const ANCHOR = "MUTANT";',
+      '--', 'node', KILL_PROBE, marker];
+    const killed = await killMidChild(args, marker);
+    ok(killed.wasRunning, 'plant: the falsifier was running when SIGTERM arrived', killed.out.trim().slice(-160));
+    const journalled = existsSync(JOURNAL) && readFileSync(JOURNAL, 'utf8') === SUBJECT_BODY;
+    const handled = /PLANT signal=SIGTERM/.test(killed.out) && readFileSync(SUBJECT, 'utf8') === SUBJECT_BODY;
+    ok(journalled || handled, 'plant: a SIGTERM mid-child restores immediately or leaves a journal with the original bytes', `rc=${killed.rc} out=${killed.out.trim().slice(-160)}`);
+    const again = run([args[0], ...args.slice(1, 8), 'node', RAN_PROBE]);
+    ok(/PLANT restored-from-journal/.test(again.out), 'plant: the next run honours the journal left by the killed plant', again.out.trim().slice(-160));
+    ok(readFileSync(SUBJECT, 'utf8') === SUBJECT_BODY, 'plant: the subject is byte-identical after journal recovery');
+    ok(!existsSync(JOURNAL), 'plant: the journal is deleted after a verified restore');
+  }
+
+  // ---- arm 15: RED, a kill without a journal leaves the mutant in place ---
+  arm('15-red-sigterm-kill-no-journal');
+  {
+    resetSubject();
+    const marker = path.join(SCRATCH, 'red-kill-ready.flag');
+    const killed = await killMidChild([PREFIX_PLANT, SUBJECT, 'const ANCHOR = "plant-me";',
+      'const ANCHOR = "MUTANT";', 'node', KILL_PROBE, marker], marker);
+    ok(killed.wasRunning, 'red: the falsifier was running when SIGTERM arrived', killed.out.trim().slice(-160));
+    ok(!existsSync(JOURNAL), 'red: the pre-fix plant writes no journal at all');
+    ok(readFileSync(SUBJECT, 'utf8').includes('MUTANT'), 'red: after the kill the pre-fix subject stays mutated');
+  }
+
+  // ---- arm 16: a pre-existing journal is replayed on startup -------------
+  arm('16-plant-preexisting-journal');
+  {
+    resetSubject();
+    writeFileSync(JOURNAL, SUBJECT_BODY, 'utf8');
+    writeFileSync(SUBJECT, SUBJECT_BODY.replace('plant-me', 'MUTANT'), 'utf8');
+    const r = run(['_tools/harness-plant.mjs', '--file', SUBJECT,
+      '--from', 'const ANCHOR = "plant-me";', '--to', 'const ANCHOR = "MUTANT";',
+      '--', 'node', RAN_PROBE]);
+    ok(/PLANT restored-from-journal/.test(r.out), 'plant: startup replays the journal before reading the anchor', r.out.trim().slice(-160));
+    ok(r.rc === 0, 'plant: the normal plant still succeeds after recovery', `rc=${r.rc} out=${r.out.trim().slice(-160)}`);
+    ok(readFileSync(SUBJECT, 'utf8') === SUBJECT_BODY, 'plant: the subject is byte-identical afterwards');
+    ok(!existsSync(JOURNAL), 'plant: the replayed journal is deleted');
+  }
+
+  // ---- arm 17: RED, the old plant ignores an orphaned journal ------------
+  arm('17-red-preexisting-journal-ignored');
+  {
+    resetSubject();
+    writeFileSync(JOURNAL, SUBJECT_BODY, 'utf8');
+    writeFileSync(SUBJECT, SUBJECT_BODY.replace('plant-me', 'MUTANT'), 'utf8');
+    const r = run([PREFIX_PLANT, SUBJECT, 'const ANCHOR = "plant-me";',
+      'const ANCHOR = "MUTANT";', 'node', RAN_PROBE]);
+    ok(!/PLANT restored-from-journal/.test(r.out), 'red: the pre-fix plant never replays the orphaned journal', `rc=${r.rc} out=${r.out.trim().slice(-160)}`);
+    ok(readFileSync(SUBJECT, 'utf8').includes('MUTANT'), 'red: the mutant stays on disk');
+    ok(existsSync(JOURNAL), 'red: the journal stays unread');
+  }
 } finally {
   // Exact-path cleanup: the directory this test created, nothing else.
   try { rmSync(SCRATCH, { recursive: true, force: true }); } catch { /* already gone */ }
 }
 
-const EXPECTED_ARMS = 9;
+const EXPECTED_ARMS = 17;
 const told = ARMS.length;
 const allOk = failed === 0 && told === EXPECTED_ARMS;
 for (const line of lines) console.log(line);

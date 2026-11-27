@@ -28,6 +28,25 @@ function runRevival(ctx, name, args) {
   return { rc: r.status, out };
 }
 
+// The PASS detail is a claim about the rows, so it may only name what the audit
+// actually printed: a missing load block is a refusal, not "load unread" beside
+// a clean-tree claim, and a missing starved list is named rather than counted
+// as zero. Kept separate from run() so the three readings are probeable without
+// re-running every row's verify_cmd.
+export function frictionDetail(ctx, out) {
+  const starvedBlock = /"starved":\s*\[([^\]]*)\]/.exec(out);
+  const loadBlock = /"load":\s*\{[^}]*"total":\s*([\d.]+),[^}]*"busiest":\s*([\d.]+)/.exec(out);
+  ctx.assert(loadBlock, `friction audit printed no load block (total/busiest):\n${out.trim().slice(-400)}`);
+  const load = `total ${loadBlock[1]}% busiest ${loadBlock[2]}%`;
+  if (!starvedBlock) {
+    return `starved list absent from the audit output (${load}); no row-level claim (tree left byte-identical)`;
+  }
+  const starved = (starvedBlock[1].match(/":/g) || []).length;
+  return starved
+    ? `${starved} row(s) CANNOT-MEASURE at load ceiling (${load}); every other row inside target (tree left byte-identical)`
+    : 'every friction row has a verify_cmd that runs inside its target (tree left byte-identical)';
+}
+
 export const revivalChecks = [
   {
     name: 'revival-features',
@@ -51,17 +70,24 @@ export const revivalChecks = [
         'run', '--repo', ctx.ROOT, '--tier', 'basic', '--gate', '--no-record', '--label', 'gate-basic',
       ]);
       ctx.assert(rc === 0, `a basic metric is over its ceiling or unmeasured:\n${out.trim().slice(-700)}`);
-      const ids = [...out.matchAll(/"id":\s*"([^"]+)"/g)].map((m) => m[1]);
-      ctx.assert(ids.length > 0, `benchmark gate printed no metric row:\n${out.trim().slice(-400)}`);
+      // Count ROWS, not `"id":` occurrences. MEASURED 2026-11-27 (audit
+      // A3GateRevival): `measured = ids.length - refused` was one stray `"id"` key
+      // away from reporting a metric that was never taken, because `ids` came from
+      // a raw regex over stdout while `refused` came from the CANNOT-MEASURE rows
+      // alone. The snapshot is JSON; parse it and read `results`.
+      const snap = JSON.parse(out.slice(out.indexOf('{')));
+      const rows = Array.isArray(snap.results) ? snap.results : [];
+      ctx.assert(rows.length > 0, `benchmark gate printed no metric rows:\n${out.trim().slice(-400)}`);
+      const ids = rows.map((r) => String(r.id));
       // A REFUSAL IS NOT A PASS, AND THE DETAIL MUST NOT READ LIKE ONE.
       // MEASURED 2026-11-27: every timing row now refuses on a starved box, so a detail
       // that said "3 basic metric(s) inside budget" would have described three numbers
       // that were never taken - the refusal-who-invites-a-wrong-reading defect this
       // repo already ruled on. Counted, named, and the refused rows are listed.
-      const refused = [...out.matchAll(/"verdict":\s*"CANNOT-MEASURE"[\s\S]{0,400}?"refused_reason":\s*"([^"]*)"/g)].length;
-      const measured = ids.length - refused;
+      const refused = rows.filter((r) => r.verdict === 'CANNOT-MEASURE').length;
+      const measured = rows.filter((r) => r.verdict !== 'CANNOT-MEASURE' && r.value !== undefined && r.value !== null).length;
       const tail = refused
-        ? `; ${refused} of ${ids.length} refused (starved box: a wall time there is the queue, not the instrument)`
+        ? `; ${refused} of ${rows.length} refused (starved box: a wall time there is the queue, not the instrument)`
         : `; ${measured} measured`;
       return `${measured} basic metric(s) inside budget (${ids.join(', ')})${tail}`;
     },
@@ -95,13 +121,7 @@ export const revivalChecks = [
       // same command read 6.1 s and 17.9 s (min of four) minutes apart on
       // 2026-11-26 with 8 cores pinned by foreign lanes. Naming it here keeps the
       // refusal visible; a quiet box still fails on `OVER_BUDGET`.
-      const starvedBlock = /"starved":\s*\[([^\]]*)\]/.exec(out);
-      const starved = starvedBlock ? (starvedBlock[1].match(/":/g) || []).length : 0;
-      const loadBlock = /"load":\s*\{[^}]*"total":\s*([\d.]+),[^}]*"busiest":\s*([\d.]+)/.exec(out);
-      const load = loadBlock ? `total ${loadBlock[1]}% busiest ${loadBlock[2]}%` : 'load unread';
-      return starved
-        ? `${starved} row(s) CANNOT-MEASURE at load ceiling (${load}); every other row inside target (tree left byte-identical)`
-        : 'every friction row has a verify_cmd that runs inside its target (tree left byte-identical)';
+      return frictionDetail(ctx, out);
     },
   },
   {

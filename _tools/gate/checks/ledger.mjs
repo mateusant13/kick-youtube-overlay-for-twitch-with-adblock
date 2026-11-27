@@ -2,6 +2,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
+import { carriesArtifactBinding, describeVerification, isVerifiedClaim } from '../bug-state.mjs';
 
 // States are explicit. `fixed` is allowed; `verified` needs an independent
 // verifier, and `arm-verified` is the narrower claim: the negative arm was
@@ -86,7 +87,19 @@ export const ledgerChecks = [
     run(ctx) {
       const raw = JSON.parse(ctx.read('_tools/ko-bug-ledger.json'));
       const bugs = Array.isArray(raw.bugs) ? raw.bugs : [];
-      const claimed = bugs.filter((b) => b.verified === true || /^\d{4}-\d\d-\d\d$/.test(String(b.verified || '')));
+      // THE TWO SIDES OF ONE CLAIM MUST AGREE. `verified` says the ledger has a
+      // clean _evidence artifact; a `verified`/`arm-verified` STATE says there is a
+      // fresh RED arm artifact and a reachability record to bind. Before this
+      // invariant, `state:'fixed', verified:true` was counted here, skipped by
+      // `verified-artifacts`, and excluded from FIXED-NOT-VERIFIED: an evidence
+      // claim with no artifact binding and no warning. MEASURED 2026-11-27 (audit
+      // A3GateRevival).
+      const divergent = bugs.filter((b) => isVerifiedClaim(b) !== carriesArtifactBinding(b));
+      ctx.assert(
+        divergent.length === 0,
+        `bug(s) whose verified flag and state disagree (${divergent.map((b) => `${b.id} (${describeVerification(b)})`).join('; ')}); a verified row must carry state verified|arm-verified and an artifact, and a verified|arm-verified row must set verified`,
+      );
+      const claimed = bugs.filter(isVerifiedClaim);
       for (const bug of claimed) {
         const paths = ledgerEvidenceArtifacts(bug);
         ctx.assert(paths.length, `${bug.id}: verified without an _evidence artifact path`);

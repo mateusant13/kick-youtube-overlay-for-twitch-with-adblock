@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { makeContext } from './gate/registry.mjs';
 import { CHECKS } from './gate/checks/index.mjs';
 import { verifiedArtifacts } from './gate/checks/artifacts.mjs';
-import { prepareReceipt, finalizeReceipt } from './gate/receipt.mjs';
+import { prepareReceipt, finalizeReceipt, crashReceipt } from './gate/receipt.mjs';
 
 const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const ctx = makeContext(ROOT);
@@ -29,6 +29,12 @@ const ctx = makeContext(ROOT);
 ctx.runAll(CHECKS);
 // The arm artifacts this run captured have to exist before the check that binds
 // a ledger claim to them can pass.
-prepareReceipt(ctx);
-ctx.runCheck(verifiedArtifacts.name, verifiedArtifacts.run);
-finalizeReceipt(ctx);
+try {
+  prepareReceipt(ctx);
+  ctx.runCheck(verifiedArtifacts.name, verifiedArtifacts.run);
+  finalizeReceipt(ctx);
+} catch (error) {
+  // A throw here used to abort with the previous receipt still on disk, so the
+  // artifact said PASS beside a crashed run. crashReceipt writes FAIL and exits 1.
+  crashReceipt(ctx, error);
+}

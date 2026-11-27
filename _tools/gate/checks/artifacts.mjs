@@ -6,6 +6,7 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
+import { carriesArtifactBinding } from '../bug-state.mjs';
 
 export const verifiedArtifacts = {
   name: 'verified-artifacts',
@@ -16,7 +17,7 @@ export const verifiedArtifacts = {
     const badArms = armArtifacts.filter((a) => a.check !== 'reachability' && a.status !== 'PASS');
     ctx.assert(badArms.length === 0, `captured arm(s) from a failed run: ${badArms.map((a) => a.check + '=' + a.status).join(', ')}`);
     const commitCache = new Map();
-    const claimed = state.ledger.bugs.filter((b) => b.state === 'verified' || b.state === 'arm-verified');
+    const claimed = state.ledger.bugs.filter(carriesArtifactBinding);
     for (const bug of claimed) {
       ctx.assert(bug.arms_artifact, `${bug.id}: no arms_artifact`);
       const abs = path.join(ROOT, bug.arms_artifact);

@@ -30,7 +30,7 @@
 // the anchor is missing; 4 when the restore did not reproduce the original bytes.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -61,10 +61,28 @@ const dryRun = own.includes('--dry-run');
 // with a mutant nobody planted on purpose. A fixture on `G:/Temp` proves the same
 // restore contract with nothing at risk.
 const abs = path.isAbsolute(file) ? file : path.join(ROOT, file);
+// The journal is derived from THIS target, never a shared temp name: two plants
+// in flight (or two fixtures) must never trade restore bytes.
+const journal = `${abs}.plant-journal`;
 
 function refuse(msg) {
   console.log(`PLANT REFUSED ${msg}`);
   process.exit(3);
+}
+// Recovery runs before any anchor is read: a previous plant that died between
+// mutation and restore left its original bytes here. SIGKILL cannot be handled
+// in-process, so this startup replay is the only guarantee for that case.
+if (existsSync(journal)) {
+  try {
+    const saved = readFileSync(journal);
+    writeFileSync(abs, saved);
+    if (Buffer.compare(readFileSync(abs), saved) !== 0) throw new Error('restore did not reproduce the journal bytes');
+    rmSync(journal);
+    console.log(`PLANT restored-from-journal file=${file}`);
+  } catch (error) {
+    console.log(`PLANT restored-from-journal file=${file} FAILED error=${error.message}`);
+    process.exit(4);
+  }
 }
 
 if (!from) refuse('--from is empty: a mutation with no anchor cannot be planted');
@@ -91,8 +109,47 @@ if (dryRun) {
 }
 
 const mutated = Buffer.from(text.replace(from, to), 'utf8');
+
+function clearJournal() {
+  try {
+    if (existsSync(journal)) rmSync(journal);
+  } catch (error) {
+    console.log(`PLANT journal-remove-failed file=${file} error=${error.message}`);
+  }
+}
+
+function restoreAndExit(bytes, code, label) {
+  let restored = false;
+  try {
+    writeFileSync(abs, bytes);
+    restored = Buffer.compare(readFileSync(abs), bytes) === 0;
+    if (restored) clearJournal();
+  } catch (error) {
+    console.log(`PLANT restore-failed file=${file} label=${label} error=${error.message}`);
+  }
+  console.log(`PLANT restored=${restored} file=${file} sha=${sha(bytes)}${restored ? '' : ' (MISMATCH)'}`);
+  process.exit(code);
+}
+
+// Registered BEFORE the mutation write. spawnSync blocks the event loop, so a
+// signal delivered by another process on Windows (unconditional TerminateProcess)
+// is recovered by the journal on the next run; an in-process signal or a POSIX
+// delivery reaches these handlers and restores immediately.
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(sig, () => {
+    console.log(`PLANT signal=${sig} file=${file}`);
+    restoreAndExit(original, sig === 'SIGINT' ? 130 : sig === 'SIGTERM' ? 143 : 129, sig);
+  });
+}
+process.on('uncaughtException', (error) => {
+  console.error(`PLANT uncaughtException file=${file} error=${error.message}`);
+  restoreAndExit(original, 1, 'uncaughtException');
+});
+
+writeFileSync(journal, original);
 writeFileSync(abs, mutated);
 let status = null;
+let mismatch = false;
 try {
   const r = spawnSync(child[0], child.slice(1), {
     cwd: childCwd,
@@ -106,10 +163,17 @@ try {
   if (r.stderr) process.stderr.write(r.stderr);
   status = r.status === null ? 124 : r.status;
 } finally {
-  writeFileSync(abs, original);
-  const restored = readFileSync(abs);
-  const same = Buffer.compare(original, restored) === 0;
-  console.log(`PLANT restored=${same} file=${file} sha=${sha(original)}${same ? '' : ' (MISMATCH)'}`);
-  if (!same) process.exitCode = 4;
+  let restored = false;
+  try {
+    writeFileSync(abs, original);
+    restored = Buffer.compare(readFileSync(abs), original) === 0;
+  } catch (error) {
+    console.log(`PLANT restore-failed file=${file} error=${error.message}`);
+  }
+  mismatch = !restored;
+  console.log(`PLANT restored=${restored} file=${file} sha=${sha(original)}${restored ? '' : ' (MISMATCH)'}`);
+  if (restored) clearJournal();
 }
-process.exitCode = status === null ? 124 : status;
+// A restore mismatch outranks the child status: a corrupted tree must never be
+// reported green just because the falsifier happened to exit 0.
+process.exitCode = mismatch ? 4 : (status === null ? 124 : status);

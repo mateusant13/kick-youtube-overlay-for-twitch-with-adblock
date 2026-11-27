@@ -33,7 +33,7 @@ function runSuite(ctx, check, rel, { maxBuffer, env } = {}) {
 // reader through the whole suite again, so the FAIL lines are lifted out first and
 // the tail is kept for context.
 function lastLines(r, n) {
-  const text = String(r.stderr || r.stdout || '');
+  const text = String(r.stdout || '') + String(r.stderr || '');
   const fails = text
     .split(/\r?\n/)
     .map((l) => l.trim())
@@ -41,6 +41,12 @@ function lastLines(r, n) {
   if (!fails.length) return text.trim().slice(-n);
   return `${fails.length} FAIL line(s): ${fails.slice(0, 3).join(' | ').slice(0, n)} | tail: ${text.trim().slice(-Math.min(200, n))}`;
 }
+
+// ad-detect-test.cjs printed `ARMS 119/119` in this worktree on 2026-11-27
+// (the earlier 45/45 figure quoted in the ticket is stale). A FLOOR is the
+// contract: adding arms must not need a gate edit, but losing most of them
+// must fail. 40 keeps a suite that shrinks to a token 1/1 from passing.
+const AD_DETECT_ARM_FLOOR = 40;
 
 export const suiteChecks = [
   {
@@ -232,8 +238,10 @@ export const suiteChecks = [
       const r = runSuite(ctx, 'ad-detect', rel);
       const out = String(r.stdout || '') + String(r.stderr || '');
       ctx.assert(r.status === 0, `${rel}: ${out.trim().slice(-400)}`);
-      ctx.assert(/ARMS (\d+)\/\1\b/.test(out), `${rel}: arm count not equal-sided:\n${out.trim().slice(-300)}`);
-      return 'wrapper measured by paint not class token, countdown/slate text read, SharedWorker hooked; 2 pre-fix arms go RED';
+      const arms = /ARMS (\d+)\/\1\b/.exec(out);
+      ctx.assert(arms && Number(arms[1]) >= AD_DETECT_ARM_FLOOR,
+        `${rel}: arm count not equal-sided or below ${AD_DETECT_ARM_FLOOR}:\n${out.trim().slice(-300)}`);
+      return `wrapper measured by paint not class token, countdown/slate text read, SharedWorker hooked; ${arms[1]} arms, 2 pre-fix arms go RED`;
     },
   },
   {
@@ -255,16 +263,43 @@ export const suiteChecks = [
       ctx.assert(verdict, `${rel}: no PASS verdict:\n${out.trim().slice(-400)}`);
       const properties = out.match(/PROPERTY PASS name=/g) || [];
       ctx.assert(properties.length >= 3, `${rel}: only ${properties.length} property verdicts`);
-      return `${properties.length} seeded properties (marker, channel key, mute) + 3 RED arms; ${verdict[1]} checks`;
+      // EXPECTED-RED is printed by each RED arm's control (property-invariants-test.cjs:290).
+      // Counting the real lines makes a deleted RED arm change both the assertion and the detail.
+      const expectedReds = out.match(/^EXPECTED-RED \S+/gm) || [];
+      ctx.assert(expectedReds.length > 0, `${rel}: no EXPECTED-RED arms:\n${out.trim().slice(-400)}`);
+      return `${properties.length} seeded properties (marker, channel key, mute) + ${expectedReds.length} EXPECTED-RED arms; ${verdict[1]} checks`;
+    },
+  },
+  {
+    // ---- Audio authority: the shipped audio sources at their external seams -----
+    // Nine fixes / 13 checks over ko-audio.js, adblock-bridge.js, content.js and
+    // twitch-adblock.js, each observed at the intent, posted command, adlog row or
+    // gesture patch, with 11 RED mutations. It printed its own verdict and
+    // anti-vacuity line but was never spawned by this gate, so a deleted arm could
+    // not turn the receipt red. Run it here and read both lines back.
+    name: 'audio-authority',
+    run(ctx) {
+      const rel = 'kick-overlay/audio-authority-test.cjs';
+      const r = runSuite(ctx, 'audio-authority', rel);
+      const out = String(r.stdout || '') + String(r.stderr || '');
+      ctx.assert(r.status === 0, `${rel}: ${lastLines(r, 320)}`);
+      const verdict = /RESULT PASS audio-authority checks=(\d+) failed=0/.exec(out);
+      ctx.assert(verdict, `${rel}: no PASS verdict:\n${out.trim().slice(-400)}`);
+      const anti = /ANTI-VACUITY suite=audio-authority checks=(\d+) expected=\1/.exec(out);
+      ctx.assert(anti, `${rel}: no matching anti-vacuity line:\n${out.trim().slice(-400)}`);
+      const reds = /REDS (\d+):/.exec(out);
+      ctx.assert(reds && Number(reds[1]) > 0, `${rel}: no RED arms printed`);
+      return `${verdict[1]} checks, ${anti[1]} anti-vacuous arms, ${reds[1]} RED mutations`;
     },
   },
 ];
 
 // Suite-count pin. The registry grew from 11 to 12 when `property-invariants`
-// was registered; a dropped or duplicated entry must break the gate loudly
-// instead of silently shrinking the suite population it reports.
-export const EXPECTED_SUITE_COUNT = 12;
+// was registered, and to 13 when `audio-authority` was registered; a dropped or
+// duplicated entry must break the gate loudly instead of silently shrinking the
+// suite population it reports.
+export const EXPECTED_SUITE_COUNT = 13;
 if (suiteChecks.length !== EXPECTED_SUITE_COUNT) {
-  throw new Error(`suite registry has ${suiteChecks.length} entries, expected ${EXPECTED_SUITE_COUNT} (was 11 before property-invariants)`);
+  throw new Error(`suite registry has ${suiteChecks.length} entries, expected ${EXPECTED_SUITE_COUNT} (was 11 before property-invariants and audio-authority)`);
 }
 
