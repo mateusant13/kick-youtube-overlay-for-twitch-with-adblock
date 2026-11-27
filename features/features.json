@@ -47,6 +47,7 @@
         "_tools/ko-adlog-verdict.mjs",
         "_tools/ko-adlog-window.mjs",
         "_tools/ko-auto-install.ps1",
+        "_tools/ko-bg-window.py",
         "_tools/ko-cdp.mjs",
         "_tools/ko-census.mjs",
         "_tools/ko-click.mjs",
