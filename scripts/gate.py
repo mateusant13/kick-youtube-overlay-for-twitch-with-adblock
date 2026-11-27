@@ -24,6 +24,17 @@ Verdict rules (no silent green):
   for unavailable tools; never reported as `PASS`. On timeout the whole
   child tree is killed, so no grandchild outlives the gate's budget.
 
+The four revival stages are registered here too: sim, feature_map, failfast and
+pytest. The first three run under H:/!gravador/tools/run.py with an explicit
+`--teto-cpu 3000 --io very-low` ceiling whenever that launcher exists; if it is
+absent, the driver's own subprocess timeout is the printed ceiling. This repo
+has no pytest suite, so pytest is always CANNOT-MEASURE, never a faked PASS.
+
+`gate.toml` command slots are real stages: an empty slot prints
+`skipped: not-configured`; a configured slot takes its timeout from [tiers],
+and [tiers] is the single source of that number. Informational CANNOTs (empty
+slots, absent pytest) do not fail a default run; selecting one with --stage
+honours the driver's rc 3 CANNOT-MEASURE convention.
 Exit codes: 0 all selected stages PASS, 2 any FAIL, 3 any CANNOT-MEASURE and
 no FAIL. A FAIL outranks CANNOT-MEASURE so a red stays red.
 
@@ -41,6 +52,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -48,6 +60,10 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+try:
+    import tomllib  # Python 3.11+ stdlib; absence is a declared refusal.
+except ImportError:  # pragma: no cover - Python < 3.11
+    tomllib = None  # type: ignore[assignment]
 
 CREATE_NO_WINDOW = getattr(os, "CREATE_NO_WINDOW", 0x08000000)
 PASS, FAIL, CANNOT = "PASS", "FAIL", "CANNOT-MEASURE"
@@ -96,6 +112,12 @@ SELFTESTS = (
     "heavy-lock", "ledger-invariant", "timed-suite",
 )
 OVERLAY = Path("_scratch/gate-extra.json")
+REVIVAL = Path("C:/Users/Administrador/.agents/skills/project-revival/scripts")
+WRAPPER = Path("H:/!gravador/tools/run.py")
+CEILING_CPU, CEILING_IO = "3000", "very-low"
+GATE_TOML = "gate.toml"
+DECLARED_SLOT_TIMEOUT = 90.0
+COMMAND_TIER_DEFAULT = "t1_s"
 
 
 @dataclass(frozen=True)
@@ -106,6 +128,11 @@ class Stage:
     pass_pattern: str | None = None
     heavy: bool = False
     note: str = ""
+    ceiling: str = ""
+    builtin: str = ""
+    tier: str = ""
+    declared_timeout_s: float | None = None
+    optional_absent: bool = False
 
 
 @dataclass(frozen=True)
@@ -117,6 +144,9 @@ class Result:
     child_rc: int | None = None
     timeout_s: float = 0.0
     skipped: bool = False
+    ceiling: str = ""
+    tier: str = ""
+    informational: bool = False
 
     def as_dict(self) -> dict:
         return {
@@ -127,10 +157,13 @@ class Result:
             "child_rc": self.child_rc,
             "timeout_s": self.timeout_s,
             "skipped": self.skipped,
+            "ceiling": self.ceiling,
+            "tier": self.tier,
+            "informational": self.informational,
         }
 
 
-def stages() -> list[Stage]:
+def stages(repo: Path) -> list[Stage]:
     out = [
         Stage(f"syntax_{Path(rel).stem}", ("node", "--check", rel), 30.0,
               note="node --check on every shipped product file")
@@ -149,6 +182,26 @@ def stages() -> list[Stage]:
               r"RESULT PASS", note="negative arms of the gate's own instruments")
         for name in SELFTESTS
     ]
+    revival_repo = str(repo)
+    revival = (
+        ("sim", (sys.executable, str(REVIVAL / "sim_memory.py"), "--repo", revival_repo,
+                 "gate", "--no-require-update"), 120.0,
+         r"\[SIM-GATE\] PASS rows=\d+ problems=0"),
+        ("feature_map", (sys.executable, str(REVIVAL / "feature_map_sync.py"),
+                         "--repo", revival_repo, "--gate"), 180.0,
+         r'"verdict":\s*"PASS"'),
+        ("failfast", (sys.executable, str(REVIVAL / "fail_fast_audit.py"), "scan",
+                      "--repo", revival_repo, "--gate", "--all-code"), 180.0,
+         r'"verdict":\s*"PASS"'),
+    )
+    for name, base, timeout, pattern in revival:
+        argv, ceiling = _wrap_ceiling(name, base, timeout)
+        out.append(Stage(name, argv, timeout, pattern, ceiling=ceiling,
+                         note=f"Project Revival {name}; ceiling declared on the verdict line"))
+    out.append(Stage("pytest", (), 30.0,
+                     note="no pytest suite in this repo: typed CANNOT-MEASURE, never PASS",
+                     ceiling="none (in-process file count; no child launched, stage budget=30s)",
+                     builtin="pytest", optional_absent=True))
     out += [
         Stage("artifact_caps", (
             sys.executable, "I:/!watcher/tools/artifact-census.py", "--project", ".",
@@ -161,6 +214,119 @@ def stages() -> list[Stage]:
               note="the project's one heavy gate (AGENTS.md:469); run alone under watcher"),
     ]
     return out
+
+def _wrap_ceiling(name: str, argv: tuple[str, ...], timeout_s: float) -> tuple[tuple[str, ...], str]:
+    """Use the real CPU/IO launcher when present; otherwise declare the timeout."""
+    if not WRAPPER.is_file():
+        return argv, f"subprocess-timeout={timeout_s:g}s (no CPU/IO wrapper at {WRAPPER})"
+    wrapper_timeout = int(timeout_s + 30)
+    wrapped = (
+        sys.executable, str(WRAPPER), "--rotulo", f"gate-{name}",
+        "--teto-cpu", CEILING_CPU, "--io", CEILING_IO,
+        "--sem-coalescer", "--sem-limpar", "--timeout", str(wrapper_timeout),
+        "--", *argv,
+    )
+    return wrapped, (f"cpu={CEILING_CPU} io={CEILING_IO} "
+                     f"subprocess-timeout={timeout_s:g}s wrapper-timeout={wrapper_timeout}s")
+
+
+def _load_gate_toml(repo: Path) -> tuple[dict, str | None]:
+    if tomllib is None:
+        return {}, "CANNOT-MEASURE: tomllib unavailable (Python <3.11); gate.toml stages not configured"
+    path = repo / GATE_TOML
+    try:
+        doc = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as ex:
+        return {}, f"CANNOT-MEASURE: cannot read {GATE_TOML} at {path}: {ex}"
+    return doc, None
+
+
+def _command_tiers(path: Path) -> dict[str, str]:
+    """The comment before each [commands] slot names its tier (`# t1:` or `# t2`)."""
+    tiers: dict[str, str] = {}
+    current: str | None = None
+    in_commands = False
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return tiers
+    for raw in lines:
+        line = raw.strip()
+        if line.startswith("[") and line.endswith("]"):
+            in_commands = line.lower() == "[commands]"
+            current = None
+            continue
+        if not in_commands or not line:
+            continue
+        marker = re.match(r"#\s*(t[0-3])\b", line)
+        if marker:
+            current = marker.group(1) + "_s"
+            continue
+        slot = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
+        if slot and current:
+            tiers[slot.group(1)] = current
+    return tiers
+
+
+def _tier_timeout(tiers: dict, tier: str) -> tuple[float | None, str]:
+    """[tiers] owns configured slot timeouts; a hardcoded value loses."""
+    value = tiers.get(tier)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None, f"missing {tier} in {GATE_TOML} [tiers]"
+    timeout = float(value)
+    note = f"timeout={timeout:g} tier={tier}"
+    if timeout != DECLARED_SLOT_TIMEOUT:
+        note += f" (declared timeout={DECLARED_SLOT_TIMEOUT:g} overridden by {GATE_TOML})"
+    return timeout, note
+
+
+def config_stages(repo: Path, doc: dict) -> list[Stage]:
+    tier_values = doc.get("tiers") if isinstance(doc.get("tiers"), dict) else {}
+    commands = doc.get("commands") if isinstance(doc.get("commands"), dict) else {}
+    slots = _command_tiers(repo / GATE_TOML)
+    out: list[Stage] = []
+    for name in list(slots) + [key for key in commands if key not in slots]:
+        raw = str(commands.get(name, "") or "")
+        tier = slots.get(name, COMMAND_TIER_DEFAULT)
+        if not raw.strip():
+            out.append(Stage(name, (), 0.0,
+                             note=f"skipped: not-configured (empty {GATE_TOML} slot; tier={tier})",
+                             ceiling=f"none (no command configured; no child launched; tier={tier})",
+                             builtin="unconfigured", optional_absent=True, tier=tier))
+            continue
+        timeout, note = _tier_timeout(tier_values, tier)
+        if timeout is None:
+            out.append(Stage(name, (), 0.0, note=f"CANNOT-MEASURE: {note}",
+                             ceiling=f"none ({note}; no child launched)",
+                             builtin="unconfigured", optional_absent=True, tier=tier))
+            continue
+        out.append(Stage(name, tuple(shlex.split(raw)), timeout,
+                         note=f"{note} from {GATE_TOML}",
+                         ceiling=f"subprocess-timeout={timeout:g}s {note}",
+                         tier=tier, declared_timeout_s=DECLARED_SLOT_TIMEOUT))
+    return out
+
+
+def _pytest_probe(stage: Stage, repo: Path) -> Result:
+    patterns = ("test_*.py", "*_test.py")
+    skip = {".git", "_scratch", "node_modules", "__pycache__", ".codeintel"}
+    try:
+        found = sorted({p.relative_to(repo).as_posix()
+                        for pat in patterns for p in repo.rglob(pat)
+                        if not skip.intersection(p.relative_to(repo).parts)})
+    except OSError as ex:
+        return Result(stage.name, CANNOT, f"ceiling={stage.ceiling} cannot count pytest files: {ex}",
+                      0.0, timeout_s=stage.timeout_s, skipped=True,
+                      ceiling=stage.ceiling, informational=True)
+    absent = [name for name in ("tests/", "pytest.ini", "pyproject.toml",
+                                "setup.cfg", "tox.ini", "conftest.py")
+              if not (repo / name).exists()]
+    detail = (f"ceiling={stage.ceiling} NO PYTEST SUITE: {len(found)} file(s) matching "
+              f"test_*.py / *_test.py; absent: {', '.join(absent) if absent else 'none'}")
+    if found:
+        detail += f"; found: {', '.join(found[:5])}"
+    return Result(stage.name, CANNOT, detail, 0.0, timeout_s=stage.timeout_s,
+                  skipped=True, ceiling=stage.ceiling, informational=True)
 
 
 def overlay_stages(repo: Path) -> tuple[list[Stage], Result | None]:
@@ -193,17 +359,26 @@ def _tail(text: str, limit: int = 500) -> str:
 
 
 def run_stage(stage: Stage, repo: Path) -> Result:
+    ceiling = f"ceiling={stage.ceiling} " if stage.ceiling else ""
+    if stage.builtin == "pytest":
+        return _pytest_probe(stage, repo)
+    if stage.builtin == "unconfigured" or not stage.argv:
+        return Result(stage.name, CANNOT, f"{ceiling}{stage.note or 'skipped: not-configured'}",
+                      0.0, timeout_s=stage.timeout_s, skipped=True, ceiling=stage.ceiling,
+                      tier=stage.tier, informational=True)
     argv = list(stage.argv)
     exe = argv[0]
     found = shutil.which(exe) if os.path.sep not in exe and "/" not in exe else Path(exe).is_file()
     if not found:
-        return Result(stage.name, CANNOT, f"SKIPPED: tool unavailable: {exe}", 0.0,
-                      timeout_s=stage.timeout_s, skipped=True)
+        return Result(stage.name, CANNOT, f"{ceiling}SKIPPED: tool unavailable: {exe}", 0.0,
+                      timeout_s=stage.timeout_s, skipped=True,
+                      ceiling=stage.ceiling, tier=stage.tier)
     for i, arg in enumerate(argv[1:], 1):
         if arg.endswith(".py") or arg.endswith(".mjs") or arg.endswith(".cjs") or arg.endswith(".js"):
             if not (repo / arg).is_file() and not Path(arg).is_file():
-                return Result(stage.name, CANNOT, f"SKIPPED: missing script: {arg}", 0.0,
-                              timeout_s=stage.timeout_s, skipped=True)
+                return Result(stage.name, CANNOT, f"{ceiling}SKIPPED: missing script: {arg}", 0.0,
+                              timeout_s=stage.timeout_s, skipped=True,
+                              ceiling=stage.ceiling, tier=stage.tier)
         elif arg.startswith(("-", "--")) is False and i == 1 and arg == ".":
             pass
     env = dict(os.environ)
@@ -221,9 +396,9 @@ def run_stage(stage: Stage, repo: Path) -> Result:
     try:
         child = subprocess.Popen(argv, **kw)
     except OSError as ex:
-        return Result(stage.name, CANNOT, f"SKIPPED: launch failed: {ex}",
+        return Result(stage.name, CANNOT, f"{ceiling}SKIPPED: launch failed: {ex}",
                       round(time.perf_counter() - t0, 2), timeout_s=stage.timeout_s,
-                      skipped=True)
+                      skipped=True, ceiling=stage.ceiling, tier=stage.tier)
     try:
         body, _ = child.communicate(timeout=stage.timeout_s)
         rc = child.returncode
@@ -234,14 +409,15 @@ def run_stage(stage: Stage, repo: Path) -> Result:
         except subprocess.TimeoutExpired:
             pass
         return Result(stage.name, CANNOT,
-                      f"TIMEOUT after {stage.timeout_s:g}s: {stage.name}",
-                      round(time.perf_counter() - t0, 2), timeout_s=stage.timeout_s)
+                      f"{ceiling}TIMEOUT after {stage.timeout_s:g}s: {stage.name}",
+                      round(time.perf_counter() - t0, 2), timeout_s=stage.timeout_s,
+                      ceiling=stage.ceiling, tier=stage.tier)
     wall = round(time.perf_counter() - t0, 2)
     body = body or ""
     if rc != 0:
         return Result(stage.name, FAIL,
-                      f"child rc={rc}: {_tail(body) or '<no output>'}",
-                      wall, rc, stage.timeout_s)
+                      f"{ceiling}child rc={rc}: {_tail(body) or '<no output>'}",
+                      wall, rc, stage.timeout_s, ceiling=stage.ceiling, tier=stage.tier)
     neg_kind, neg_line = None, ""
     for line in body.splitlines():
         m = _NEG_VERDICT.match(line.strip())
@@ -250,13 +426,14 @@ def run_stage(stage: Stage, repo: Path) -> Result:
             break
     if neg_kind:
         verdict = CANNOT if neg_kind == "CANNOT-MEASURE" else FAIL
-        return Result(stage.name, verdict, f"CHILD VERDICT {neg_kind}: {_tail(neg_line)}",
-                      wall, rc, stage.timeout_s)
+        return Result(stage.name, verdict, f"{ceiling}CHILD VERDICT {neg_kind}: {_tail(neg_line)}",
+                      wall, rc, stage.timeout_s, ceiling=stage.ceiling, tier=stage.tier)
     if stage.pass_pattern and not re.search(stage.pass_pattern, body):
         return Result(stage.name, FAIL,
-                      f"NO-PASS-VERDICT /{stage.pass_pattern}/: {_tail(body) or '<no output>'}",
-                      wall, rc, stage.timeout_s)
-    return Result(stage.name, PASS, _tail(body) or "rc=0", wall, rc, stage.timeout_s)
+                      f"{ceiling}NO-PASS-VERDICT /{stage.pass_pattern}/: {_tail(body) or '<no output>'}",
+                      wall, rc, stage.timeout_s, ceiling=stage.ceiling, tier=stage.tier)
+    return Result(stage.name, PASS, f"{ceiling}{_tail(body) or 'rc=0'}",
+                  wall, rc, stage.timeout_s, ceiling=stage.ceiling, tier=stage.tier)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -268,7 +445,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--repo", default=".", help="repository root (default: this checkout)")
     args = ap.parse_args(argv)
     repo = Path(args.repo).resolve()
-    registry = stages()
+    doc, config_warning = _load_gate_toml(repo)
+    registry = stages(repo)
+    if doc:
+        configured = config_stages(repo, doc)
+        heavy = [st for st in registry if st.heavy]
+        registry = [st for st in registry if not st.heavy] + configured + heavy
     extra, bad_overlay = overlay_stages(repo)
     if bad_overlay is not None:
         registry.append(Stage("scratch_overlay", (), 0.0))
@@ -281,6 +463,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.list:
         for st in registry:
             print(f"{st.name}\t{'heavy' if st.heavy else 'fast'}\t{st.timeout_s:g}s\t{st.note or st.argv[0]}")
+        if config_warning:
+            print(f"REFUSAL {config_warning}")
         return 0 if bad_overlay is None else 3
     if bad_overlay is not None:
         results = [bad_overlay]
@@ -299,8 +483,19 @@ def main(argv: list[str] | None = None) -> int:
     else:
         results = [run_stage(st, repo) for st in registry if not st.heavy]
 
-    fails = [r.name for r in results if r.verdict == FAIL]
-    cants = [r.name for r in results if r.verdict == CANNOT]
+    # Empty gate.toml slots and the absent pytest suite are typed CANNOTs. They
+    # are informational in a default run (rc 0 with passing stages), but an
+    # explicit --stage selection honours the driver's rc 3 CANNOT convention.
+    informational: list[str] = []
+    blocking: list[Result] = []
+    for r in results:
+        st = by_name.get(r.name)
+        if st is not None and st.optional_absent and r.verdict == CANNOT and not args.stage:
+            informational.append(r.name)
+        else:
+            blocking.append(r)
+    fails = [r.name for r in blocking if r.verdict == FAIL]
+    cants = [r.name for r in blocking if r.verdict == CANNOT]
     rc = 2 if fails else 3 if cants else 0
     verdict = FAIL if fails else CANNOT if cants else PASS
     payload = {
@@ -311,16 +506,21 @@ def main(argv: list[str] | None = None) -> int:
         "stages": [r.as_dict() for r in results],
         "failed": fails,
         "cannot_measure": cants,
+        "informational_cannot": informational,
+        "config_warning": config_warning,
         "not_run": not_run,
     }
     if args.json:
         print(json.dumps(payload, indent=2))
     else:
+        if config_warning:
+            print(f"REFUSAL {config_warning}")
         for r in results:
             print(f"{r.verdict} {r.name} {r.wall_s:.2f}s {r.detail}")
         for item in not_run:
             print(f"NOT-RUN {item['name']}: {item['reason']}")
-        print(f"RESULT {verdict} stages={len(results)} failed={len(fails)} cannot_measure={len(cants)}")
+        print(f"RESULT {verdict} stages={len(results)} failed={len(fails)} "
+              f"cannot_measure={len(cants)} informational_cannot={len(informational)}")
     return rc
 
 
