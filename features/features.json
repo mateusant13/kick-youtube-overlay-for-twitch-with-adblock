@@ -1,8 +1,8 @@
 {
   "schema": "revival.features/v1",
   "repo": "kicktwitchyoutube_instagram",
-  "git_head": "84a91be",
-  "generated_at": "2026-11-27T08:48:11Z",
+  "git_head": "79916a3",
+  "generated_at": "2026-11-27T08:57:45Z",
   "total_tracked_files": 165,
   "feature_count": 2,
   "features": [
@@ -78,7 +78,7 @@
         "_tools/test-clock.cjs"
       ],
       "file_count": 65,
-      "recent_commit_touches": 173,
+      "recent_commit_touches": 178,
       "recent_commit_subjects": [
         "gate: split ko-verify into modules; test the load pre-flight; refuse vacuous PASS",
         "revival v3.0.1 P0-04..P0-08: virtual clock, ledger truth, gate hardening",
@@ -86,7 +86,7 @@
         "fix(overlay): native stall watchdog, arrow seek parity, ad standby silence (0.8.110)",
         "verdict: the reader stops claiming blindness it can lift",
         "Bound every hang-capable call in the tooling, and add the impacted fast loop",
-        "guest: the launcher refuses to start on a busy box, in the launcher"
+        "pre-flight: a refusal names the ceiling that broke, not the ones that held"
       ],
       "how_it_works": "Instruments, never product: (1) `ko-verify.mjs` runs every static suite plus the ledger, census, artifact and revival gates and writes `_evidence/ko-verify-latest.md`; (2) `ko-census.mjs` parses the three product scripts and refuses growth of decisions that return with no log row; (3) `ko-adlog-verdict.mjs` / `ko-adlog-window.mjs` read the extension's own ring (`ko.adlog`) and print per-page-load verdicts (ON SCREEN, FROZEN, JUMPS, SOUND, POD FREEZE, DISPLAY, REPEATS, HOLD EXPIRY, RELOADS, BUILDS IN THIS RING); (4) `ko-snapshot.mjs` reads the attributes the page publishes without touching the tab; (5) `ko-harness.mjs` drives a guest Chrome (port 9446, marker `G:/Temp/ko-harness/guest.json`) for kickparity/muteauthor/parity; (6) `ko-replica/` is an offline, deterministic Twitch watch page + ad delivery (HTTPS with a self-signed cert, HLS playlists served with a sliding ad window, a player worker, the real ad DOM shapes) so a pod can be replayed without a live stream; (7) `ko-load-check.mjs` is the pre-flight ceiling reading; (8) `ko-real-capture.mjs` + `ko-replica/compare.mjs` diff a real capture against the replica.",
       "inputs": [
@@ -142,7 +142,7 @@
         "kick-overlay/yt-route-test.cjs"
       ],
       "file_count": 24,
-      "recent_commit_touches": 305,
+      "recent_commit_touches": 306,
       "recent_commit_subjects": [
         "0.8.130: one heavy job at a time is enforced, and the suite stops recompiling the product",
         "Put the content.js suite on a virtual clock, bound the extension's fetches, and repair two slider probes",
