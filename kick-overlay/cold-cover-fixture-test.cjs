@@ -90,7 +90,7 @@ function makeTransport(base) {
     let pathname = null;
     if (url.startsWith(LIVE_HOST)) pathname = url.slice(LIVE_HOST.length);
     if (pathname && ROUTES[pathname.split('?')[0]]) {
-      const r = await fetch(base + pathname);
+      const r = await fetch(base + pathname, { signal: AbortSignal.timeout(5000) });
       const text = await r.text();
       return new Response(text, {
         status: 200,
@@ -186,12 +186,12 @@ async function main() {
   const assert = (cond, msg) => { if (!cond) throw new Error(msg); };
 
   // The worker learns the channel from the master URL, exactly as on Twitch.
-  await worker.self.fetch(`${LIVE_HOST}/channel/hls/${CHANNEL}.m3u8`);
+  await worker.self.fetch(`${LIVE_HOST}/channel/hls/${CHANNEL}.m3u8`, { signal: AbortSignal.timeout(5000) });
   await settle(30);
 
   // The cold preroll: every segment is an ad, wrapped in the stitched-ad
   // DATERANGE the extension keys on.
-  const adRes = await worker.self.fetch(`${LIVE_HOST}/v1/playlist/ad.m3u8`);
+  const adRes = await worker.self.fetch(`${LIVE_HOST}/v1/playlist/ad.m3u8`, { signal: AbortSignal.timeout(5000) });
   const adText = await adRes.text();
   await settle(80);
 
@@ -209,7 +209,7 @@ async function main() {
     assert(adDigest.hasStitched === true, `hasStitched=${adDigest.hasStitched}`);
   });
 
-  const cleanRes = await worker.self.fetch(`${LIVE_HOST}/v1/playlist/clean.m3u8`);
+  const cleanRes = await worker.self.fetch(`${LIVE_HOST}/v1/playlist/clean.m3u8`, { signal: AbortSignal.timeout(5000) });
   await cleanRes.text();
   await settle(80);
   const cleanDigest = worker.debug.filter((m) => m.type === 'playlist' && /clean\.m3u8/.test(m.url || '')).pop();

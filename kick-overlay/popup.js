@@ -39,7 +39,7 @@ async function kickStatus(slug) {
     `https://kick.com/api/v1/channels/${enc}`,
   ]) {
     try {
-      const r = await fetch(url, { credentials: 'omit' });
+      const r = await fetch(url, { signal: AbortSignal.timeout(12000), credentials: 'omit' });
       if (!r.ok) continue;
       const d = await r.json();
       const ls = d && d.livestream;

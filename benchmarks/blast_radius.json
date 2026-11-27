@@ -1,0 +1,1195 @@
+{
+  "schema": "revival.blast_radius/v1",
+  "generated_at": "2026-11-27T05:53:43Z",
+  "file_count": 106,
+  "edge_count": 49,
+  "nodes": {
+    "_tools/cdp-daemon.mjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/cdp.mjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-adlog-verdict.mjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-adlog-window.mjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-cdp.mjs": {
+      "direct_imports": [],
+      "direct_callers": [
+        "_tools/ko-harness.mjs",
+        "_tools/ko-live-latency-arm.mjs",
+        "_tools/ko-live-watch.mjs",
+        "_tools/ko-orphan-cover-arm.mjs",
+        "_tools/ko-real-arm-d1.mjs",
+        "_tools/ko-real-arm-d2.mjs",
+        "_tools/ko-reload-persistent.mjs",
+        "_tools/ko-replica/run.mjs"
+      ],
+      "transitive_callers": [
+        "_tools/ko-harness.mjs",
+        "_tools/ko-live-latency-arm.mjs",
+        "_tools/ko-live-watch.mjs",
+        "_tools/ko-orphan-cover-arm.mjs",
+        "_tools/ko-real-arm-d1.mjs",
+        "_tools/ko-real-arm-d2.mjs",
+        "_tools/ko-reload-persistent.mjs",
+        "_tools/ko-replica/run.mjs"
+      ],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-census.mjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [
+        "basic.census_ms"
+      ],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-click.mjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-ctx.mjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-eval.mjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-gql-probe.mjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-guest.mjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-harness-check.mjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-harness.mjs": {
+      "direct_imports": [
+        "_tools/ko-cdp.mjs"
+      ],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-hook-probe.mjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-live-latency-arm.mjs": {
+      "direct_imports": [
+        "_tools/ko-cdp.mjs"
+      ],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-live-watch.mjs": {
+      "direct_imports": [
+        "_tools/ko-cdp.mjs"
+      ],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-load-check.mjs": {
+      "direct_imports": [
+        "_tools/gate/load-verdict.mjs"
+      ],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-look.mjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-orphan-cover-arm.mjs": {
+      "direct_imports": [
+        "_tools/ko-cdp.mjs"
+      ],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-real-arm-d1.mjs": {
+      "direct_imports": [
+        "_tools/ko-cdp.mjs"
+      ],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-real-arm-d2.mjs": {
+      "direct_imports": [
+        "_tools/ko-cdp.mjs"
+      ],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-real-capture.mjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-reload-persistent.mjs": {
+      "direct_imports": [
+        "_tools/ko-cdp.mjs"
+      ],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-snapshot.mjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-sw-net.mjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-twitch-net.mjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-verify.mjs": {
+      "direct_imports": [
+        "_tools/gate/checks/artifacts.mjs",
+        "_tools/gate/checks/index.mjs",
+        "_tools/gate/receipt.mjs",
+        "_tools/gate/registry.mjs"
+      ],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [
+        "e2e.gate_wall_ms"
+      ],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-yt-net.mjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/relay.mjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/test-clock.cjs": {
+      "direct_imports": [],
+      "direct_callers": [
+        "kick-overlay/ad-time-continuity-test.cjs",
+        "kick-overlay/mute-decision-test.cjs"
+      ],
+      "transitive_callers": [
+        "kick-overlay/ad-time-continuity-test.cjs",
+        "kick-overlay/audio-authority-test.cjs",
+        "kick-overlay/channel-switch-test.cjs",
+        "kick-overlay/cold-cover-fixture-test.cjs",
+        "kick-overlay/mute-decision-test.cjs"
+      ],
+      "covering_metrics": [
+        "basic.import_or_boot_ms",
+        "subsystem.ad_time_continuity_ms",
+        "subsystem.mute_decision_ms"
+      ],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/gate/arms.mjs": {
+      "direct_imports": [],
+      "direct_callers": [
+        "_tools/gate/receipt.mjs"
+      ],
+      "transitive_callers": [
+        "_tools/gate/receipt.mjs",
+        "_tools/ko-verify.mjs"
+      ],
+      "covering_metrics": [
+        "e2e.gate_wall_ms"
+      ],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/gate/load-check-test.mjs": {
+      "direct_imports": [
+        "_tools/gate/load-verdict.mjs"
+      ],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/gate/load-verdict.mjs": {
+      "direct_imports": [],
+      "direct_callers": [
+        "_tools/gate/load-check-test.mjs",
+        "_tools/ko-load-check.mjs"
+      ],
+      "transitive_callers": [
+        "_tools/gate/load-check-test.mjs",
+        "_tools/ko-load-check.mjs"
+      ],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/gate/product.mjs": {
+      "direct_imports": [],
+      "direct_callers": [
+        "_tools/gate/checks/syntax.mjs",
+        "_tools/gate/receipt.mjs"
+      ],
+      "transitive_callers": [
+        "_tools/gate/checks/index.mjs",
+        "_tools/gate/checks/syntax.mjs",
+        "_tools/gate/receipt.mjs",
+        "_tools/ko-verify.mjs"
+      ],
+      "covering_metrics": [
+        "e2e.gate_wall_ms"
+      ],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/gate/receipt-data.mjs": {
+      "direct_imports": [],
+      "direct_callers": [
+        "_tools/gate/receipt.mjs"
+      ],
+      "transitive_callers": [
+        "_tools/gate/receipt.mjs",
+        "_tools/ko-verify.mjs"
+      ],
+      "covering_metrics": [
+        "e2e.gate_wall_ms"
+      ],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/gate/receipt.mjs": {
+      "direct_imports": [
+        "_tools/gate/arms.mjs",
+        "_tools/gate/product.mjs",
+        "_tools/gate/receipt-data.mjs"
+      ],
+      "direct_callers": [
+        "_tools/ko-verify.mjs"
+      ],
+      "transitive_callers": [
+        "_tools/ko-verify.mjs"
+      ],
+      "covering_metrics": [
+        "e2e.gate_wall_ms"
+      ],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/gate/registry.mjs": {
+      "direct_imports": [],
+      "direct_callers": [
+        "_tools/ko-verify.mjs"
+      ],
+      "transitive_callers": [
+        "_tools/ko-verify.mjs"
+      ],
+      "covering_metrics": [
+        "e2e.gate_wall_ms"
+      ],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/gate/checks/artifacts.mjs": {
+      "direct_imports": [],
+      "direct_callers": [
+        "_tools/ko-verify.mjs"
+      ],
+      "transitive_callers": [
+        "_tools/ko-verify.mjs"
+      ],
+      "covering_metrics": [
+        "e2e.gate_wall_ms"
+      ],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/gate/checks/index.mjs": {
+      "direct_imports": [
+        "_tools/gate/checks/instruments.mjs",
+        "_tools/gate/checks/ledger.mjs",
+        "_tools/gate/checks/revival.mjs",
+        "_tools/gate/checks/static-contracts.mjs",
+        "_tools/gate/checks/suites.mjs",
+        "_tools/gate/checks/syntax.mjs",
+        "_tools/gate/checks/tooling.mjs",
+        "_tools/gate/checks/vacuous-green.mjs"
+      ],
+      "direct_callers": [
+        "_tools/ko-verify.mjs"
+      ],
+      "transitive_callers": [
+        "_tools/ko-verify.mjs"
+      ],
+      "covering_metrics": [
+        "e2e.gate_wall_ms"
+      ],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/gate/checks/instruments.mjs": {
+      "direct_imports": [],
+      "direct_callers": [
+        "_tools/gate/checks/index.mjs"
+      ],
+      "transitive_callers": [
+        "_tools/gate/checks/index.mjs",
+        "_tools/ko-verify.mjs"
+      ],
+      "covering_metrics": [
+        "e2e.gate_wall_ms"
+      ],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/gate/checks/ledger.mjs": {
+      "direct_imports": [],
+      "direct_callers": [
+        "_tools/gate/checks/index.mjs"
+      ],
+      "transitive_callers": [
+        "_tools/gate/checks/index.mjs",
+        "_tools/ko-verify.mjs"
+      ],
+      "covering_metrics": [
+        "e2e.gate_wall_ms"
+      ],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/gate/checks/revival.mjs": {
+      "direct_imports": [],
+      "direct_callers": [
+        "_tools/gate/checks/index.mjs"
+      ],
+      "transitive_callers": [
+        "_tools/gate/checks/index.mjs",
+        "_tools/ko-verify.mjs"
+      ],
+      "covering_metrics": [
+        "e2e.gate_wall_ms"
+      ],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/gate/checks/static-contracts.mjs": {
+      "direct_imports": [],
+      "direct_callers": [
+        "_tools/gate/checks/index.mjs"
+      ],
+      "transitive_callers": [
+        "_tools/gate/checks/index.mjs",
+        "_tools/ko-verify.mjs"
+      ],
+      "covering_metrics": [
+        "e2e.gate_wall_ms"
+      ],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/gate/checks/suites.mjs": {
+      "direct_imports": [],
+      "direct_callers": [
+        "_tools/gate/checks/index.mjs"
+      ],
+      "transitive_callers": [
+        "_tools/gate/checks/index.mjs",
+        "_tools/ko-verify.mjs"
+      ],
+      "covering_metrics": [
+        "e2e.gate_wall_ms"
+      ],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/gate/checks/syntax.mjs": {
+      "direct_imports": [
+        "_tools/gate/product.mjs"
+      ],
+      "direct_callers": [
+        "_tools/gate/checks/index.mjs"
+      ],
+      "transitive_callers": [
+        "_tools/gate/checks/index.mjs",
+        "_tools/ko-verify.mjs"
+      ],
+      "covering_metrics": [
+        "e2e.gate_wall_ms"
+      ],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/gate/checks/tooling.mjs": {
+      "direct_imports": [],
+      "direct_callers": [
+        "_tools/gate/checks/index.mjs"
+      ],
+      "transitive_callers": [
+        "_tools/gate/checks/index.mjs",
+        "_tools/ko-verify.mjs"
+      ],
+      "covering_metrics": [
+        "e2e.gate_wall_ms"
+      ],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/gate/checks/vacuous-green-test.mjs": {
+      "direct_imports": [
+        "_tools/gate/checks/vacuous-green.mjs"
+      ],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/gate/checks/vacuous-green.mjs": {
+      "direct_imports": [],
+      "direct_callers": [
+        "_tools/gate/checks/index.mjs",
+        "_tools/gate/checks/vacuous-green-test.mjs"
+      ],
+      "transitive_callers": [
+        "_tools/gate/checks/index.mjs",
+        "_tools/gate/checks/vacuous-green-test.mjs",
+        "_tools/ko-verify.mjs"
+      ],
+      "covering_metrics": [
+        "e2e.gate_wall_ms"
+      ],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-replica/certs.mjs": {
+      "direct_imports": [],
+      "direct_callers": [
+        "_tools/ko-replica/server.mjs"
+      ],
+      "transitive_callers": [
+        "_tools/ko-replica/server.mjs"
+      ],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-replica/compare.mjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-replica/media.mjs": {
+      "direct_imports": [],
+      "direct_callers": [
+        "_tools/ko-replica/server.mjs"
+      ],
+      "transitive_callers": [
+        "_tools/ko-replica/server.mjs"
+      ],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-replica/run.mjs": {
+      "direct_imports": [
+        "_tools/ko-cdp.mjs"
+      ],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-replica/server.mjs": {
+      "direct_imports": [
+        "_tools/ko-replica/certs.mjs",
+        "_tools/ko-replica/media.mjs"
+      ],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-replica/page/page.js": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "_tools/ko-replica/page/player-worker.js": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "_tools"
+      ]
+    },
+    "cookie-extension/src/background.js": {
+      "direct_imports": [
+        "cookie-extension/src/modules/cookie_bridge.mjs",
+        "cookie-extension/src/modules/get_all_cookies.mjs",
+        "cookie-extension/src/modules/save_to_file.mjs"
+      ],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": []
+    },
+    "cookie-extension/src/clip_assist.mjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": []
+    },
+    "cookie-extension/src/popup.mjs": {
+      "direct_imports": [
+        "cookie-extension/src/modules/cookie_bridge.mjs",
+        "cookie-extension/src/modules/cookie_format.mjs",
+        "cookie-extension/src/modules/get_all_cookies.mjs",
+        "cookie-extension/src/modules/save_to_file.mjs"
+      ],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": []
+    },
+    "cookie-extension/src/table-nowrap.js": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": []
+    },
+    "cookie-extension/src/@types/index.d.ts": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": []
+    },
+    "cookie-extension/src/modules/cookie_bridge.mjs": {
+      "direct_imports": [],
+      "direct_callers": [
+        "cookie-extension/src/background.js",
+        "cookie-extension/src/popup.mjs"
+      ],
+      "transitive_callers": [
+        "cookie-extension/src/background.js",
+        "cookie-extension/src/popup.mjs"
+      ],
+      "covering_metrics": [],
+      "features": []
+    },
+    "cookie-extension/src/modules/cookie_format.mjs": {
+      "direct_imports": [],
+      "direct_callers": [
+        "cookie-extension/src/popup.mjs"
+      ],
+      "transitive_callers": [
+        "cookie-extension/src/popup.mjs"
+      ],
+      "covering_metrics": [],
+      "features": []
+    },
+    "cookie-extension/src/modules/get_all_cookies.mjs": {
+      "direct_imports": [],
+      "direct_callers": [
+        "cookie-extension/src/background.js",
+        "cookie-extension/src/popup.mjs"
+      ],
+      "transitive_callers": [
+        "cookie-extension/src/background.js",
+        "cookie-extension/src/popup.mjs"
+      ],
+      "covering_metrics": [],
+      "features": []
+    },
+    "cookie-extension/src/modules/save_to_file.mjs": {
+      "direct_imports": [],
+      "direct_callers": [
+        "cookie-extension/src/background.js",
+        "cookie-extension/src/popup.mjs"
+      ],
+      "transitive_callers": [
+        "cookie-extension/src/background.js",
+        "cookie-extension/src/popup.mjs"
+      ],
+      "covering_metrics": [],
+      "features": []
+    },
+    "harness/twins/capture.mjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": []
+    },
+    "harness/twins/replay.mjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": []
+    },
+    "harness/twins/slider_probe.mjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": []
+    },
+    "instagram-followguard/src/background.js": {
+      "direct_imports": [
+        "instagram-followguard/src/diff.mjs",
+        "instagram-followguard/src/ig_api.mjs"
+      ],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": []
+    },
+    "instagram-followguard/src/backup.test.mjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": []
+    },
+    "instagram-followguard/src/completeness.test.mjs": {
+      "direct_imports": [
+        "instagram-followguard/src/diff.mjs",
+        "instagram-followguard/src/ig_api.mjs"
+      ],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": []
+    },
+    "instagram-followguard/src/content.js": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": []
+    },
+    "instagram-followguard/src/content_proxy.js": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": []
+    },
+    "instagram-followguard/src/continue.test.mjs": {
+      "direct_imports": [
+        "instagram-followguard/src/ig_api.mjs"
+      ],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": []
+    },
+    "instagram-followguard/src/dashboard.js": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": []
+    },
+    "instagram-followguard/src/diff.mjs": {
+      "direct_imports": [],
+      "direct_callers": [
+        "instagram-followguard/src/background.js",
+        "instagram-followguard/src/completeness.test.mjs",
+        "instagram-followguard/src/diff.test.mjs"
+      ],
+      "transitive_callers": [
+        "instagram-followguard/src/background.js",
+        "instagram-followguard/src/completeness.test.mjs",
+        "instagram-followguard/src/diff.test.mjs"
+      ],
+      "covering_metrics": [],
+      "features": []
+    },
+    "instagram-followguard/src/diff.test.mjs": {
+      "direct_imports": [
+        "instagram-followguard/src/diff.mjs"
+      ],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": []
+    },
+    "instagram-followguard/src/friendship_hook.js": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": []
+    },
+    "instagram-followguard/src/friendship_watch.js": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": []
+    },
+    "instagram-followguard/src/hardening.test.mjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": []
+    },
+    "instagram-followguard/src/ig_api.mjs": {
+      "direct_imports": [],
+      "direct_callers": [
+        "instagram-followguard/src/background.js",
+        "instagram-followguard/src/completeness.test.mjs",
+        "instagram-followguard/src/continue.test.mjs",
+        "instagram-followguard/src/partial.test.mjs"
+      ],
+      "transitive_callers": [
+        "instagram-followguard/src/background.js",
+        "instagram-followguard/src/completeness.test.mjs",
+        "instagram-followguard/src/continue.test.mjs",
+        "instagram-followguard/src/partial.test.mjs"
+      ],
+      "covering_metrics": [],
+      "features": []
+    },
+    "instagram-followguard/src/isolation.test.mjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": []
+    },
+    "instagram-followguard/src/notify.test.mjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": []
+    },
+    "instagram-followguard/src/partial.test.mjs": {
+      "direct_imports": [
+        "instagram-followguard/src/ig_api.mjs"
+      ],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": []
+    },
+    "instagram-followguard/src/reload-bootstrap.js": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": []
+    },
+    "kick-overlay/ad-detect-test.cjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "kick-overlay"
+      ]
+    },
+    "kick-overlay/ad-time-continuity-test.cjs": {
+      "direct_imports": [
+        "_tools/test-clock.cjs",
+        "kick-overlay/mute-decision-test.cjs"
+      ],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [
+        "subsystem.ad_time_continuity_ms"
+      ],
+      "features": [
+        "kick-overlay"
+      ]
+    },
+    "kick-overlay/adblock-bridge.js": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "kick-overlay"
+      ]
+    },
+    "kick-overlay/audio-authority-test.cjs": {
+      "direct_imports": [
+        "kick-overlay/mute-decision-test.cjs"
+      ],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "kick-overlay"
+      ]
+    },
+    "kick-overlay/background.js": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "kick-overlay"
+      ]
+    },
+    "kick-overlay/bridge-handshake-test.cjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [
+        "subsystem.bridge_handshake_ms"
+      ],
+      "features": [
+        "kick-overlay"
+      ]
+    },
+    "kick-overlay/channel-switch-test.cjs": {
+      "direct_imports": [
+        "kick-overlay/mute-decision-test.cjs"
+      ],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "kick-overlay"
+      ]
+    },
+    "kick-overlay/cold-cover-fixture-test.cjs": {
+      "direct_imports": [
+        "kick-overlay/mute-decision-test.cjs"
+      ],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "kick-overlay"
+      ]
+    },
+    "kick-overlay/content-fix-test.cjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "kick-overlay"
+      ]
+    },
+    "kick-overlay/content.js": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "kick-overlay"
+      ]
+    },
+    "kick-overlay/ko-audio.js": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "kick-overlay"
+      ]
+    },
+    "kick-overlay/mute-decision-test.cjs": {
+      "direct_imports": [
+        "_tools/test-clock.cjs"
+      ],
+      "direct_callers": [
+        "kick-overlay/ad-time-continuity-test.cjs",
+        "kick-overlay/audio-authority-test.cjs",
+        "kick-overlay/channel-switch-test.cjs",
+        "kick-overlay/cold-cover-fixture-test.cjs"
+      ],
+      "transitive_callers": [
+        "kick-overlay/ad-time-continuity-test.cjs",
+        "kick-overlay/audio-authority-test.cjs",
+        "kick-overlay/channel-switch-test.cjs",
+        "kick-overlay/cold-cover-fixture-test.cjs"
+      ],
+      "covering_metrics": [
+        "subsystem.ad_time_continuity_ms",
+        "subsystem.mute_decision_ms"
+      ],
+      "features": [
+        "kick-overlay"
+      ]
+    },
+    "kick-overlay/player-bridge.js": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "kick-overlay"
+      ]
+    },
+    "kick-overlay/popup.js": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "kick-overlay"
+      ]
+    },
+    "kick-overlay/route-gate-test.cjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "kick-overlay"
+      ]
+    },
+    "kick-overlay/tab-audio-scope-test.cjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "kick-overlay"
+      ]
+    },
+    "kick-overlay/twitch-adblock.js": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [
+        "basic.syntax_check_ms"
+      ],
+      "features": [
+        "kick-overlay"
+      ]
+    },
+    "kick-overlay/youtube-resume-test.cjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "kick-overlay"
+      ]
+    },
+    "kick-overlay/yt-route-test.cjs": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "kick-overlay"
+      ]
+    },
+    "kick-overlay/hls/hls.min.js": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "kick-overlay"
+      ]
+    },
+    "kick-overlay/ivs/amazon-ivs-wasmworker.min.js": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "kick-overlay"
+      ]
+    },
+    "kick-overlay/ivs/index.js": {
+      "direct_imports": [],
+      "direct_callers": [],
+      "transitive_callers": [],
+      "covering_metrics": [],
+      "features": [
+        "kick-overlay"
+      ]
+    }
+  }
+}

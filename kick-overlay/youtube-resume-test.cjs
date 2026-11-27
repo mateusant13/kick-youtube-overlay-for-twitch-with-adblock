@@ -211,7 +211,7 @@ async function runArm(arm) {
     process.exit(green && handsBack ? 0 : 1);
   }
 
-  const run = (arm) => spawnSync(process.execPath, [__filename, '--arm=' + arm], { encoding: 'utf8' });
+  const run = (arm) => spawnSync(process.execPath, [__filename, '--arm=' + arm], { timeout: 60000, killSignal: 'SIGKILL', encoding: 'utf8' });
   const pre = run('pre');
   const post = run('post');
   process.stdout.write(pre.stdout + pre.stderr);

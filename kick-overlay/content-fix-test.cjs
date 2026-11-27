@@ -8,6 +8,22 @@
 const fs = require('fs');
 const assert = require('assert');
 
+// The timer-heavy arms run on the virtual clock (see _tools/test-clock.cjs):
+// content.js resolves setTimeout/setInterval/Date from the host global, so the
+// host exposes the clock and every wait ADVANCES the timeline instead of
+// sleeping on it. KO_REAL_CLOCK=1 restores the old wall-clock timeline so any
+// arm suspected of depending on virtual time is re-measured as before.
+const realSetTimeout = global.setTimeout.bind(global);
+const realSetImmediate = global.setImmediate.bind(global);
+const clock = require('../_tools/test-clock.cjs');
+global.setTimeout = clock.setTimeout;
+global.clearTimeout = clock.clearTimeout;
+global.setInterval = clock.setInterval;
+global.clearInterval = clock.clearInterval;
+global.Date = clock.Date;
+if (global.performance) global.performance.now = clock.performance.now;
+const drain = () => new Promise((resolve) => realSetImmediate(resolve));
+
 const manifest = JSON.parse(fs.readFileSync('manifest.json', 'utf8'));
 assert.ok(manifest.host_permissions.includes('https://kick.com/*'), 'manifest permits Kick API fetches');
 const CS_ENTRY = (manifest.content_scripts || []).find((c) => (c.js || []).includes('content.js'));
@@ -175,7 +191,7 @@ const chromeStub = {
       swCalls.push(m);
       if (m && m.type === 'ko-yt-play') {
         const rr = { url: 'https://hls.example/u1' };
-        setTimeout(() => cb && cb(rr), 0);
+        realSetTimeout(() => cb && cb(rr), 0);
       } else {
         cb && cb({ ok: true });
       }
@@ -188,7 +204,7 @@ const chromeStub = {
     local: {
       // Single mutable object: tests write it to simulate another tab or the
       // popup pushing a new settings table.
-      get: (k, cb) => setTimeout(() => cb && cb(storage.ko === undefined ? {} : { [k]: storage.ko }), 0),
+      get: (k, cb) => realSetTimeout(() => cb && cb(storage.ko === undefined ? {} : { [k]: storage.ko }), 0),
       set: (o, cb) => { storage.ko = o['ko.v2']; cb && cb(); },
     },
     // FIRST-WINS: the harness loads content.js twice (main api + mountApi at
@@ -242,7 +258,19 @@ const fn = new Function('window', 'document', 'location', 'navigator', src + '\n
 const api = fn(global, doc, global.location, global.navigator);
 const KO = api.KO;
 
-const settle = (ms) => new Promise((r) => setTimeout(r, ms));
+// One real macrotask turn: the chrome stub answers on the REAL clock (as Chrome
+// does), so the virtual advance alone cannot see its reply.
+const flushReal = async () => {
+  await new Promise((resolve) => realSetTimeout(resolve, 0));
+  await drain();
+};
+// Advance the timeline, then let the real turns and the newly-due virtual
+// timers converge. Four rounds is the depth a mint -> reply -> follow-up chain
+// needs (measured: one round left the re-mint's url unset).
+const settle = async (ms) => {
+  await clock.advance(Number(ms) || 0);  // REAL mode: this is a real sleep
+  for (let i = 0; i < 4; i += 1) { await flushReal(); clock.advance(0); }
+};
 // Every console.log is recorded: the anti-vacuity check at the end of the run
 // proves each expected arm actually executed.
 const armLog = [];
@@ -2402,14 +2430,14 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     // "must NOT reload" halves) instead of racing one sleep.
     const run = async () => {
       const reloadCount = async (want) => {
-        const deadline = Date.now() + 4000;
-        while (Date.now() < deadline) {
+        // 80 x 50 ms = the same 4 s deadline, on whichever clock is running.
+        for (let i = 0; i < 80; i += 1) {
           if (reloads.length === want) return reloads.length;
-          await new Promise((r) => setTimeout(r, 50));
+          await settle(50);
         }
         return reloads.length;
       };
-      const settle = async () => { await new Promise((r) => setTimeout(r, 250)); return reloads.length; };
+      const settleReloads = async () => { await settle(250); return reloads.length; };
       manifestVersion = '0.8.82'; // same as KO_VER: nothing to do
       reloads.length = 0;
       mountApi.recoverStale();
@@ -2417,12 +2445,12 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
       manifestVersion = '0.9.0';
       mountDoc.hidden = false;
       mountApi.recoverStale();
-      assert.strictEqual(await settle(), 0, 'a VISIBLE page was reloaded under the user');
+      assert.strictEqual(await settleReloads(), 0, 'a VISIBLE page was reloaded under the user');
       mountDoc.hidden = true;
       mountApi.recoverStale();
       assert.strictEqual(await reloadCount(1), 1, 'a stale tab in the background did not reload once');
       mountApi.recoverStale();
-      assert.strictEqual(await settle(), 1, 'the same version reloaded twice (a loop)');
+      assert.strictEqual(await settleReloads(), 1, 'the same version reloaded twice (a loop)');
       mountDoc.hidden = false;
       manifestVersion = '0.8.82';
       console.log('P2p stale-tab: a background tab heals once per version - OK');
@@ -2446,14 +2474,14 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
     // for being early.
     const run = async () => {
       const reloadCount = async (want) => {
-        const deadline = Date.now() + 4000;
-        while (Date.now() < deadline) {
+        // 80 x 50 ms = the same 4 s deadline, on whichever clock is running.
+        for (let i = 0; i < 80; i += 1) {
           if (reloads.length === want) return reloads.length;
-          await new Promise((r) => setTimeout(r, 50));
+          await settle(50);
         }
         return reloads.length;
       };
-      const settle = async () => { await new Promise((r) => setTimeout(r, 250)); return reloads.length; };
+      const settleReloads = async () => { await settle(250); return reloads.length; };
       manifestVersion = '0.9.1';
       reloads.length = 0;
       mountDoc.hidden = true;
@@ -2461,11 +2489,11 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
       assert.strictEqual(await reloadCount(1), 1, 'a tab hidden across the update never healed: the heartbeat did not ask');
       mountApi.koHbTick();
       mountApi.koHbTick();
-      assert.strictEqual(await settle(), 1, 'the heartbeat reloaded the same version again (a loop)');
+      assert.strictEqual(await settleReloads(), 1, 'the heartbeat reloaded the same version again (a loop)');
       manifestVersion = '0.9.2';
       mountDoc.hidden = false;
       mountApi.koHbTick();
-      assert.strictEqual(await settle(), 1, 'a VISIBLE page was reloaded under the user by the heartbeat');
+      assert.strictEqual(await settleReloads(), 1, 'a VISIBLE page was reloaded under the user by the heartbeat');
       // RED: the same driver against a module without the heartbeat's question.
       // The mutant's own `init()` boots as well, so the BOOT call is neutralized
       // too - otherwise the mutation would be "proved" by a path the arm is not
@@ -2489,7 +2517,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
       manifestVersion = '0.9.3';
       mountDoc.hidden = true;
       noAsk.koHbTick();
-      await new Promise((r) => setTimeout(r, 1500)); // absence: past the product's 800 ms delay with margin
+      await settle(1500); // absence: past the product's 800 ms delay with margin
       assert.strictEqual(reloads.length, before, 'the RED mutant healed the tab anyway, so the arm proves nothing');
       mountDoc.hidden = false;
       manifestVersion = '0.8.82';
@@ -2516,20 +2544,20 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
       // content-fix FAIL only inside ko-verify, green alone). Drain it before
       // the count starts so the arm measures its own decisions; a real reload
       // under the pod is scheduled by the call below, well after this mark.
-      await new Promise((r) => setTimeout(r, 1000));
+      await settle(1000); // drain a timer a previous arm left in flight
       // The product schedules its reload 800 ms out; a fixed 900 ms sleep has
       // 100 ms of margin and asserts BEFORE the timer on a loaded box, which is
       // how this block went red inside ko-verify while green alone. Every
       // positive count below polls to a deadline; the negative ones settle.
       const reloadCount = async (want) => {
-        const deadline = Date.now() + 4000;
-        while (Date.now() < deadline) {
+        // 80 x 50 ms = the same 4 s deadline, on whichever clock is running.
+        for (let i = 0; i < 80; i += 1) {
           if (reloads.length === want) return reloads.length;
-          await new Promise((r) => setTimeout(r, 50));
+          await settle(50);
         }
         return reloads.length;
       };
-      const settle = async () => { await new Promise((r) => setTimeout(r, 250)); return reloads.length; };
+      const settleReloads = async () => { await settle(250); return reloads.length; };
       manifestVersion = '0.9.4';
       mountDoc.hidden = true;
       sessionStore.clear();
@@ -2537,7 +2565,7 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
       reloads.length = 0;
       const mark = swCalls.length;
       mountApi.recoverStale();
-      await settle();
+      await settleReloads();
       const waited = tabRows().filter((d) => d && d.act === 'wait-pod');
       assert.strictEqual(reloads.length, 0, 'a stale tab was reloaded UNDER A POD (the interruption he asked to remove)');
       assert.strictEqual(waited.length, 1, `the deferral was silent: ${JSON.stringify(tabRows())}`);
@@ -4467,3 +4495,13 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   console.log('\nALL CONTENT.JS FIX CHECKS PASSED');
   process.exit(0);
 })().catch((e) => { console.error('HARNESS FAIL:', e); process.exit(1); });
+
+// A pending await whose only resolver was a virtual timer leaves NODE with an
+// empty event loop: the process exits 0 having printed half the arms, which is
+// the silent-green class this suite exists to refuse. Name it.
+process.on('beforeExit', (code) => {
+  if (code !== 0) return;
+  const last = armLog.filter((l) => / OK$/.test(String(l).trim())).pop() || '(none)';
+  console.error(`HARNESS FAIL: the run ended before ALL CONTENT.JS FIX CHECKS PASSED (last arm: ${String(last).trim()}); an await never settled.`);
+  process.exitCode = 1;
+});

@@ -86,7 +86,10 @@ const KO_VD_RE = /"visitorData":"([^"]+)"/;
 const KO_VID_RE = /[?&]v=([0-9A-Za-z_-]{11})/;
 
 async function koFetchText(url, opts) {
-  const r = await fetch(url, opts);
+  // 15 s is a HANG ceiling for a background fetch: a wedged CDN must fail the
+  // request the popup is waiting for, not leave it pending. A caller-supplied
+  // signal still wins because `opts` spreads last.
+  const r = await fetch(url, { signal: AbortSignal.timeout(15000), ...opts });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.text();
 }
@@ -103,7 +106,7 @@ async function koLiveVideoId(channelRef) {
   const base = channelRef.startsWith('UC')
     ? `https://www.youtube.com/channel/${channelRef}/live`
     : `https://www.youtube.com/${channelRef}/live`;
-  const r = await fetch(base, { credentials: 'omit', redirect: 'follow' });
+  const r = await fetch(base, { signal: AbortSignal.timeout(15000), credentials: 'omit', redirect: 'follow' });
   if (!r.ok) return null;
   const m = r.url.match(KO_VID_RE);
   if (m) return m[1];
@@ -143,6 +146,7 @@ async function koMintManifest(videoId) {
   body.playbackContext = { contentPlaybackContext: { html5Preference: 'HTML5_PREF_WANTS', signatureTimestamp: Number(sts) } };
   body.videoId = videoId;
   const pr = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+    signal: AbortSignal.timeout(15000),
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -196,7 +200,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
   // credentials 'omit': the anonymous page carries the UC id (curl-verified);
   // the logged-in variant can redirect to the consent wall and break the match.
-  fetch(url, { credentials: 'omit' })
+  fetch(url, { signal: AbortSignal.timeout(15000), credentials: 'omit' })
     .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`))))
     .then((html) => {
       const m =

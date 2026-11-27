@@ -24,7 +24,13 @@ const FEATURE_SYNC = `${PY_SCRIPTS}/feature_map_sync.py`;
 // friction.inner_test_loop: the two behavioural suites on the virtual clock (8-10 s).
 // A narrower census+bridge+node--check smoke (0.6 s) cannot see the ad path's ordering,
 // so scoring it as the loop would flatter the number and measure nothing the row cares about.
-const EDIT_LOOP = 'node kick-overlay/mute-decision-test.cjs && node kick-overlay/ad-time-continuity-test.cjs';
+// The per-edit loop is the impacted fast loop (the same command the
+// friction.inner_test_loop row names), measured on the WORST product file:
+// twitch-adblock.js maps to ad-detect + cold-cover + mute-decision (~1.9 s).
+// The two heavy suites are the LANDING set (the gate runs them) - scoring them
+// as the edit loop measured how long the gate takes, not how fast an edit is.
+const EDIT_LOOP = 'node _tools/gate/fast-loop.mjs --files kick-overlay/twitch-adblock.js';
+const FAIL_FAST = `${PY_SCRIPTS}/fail_fast_audit.py`;
 const GIT_LOG = 'git log -n12 --name-only --format=%x00%H';
 const CENSUS_CMD = 'node _tools/ko-census.mjs --json';
 const REPLAY_CMD = 'node harness/twins/replay.mjs --all --json';
@@ -156,6 +162,7 @@ async function fastLoop() {
   return { ...best, samples: samples.map((s) => round(s.ms, 1)), sampleCount: samples.length };
 }
 const getGate = () => once('gate', () => run('python', [FEATURE_SYNC, '--repo', '.', '--gate'], 14000));
+const getFailFast = () => once('failfast', () => run('python', [FAIL_FAST, 'scan', '--repo', '.', '--gate', '--all-code'], 45000));
 const getReplay = () => once('replay', () => run('node', ['harness/twins/replay.mjs', '--all', '--json'], 12000));
 const getHelp = (sub) => once(`help:${sub || 'top'}`, () => run('python', sub ? [GIT_CHECKPOINT, sub, '--help'] : [GIT_CHECKPOINT, '--help'], 12000));
 
@@ -166,10 +173,15 @@ function censusFacts(result) {
   const doc = JSON.parse(result.stdout);
   const exits = (doc.files || []).flatMap((file) => file.exits || []);
   if (!exits.length) throw new Error('census JSON has no exits array');
+  const guards = exits.filter((exit) => exit && exit.guardShaped === true);
+  const state = doc.state || {};
   return {
     exits: exits.length,
     named: exits.filter((exit) => exit && exit.loggedNearby === true).length,
-    guardShaped: Number(doc.totals?.guardShaped ?? 0),
+    guardShaped: Number(doc.totals?.guardShaped ?? guards.length),
+    guardNamed: guards.filter((exit) => exit.loggedNearby === true).length,
+    stateDeclared: Number(state.declared ?? 0),
+    stateUnexercised: Array.isArray(state.unexercised) ? state.unexercised.length : 0,
   };
 }
 
@@ -192,18 +204,68 @@ function deliveryBalance(result) {
   return measured(100 * product / total, `product=${product} meta=${meta} other=${other} of total=${total} commits`, GIT_LOG);
 }
 
-function observability(result) {
+// Observability is FOUR measured facts, averaged. The previous formula was
+// `named / every return statement` and scored a compliant tree 11/100: 579 of
+// the census' 654 exits are pure value getters (`return null`,
+// `return mh[1].toLowerCase()`) that cannot and must not write a transition row,
+// so the best reachable score was 100 * 75/654 even with every refusal named.
+// Each fact below can regress on its own and each names its command.
+//   A refusals: guard-shaped decision exits that carry a row of their own.
+//   B state: ad-path state fields at least one arm references.
+//   C suites: behavioural suites with an anti-vacuity guard (an expected-arm
+//     list, so deleting an arm cannot read as a quieter green).
+//   D hang: hang-capable calls with a bound (fail_fast --all-code, 0 findings).
+function antiVacuitySuites() {
+  const dir = join(ROOT, 'kick-overlay');
+  const suites = readdirSync(dir).filter((f) => f.endsWith('-test.cjs'));
+  const RE = /arms that never printed|expected label list|ANTI-VACUITY|anti-vacuity/i;
+  const covered = suites.filter((f) => RE.test(readText(join(dir, f))));
+  return { total: suites.length, covered: covered.length, names: covered };
+}
+
+function observability(censusResult, failFastResult) {
+  let facts;
   try {
-    const { exits, named, guardShaped } = censusFacts(result);
-    return measured(100 * named / exits, `named=${named}/exits=${exits} guardShaped=${guardShaped}`, CENSUS_CMD);
+    facts = censusFacts(censusResult);
   } catch (error) {
     return cannot(error.message, CENSUS_CMD);
   }
+  const refusals = facts.guardShaped ? 100 * facts.guardNamed / facts.guardShaped : 0;
+  const state = facts.stateDeclared ? 100 * (facts.stateDeclared - facts.stateUnexercised) / facts.stateDeclared : 0;
+  const suites = antiVacuitySuites();
+  const suiteScore = suites.total ? 100 * suites.covered / suites.total : 0;
+  let hang = 0;
+  let hangDetail = 'fail_fast not run';
+  if (failFastResult && !failFastResult.timedOut) {
+    try {
+      const report = JSON.parse(String(failFastResult.stdout).slice(String(failFastResult.stdout).indexOf('{')));
+      hang = report.total_findings === 0 ? 100 : 0;
+      hangDetail = `findings=${report.total_findings}/${report.files_scanned} files`;
+    } catch { hangDetail = `unparsable (rc=${failFastResult.rc})`; }
+  }
+  const score = (refusals + state + suiteScore + hang) / 4;
+  return measured(score, `refusals ${round(refusals, 1)} (${facts.guardNamed}/${facts.guardShaped} guards carry a row)`
+    + `; state ${round(state, 1)} (${facts.stateDeclared - facts.stateUnexercised}/${facts.stateDeclared} fields referenced by an arm)`
+    + `; suites ${round(suiteScore, 1)} (${suites.covered}/${suites.total} anti-vacuity)`
+    + `; hang ${hang} (${hangDetail})`,
+  `${CENSUS_CMD} && node _tools/gate/fast-loop.mjs && python ${FAIL_FAST} scan --repo . --gate --all-code`);
+}
+
+// The scale is anchored on the playbook's own numbers instead of
+// `100 * (1 - s/15)`, which scored a COMPLIANT 15 s loop 0 and a compliant
+// 7.5 s loop 48: <=1.5 s is 100, <=5 s (the "5-15 s" goal's tight end) is 90,
+// 15 s (the documented target, and the friction row's ceiling) is 60, and
+// beyond it every extra second costs 2 points.
+function innerLoopScore(seconds) {
+  if (seconds <= 1.5) return 100;
+  if (seconds <= 5) return 100 - (seconds - 1.5) * (10 / 3.5);
+  if (seconds <= 15) return 90 - (seconds - 5) * (30 / 10);
+  return Math.max(0, 60 - (seconds - 15) * 2);
 }
 
 function innerLoopSpeed(result) {
   const seconds = result.ms / 1000;
-  const score = result.rc === 0 && !result.timedOut ? 100 * (1 - seconds / 15) : 0;
+  const score = result.rc === 0 && !result.timedOut ? innerLoopScore(seconds) : 0;
   const detail = result.rc === 0 && !result.timedOut ? '' : flat(result.stderr || result.stdout).slice(0, 120);
   const spread = Array.isArray(result.samples) ? ` samples=[${result.samples.join(', ')}]ms best-of-${result.sampleCount}` : '';
   return measured(score, `rc=${result.rc} wall=${round(result.ms, 1)}ms${spread}${result.timedOut ? ' TIMEOUT' : ''}${detail ? ` tail=${detail}` : ''}`, EDIT_LOOP);
@@ -352,7 +414,7 @@ function autonomyEndToEnd() {
 
 const SLIDERS = {
   delivery_balance: () => getGitLog().then(deliveryBalance),
-  observability: () => getCensus().then(observability),
+  observability: () => Promise.all([getCensus(), getFailFast()]).then(([census, failFast]) => observability(census, failFast)),
   inner_loop_speed: () => getFast().then(innerLoopSpeed),
   architecture_coherence: () => getGate().then(architectureCoherence),
   metric_gate_coverage: async () => metricGateCoverage(),

@@ -19,7 +19,7 @@
       ],
       "blast_radius_callers": [],
       "red_arm_cmd": "printf 'function (' >> /tmp/bad.js && node --check /tmp/bad.js",
-      "note": "MEASURED 432.03 ms warm / 7757 ms cold at e66f551 (benchmark_history bench-reconcile-20261126T202925Z-final); cold 7757 ms is RED against the 600 ms ceiling (first read after a cold page-cache, SMR spindle ~120 ms/file), a 63.6x cold/warm spread; the two warm gate readings were 353.67 ms then 432.03 ms (after). Ceiling stays 600.0 ms as a bound, ~1.4x the 432.03 ms warm after value — it is not raised to hide the cold REFUTE; a parser check that needs more than half a second is a cold-store problem, not a file-size problem."
+      "note": "MEASURED 432.03 ms warm / 7757 ms cold at e66f551 (benchmark_history bench-reconcile-20261126T202925Z-final); cold 7757 ms is RED against the 600 ms ceiling (first read after a cold page-cache, SMR spindle ~120 ms/file), a 63.6x cold/warm spread; the two warm gate readings were 353.67 ms then 432.03 ms (after). Ceiling stays 600.0 ms as a bound, ~1.4x the 432.03 ms warm after value \u2014 it is not raised to hide the cold REFUTE; a parser check that needs more than half a second is a cold-store problem, not a file-size problem."
     },
     {
       "id": "basic.census_ms",
@@ -75,7 +75,12 @@
       "owner_paths": [
         "kick-overlay/mute-decision-test.cjs"
       ],
-      "blast_radius_callers": [],
+      "blast_radius_callers": [
+        "kick-overlay/ad-time-continuity-test.cjs",
+        "kick-overlay/audio-authority-test.cjs",
+        "kick-overlay/channel-switch-test.cjs",
+        "kick-overlay/cold-cover-fixture-test.cjs"
+      ],
       "red_arm_cmd": "node kick-overlay/mute-decision-test.cjs | grep -q 'RESULT PASS'",
       "note": "MEASURED 640.39 ms in a quiet window at e66f551 (benchmark_history bench-quiet-20261126T2045Z); the contended reading was 679.27 ms warm / 1073.04 ms cold (bench-reconcile-20261126T202925Z-final). Historically MEASURED 70 783 ms before the virtual clock and 887 ms after it (2026-11-26, identical checks=95). Ceiling = 15 000 ms, ~23x the quiet value: a behavioural suite that once paid 70 s of real sleeps must not creep back above the interactive bound."
     },
@@ -132,7 +137,13 @@
       "owner_paths": [
         "_tools/test-clock.cjs"
       ],
-      "blast_radius_callers": [],
+      "blast_radius_callers": [
+        "kick-overlay/ad-time-continuity-test.cjs",
+        "kick-overlay/audio-authority-test.cjs",
+        "kick-overlay/channel-switch-test.cjs",
+        "kick-overlay/cold-cover-fixture-test.cjs",
+        "kick-overlay/mute-decision-test.cjs"
+      ],
       "red_arm_cmd": "node -e \"require('./_tools/test-clock.cjs').nope()\"",
       "note": "MEASURED 329.52 ms warm / 489.33 ms cold at e66f551 (benchmark_history bench-reconcile-20261126T202925Z-final); gate pair 489.33 ms first, 329.52 ms after (1.5x spread, under 4x). Ceiling = 3000.0 ms, ~9.1x the warm after value and the stated startup bound. Deviation from the assignment, approved by Main: kick-overlay/_clock.cjs does not exist in the worktree or I: root; both behavioural suites require ../_tools/test-clock.cjs, so command and owner_paths name that shared clock; the red arm require(...).nope() exits 1."
     }

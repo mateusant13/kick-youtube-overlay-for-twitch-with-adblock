@@ -1445,7 +1445,7 @@ async function kickPlaybackUrl(slug) {
   ];
   for (const url of probes) {
     try {
-      const r = await fetch(url, { credentials: 'omit' });
+      const r = await fetch(url, { signal: AbortSignal.timeout(12000), credentials: 'omit' });
       const api = url.replace('https://kick.com/api/', '');
       if (!r.ok) {
         kickProbeOnce(api, `${api}|${r.status}`, { api, status: r.status });
@@ -2195,7 +2195,7 @@ async function kickFetchDvr() {
   if (!KO.activeUrl || KO.dvrFetchedFor === KO.activeUrl) return;
   KO.dvrFetchedFor = KO.activeUrl;
   try {
-    const vids = await (await fetch(`https://kick.com/api/v2/channels/${encodeURIComponent(KO.kickSlug)}/videos`, { credentials: 'omit' })).json();
+    const vids = await (await fetch(`https://kick.com/api/v2/channels/${encodeURIComponent(KO.kickSlug)}/videos`, { signal: AbortSignal.timeout(12000), credentials: 'omit' })).json();
     const list = Array.isArray(vids) ? vids : [];
     const cur = KO.kickStreamId ? list.find((v) => v && v.id === KO.kickStreamId) : null;
     const item = cur || list[0];
@@ -2203,7 +2203,7 @@ async function kickFetchDvr() {
       diag('dvr_fetch', { err: 'no vod entry', slug: KO.kickSlug, streamId: KO.kickStreamId });
       return;
     }
-    const v1 = await (await fetch(`https://kick.com/api/v1/video/${item.video.uuid}`, { credentials: 'omit' })).json();
+    const v1 = await (await fetch(`https://kick.com/api/v1/video/${item.video.uuid}`, { signal: AbortSignal.timeout(12000), credentials: 'omit' })).json();
     const src = v1 && v1.source;
     if (typeof src === 'string' && src) {
       KO.kickDvrUrl = src;
