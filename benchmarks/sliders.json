@@ -1,6 +1,6 @@
 {
   "schema": "revival.sliders/v1",
-  "updated_at": "2026-11-27T07:35:25Z",
+  "updated_at": "2026-11-27T07:49:09Z",
   "scale_0_100": [
     {
       "id": "delivery_balance",
@@ -10,7 +10,7 @@
       "target": 85,
       "counterpart": "Gate rigor & hygiene",
       "proof_cmd": "node harness/twins/slider_probe.mjs delivery_balance",
-      "evidence": "node harness/twins/slider_probe.mjs --all --json (2026-11-27T07:33Z; commit 76ec690)"
+      "evidence": "git log -n12 --name-only --format=%x00%H at af51a90 -> product=8 meta=2 other=2 of total=12 (the two meta commits are the feature map and this record); counts PRODUCT commits in a 12-commit window, so it rises only by landing product work"
     },
     {
       "id": "observability",
@@ -20,7 +20,7 @@
       "target": 90,
       "counterpart": "Runtime overhead (<2%)",
       "proof_cmd": "node harness/twins/slider_probe.mjs observability",
-      "evidence": "node harness/twins/slider_probe.mjs --all --json (2026-11-27T07:33Z; commit 76ec690)"
+      "evidence": "node _tools/ko-census.mjs --json -> guardShaped=4 of baseline 113 => refusals 96.5; state 44/68 fields referenced by an arm = 64.7; 12/12 suites carry an anti-vacuity floor = 100; fail_fast_audit scan --gate --all-code -> findings 0/105 files = 100"
     },
     {
       "id": "inner_loop_speed",
@@ -30,7 +30,7 @@
       "target": 90,
       "counterpart": "Live calibration freshness",
       "proof_cmd": "node harness/twins/slider_probe.mjs inner_loop_speed",
-      "evidence": "node harness/twins/slider_probe.mjs --all --json (2026-11-27T07:33Z; commit 76ec690)"
+      "evidence": "node _tools/gate/fast-loop.mjs --files kick-overlay/twitch-adblock.js -> rc=0 wall=2820.9ms best-of-3 samples=[12731, 2820.9, 5384.2]ms; deep tier added a 7.1s suite only when a mutated line changed"
     },
     {
       "id": "architecture_coherence",
@@ -40,7 +40,7 @@
       "target": 85,
       "counterpart": "Migration blast radius",
       "proof_cmd": "node harness/twins/slider_probe.mjs architecture_coherence",
-      "evidence": "node harness/twins/slider_probe.mjs --all --json (2026-11-27T07:33Z; commit 76ec690)"
+      "evidence": "python feature_map_sync.py --repo . --gate -> {\"verdict\": \"PASS\", \"problems\": []}, unmapped 0/159, 2 features each with inputs/outputs/how_it_works"
     },
     {
       "id": "metric_gate_coverage",
@@ -50,7 +50,7 @@
       "target": 90,
       "counterpart": "Gate wall time (<60s)",
       "proof_cmd": "node harness/twins/slider_probe.mjs metric_gate_coverage",
-      "evidence": "node harness/twins/slider_probe.mjs --all --json (2026-11-27T07:33Z; commit 76ec690)"
+      "evidence": "benchmarks/budgets.json read through benchmark_history.py run --tier basic --gate -> basic.syntax_check_ms, basic.census_ms, basic.import_or_boot_ms all YES and inside budget"
     },
     {
       "id": "harness_falsifiers",
@@ -60,7 +60,7 @@
       "target": 85,
       "counterpart": "Maintenance burden",
       "proof_cmd": "node harness/twins/slider_probe.mjs harness_falsifiers",
-      "evidence": "node harness/twins/slider_probe.mjs --all --json (2026-11-27T07:33Z; commit 76ec690)"
+      "evidence": "harness/angles.tsv -> qualified 24/25 across 5 families; the one dropped angle is 'ad-path/no ad for a whole page load' (needs a real pod, cannot be summoned offline)"
     },
     {
       "id": "reversibility_safety",
@@ -70,7 +70,7 @@
       "target": 95,
       "counterpart": "Staging step friction",
       "proof_cmd": "node harness/twins/slider_probe.mjs reversibility_safety",
-      "evidence": "node harness/twins/slider_probe.mjs --all --json (2026-11-27T07:33Z; commit 76ec690)"
+      "evidence": "python git_checkpoint.py --help -> rc 0; checkpoints=1, wt-new=yes, wt-land(--receipt,--gate-cmd)=yes, rollback(--confirm)=yes, met 4/4"
     },
     {
       "id": "autonomy_end_to_end",
@@ -80,7 +80,7 @@
       "target": 95,
       "counterpart": "Safety boundary discipline",
       "proof_cmd": "node harness/twins/slider_probe.mjs autonomy_end_to_end",
-      "evidence": "node harness/twins/slider_probe.mjs --all --json (2026-11-27T07:33Z; commit 76ec690)"
+      "evidence": "revival/FRICTION.json -> youtube_live_dep, browser_live_wait, twitch_live_dep all VERIFIED through offline twins, each with its verify_cmd"
     }
   ],
   "natural_unit_pairs": [
