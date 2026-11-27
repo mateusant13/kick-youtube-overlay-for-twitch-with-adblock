@@ -501,6 +501,25 @@ const probeExpr = `(() => {
     // The compare tool diffs the player rect against a real capture, so the
     // replica probe reports the same container the real probe measures.
     player: (() => { const p = document.querySelector('[data-a-target="video-player"]') || document.querySelector('.video-player') || document.getElementById('player'); if (!p) return null; const r = p.getBoundingClientRect(); return { rect: [r.x, r.y, r.width, r.height].map(Math.round) }; })(),
+    // The hold's cover is the only opaque thing standing between the owner and
+    // an ad's decoded pixels, so every sample reports it: a cover that exists
+    // but does not paint is indistinguishable from one that was never created
+    // in a screenshot alone.
+    cover: (() => {
+      const c = document.getElementById('ko-adfix-cover');
+      if (!c) return null;
+      const r = c.getBoundingClientRect();
+      const cs = getComputedStyle(c);
+      return { display: cs.display, z: cs.zIndex, rect: [r.x, r.y, r.width, r.height].map(Math.round), vis: cs.visibility, op: cs.opacity };
+    })(),
+    // The revealed ad frame is the ONLY thing that may stand between the owner
+    // and the ad's pixels. Its opacity is the extension's own statement that the
+    // picture went up, and it costs one computed style instead of reading the
+    // ring (which opens a hidden extension tab for 700 ms).
+    frameOp: (() => {
+      const f = [...document.querySelectorAll('iframe')].find((x) => getComputedStyle(x).zIndex === '2147483647');
+      return f ? +Number(getComputedStyle(f).opacity) : null;
+    })(),
     adtext: (document.getElementById('ko-replica-adtext') || {}).textContent || '',
     frames: Array.from(document.querySelectorAll('iframe')).map((f) => String(f.src).slice(0, 80)),
   };
@@ -680,9 +699,30 @@ if (scenario.reload && scenario.reload.everyMs > 0) {
   console.log(`RELOAD every=${everyMs}ms reloads=${reloads} live=${live}s ad=${adSec}s load=${loadSec}s -> live/cycle=${evidence.reloadArm.livePerCycle}s ad/cycle=${evidence.reloadArm.adPerCycle}s load/cycle=${evidence.reloadArm.loadPerCycle}s`);
 }
 
+// A COLD REVEAL IS NOT A FIXED DELAY. Measured 2026-11-26 on dev-fast: the
+// same scenario revealed at 4722 ms on a cold media cache and before 3000 ms on
+// a warm one, so a pixel sample at a fixed instant graded the mint's latency
+// instead of the cover (first run FAIL x2, second run PASS). The sample waits
+// for the frame's own opacity - polled to a deadline, never slept past - and
+// reports how long it waited.
+async function waitFrameUp(deadlineMs) {
+  const until = Date.now() + deadlineMs;
+  while (Date.now() < until) {
+    let op = null;
+    try { op = await evaluate('(() => { const f = [...document.querySelectorAll("iframe")].find((x) => getComputedStyle(x).zIndex === "2147483647"); return f ? +Number(getComputedStyle(f).opacity) : null; })()'); } catch { op = null; }
+    if (op != null && op >= 0.9) return { ok: true, op, ms: deadlineMs - (until - Date.now()) };
+    await sleep(100);
+  }
+  return { ok: false, op: null, ms: deadlineMs };
+}
+
 for (const s of samples) {
   const wait = pageEpoch + s.at - Date.now();
   if (wait > 0) await sleep(wait);
+  if (s.pixel && s.pixelAfterReveal && !NO_EXT) {
+    const g = await waitFrameUp(Number(s.pixelAfterReveal.maxMs) || 4000);
+    s.gated = { ok: g.ok, waitedMs: g.ms, op: g.op };
+  }
   // A late CDP call or ffmpeg spawn does not move the scenario label, so a
   // report of "ct jumped 14 s in 2 s" can really be 14 s of wall clock. Record
   // the actual elapsed time beside every sample; never infer pacing from `at`.
@@ -699,9 +739,10 @@ for (const s of samples) {
   }
   const pxStart = Date.now();
   const px = s.pixel ? await centerRgb() : null;
+  if (s.gated) s.gated.adStillUp = !!(probe && probe.wrapper);
   const pxMs = Date.now() - pxStart;
   evidence.samples.push({ at: s.at, wallMs, probeMs: pxStart - probeStart, pxMs, probe, px });
-  console.log(`SAMPLE ${s.at}ms wall=${wallMs}ms ${probe && probe.video ? `ct=${probe.video.ct} rs=${probe.video.rs} paused=${probe.video.paused} buf=${probe.video.buf} buf0=${probe.video.buf0} sized=${probe.video.vw}x${probe.video.vh} frames=${probe.video.vf} err=${probe.video.err}` : 'no-video'}${px ? ` blue=${px.blue} dark=${px.dark} mean=${px.mean.join(',')}` : ''} probeMs=${pxStart - probeStart} pxMs=${pxMs}`);
+  console.log(`SAMPLE ${s.at}ms wall=${wallMs}ms ${probe && probe.video ? `ct=${probe.video.ct} rs=${probe.video.rs} paused=${probe.video.paused} buf=${probe.video.buf} buf0=${probe.video.buf0} sized=${probe.video.vw}x${probe.video.vh} frames=${probe.video.vf} err=${probe.video.err}` : 'no-video'} cover=${probe && probe.cover ? `${probe.cover.display} ${probe.cover.rect.join('x')} z=${probe.cover.z}` : 'none'}${s.gated ? ` gated=${s.gated.ok ? 'reveal' : 'timeout'} waited=${s.gated.waitedMs}ms ad=${s.gated.adStillUp}` : ''}${px ? ` blue=${px.blue} dark=${px.dark} mean=${px.mean.join(',')}` : ''} probeMs=${pxStart - probeStart} pxMs=${pxMs}`);
 }
 
 const lastAt = Math.max(0, ...samples.map((s) => s.at), ...(scenario.events || []).map((e) => e.at + (e.ms || 0)));
@@ -885,7 +926,11 @@ for (const exp of scenario.expect || []) {
     if (exp.type === 'pixelNotBlue') { verdict = px ? rgbNotBlue(px) : null; label = `pixel at ${exp.at} is not the ad`; }
     if (exp.type === 'pixelDark') { verdict = sum == null ? null : sum <= 90; label = `pixel at ${exp.at} is dark (hold cover)`; }
     if (exp.type === 'pixelBlue') { verdict = px ? rgbBlue(px) : null; label = `pixel at ${exp.at} is the ad (known-bad arm)`; }
-    if (verdict == null) unmeasurable(`pixel at ${exp.at}`, `no screenshot within tolerance of ${exp.at}ms (a late sample is not a verdict)`);
+    if (verdict != null && !NO_EXT && s && s.gated && !s.gated.adStillUp) {
+      // Non-blue AFTER the ad ended is true for every build: the sample would
+      // grade the content, not the cover. Say so instead of printing a pass.
+      unmeasurable(`pixel at ${exp.at}`, `the picture came up ${s.gated.waitedMs}ms in, after the ad UI was gone`);
+    } else if (verdict == null) unmeasurable(`pixel at ${exp.at}`, `no screenshot within tolerance of ${exp.at}ms (a late sample is not a verdict)`);
     else if (NO_EXT) check(label, !verdict, { px, inverted: 'control-no-extension' });
     else check(label, verdict, { px });
   }

@@ -2585,7 +2585,18 @@ directories took 10.5 s. That is the shape: ~120 ms per file touched, whatever t
 - A cap would only bound a cost that is already too high; the levers here are fewer files touched, one
   command instead of a family, and a cache instead of a re-read.
 
-### Guest start: one navigation instead of two - measured before/after 2026-11-24
+#### A pixel sample that races the cold start grades the mint, not the cover (measured 2026-11-26)
+
+`dev-fast` sampled at 3000/3800/4600 ms because a TUNABLE cold path revealed in 1.1-1.4 s in one run; the
+same scenario on a cold media cache revealed at 4722 ms, so two pixel checks graded the mint's latency
+(`RESULT FAIL failed=4`, blue at 3800 and 4600) and the next run on a warm cache passed with the identical
+build. The sample now WAITS for the extension's own statement that the picture is up - the revealed frame's
+computed opacity, polled every 100 ms to a 4000 ms deadline - records `gated=reveal waited=…ms ad=…` beside
+it, and a gated sample that lands after the ad UI is gone is graded CANNOT-MEASURE instead of passing on
+content. Every `SAMPLE` line also reports the hold cover (`cover=<display> <rect> z=…`) and `frameOp`,
+because a cover that exists but does not paint is invisible in a screenshot alone.
+
+## Guest start: one navigation instead of two - measured before/after 2026-11-24
 
 `ko-guest.mjs` launched Chrome on the destination URL and then navigated the same tab again after
 `Extensions.loadUnpacked`, with a fixed 3 s pre-wait and a fixed 8 s post-wait. The first load ran

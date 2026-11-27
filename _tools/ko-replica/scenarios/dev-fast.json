@@ -2,16 +2,16 @@
   "name": "dev-fast",
   "split": "dev",
   "channel": "replicach",
-  "durationMs": 7000,
+  "durationMs": 9000,
   "tailMs": 2000,
   "controlVerdict": "FAIL",
   "events": [
     { "at": 0, "kind": "preroll", "ms": 5000, "ui": "wrapper" }
   ],
   "samples": [
-    { "at": 3000, "pixel": true },
-    { "at": 3800, "pixel": true },
-    { "at": 4600, "pixel": true }
+    { "at": 3000, "pixel": true, "pixelAfterReveal": { "maxMs": 4000 } },
+    { "at": 3800, "pixel": true, "pixelAfterReveal": { "maxMs": 4000 } },
+    { "at": 4600, "pixel": true, "pixelAfterReveal": { "maxMs": 4000 } }
   ],
   "expect": [
     { "type": "row", "ev": "worker-playlist", "min": 1 },
@@ -26,5 +26,5 @@
     { "type": "row", "ev": "native-handoff", "min": 1 },
     { "type": "noReload" }
   ],
-  "note": "One cold-preroll pod in under 15 s of wall clock. The pod is the FIRST program (at:0), so the worker sees an all-ad playlist immediately and the extension can mint a clean source and reveal a real picture before the 5 s pod ends. Pixels start at 3 s, after the measured 1.1-1.4 s reveal, so they test the cover, not the detector's latency. No stall: the native element stays healthy, so pod end takes the ordinary native-handoff path instead of the 3 s handback-wait ceiling that dev-handback-wait measures; --no-ext shows ad blue at the same instants and prints RESULT FAIL via controlVerdict, so the PASS cannot be vacuous. tailMs=2000 keeps the run alive until the worker's ~1 s pod-end poll and the handoff row are in the ring."
+  "note": "Pixel samples WAIT for the revealed frame's own opacity (polled to a 4000 ms deadline) instead of racing the cold start: measured 2026-11-26, the same scenario revealed at 4722 ms on a cold media cache and before 3000 ms on a warm one, so a fixed instant graded the mint's latency; a gated sample that lands after the ad UI is gone is graded CANNOT-MEASURE, never a pass. One cold-preroll pod in under 15 s of wall clock. The pod is the FIRST program (at:0), so the worker sees an all-ad playlist immediately and the extension can mint a clean source and reveal a real picture before the 5 s pod ends. Pixels start at 3 s, after the measured 1.1-1.4 s reveal, so they test the cover, not the detector's latency. No stall: the native element stays healthy, so pod end takes the ordinary native-handoff path instead of the 3 s handback-wait ceiling that dev-handback-wait measures; --no-ext shows ad blue at the same instants and prints RESULT FAIL via controlVerdict, so the PASS cannot be vacuous. tailMs=2000 keeps the run alive until the worker's ~1 s pod-end poll and the handoff row are in the ring."
 }
