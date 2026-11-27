@@ -8,6 +8,7 @@
 //        node ko-guest.mjs stop
 //        node ko-guest.mjs status
 import { spawn, spawnSync } from 'node:child_process';
+import { readLoad } from './gate/load-sample.mjs';
 import { rmSync, writeFileSync, appendFileSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 
 const CHROME = process.env.KO_CHROME || 'C:/Program Files/Google/Chrome/Application/chrome.exe';
@@ -20,7 +21,10 @@ const EXT = process.env.KO_EXT_DIR || 'I:/kicktwitchyoutube_instagram/kick-overl
 // his tabs on 2026-11-11 - a guest port that can collide with the relay is the
 // defect, not the operator's typing.
 const PORT = process.env.KO_GUEST_PORT || '9446';
-const URL_ = process.argv[3] || process.env.KO_GUEST_URL || 'about:blank';
+// The first positional after `start`; a `--flag` is never a URL (measured 2026-11-27:
+// `start --dry-run` reported `url: "--dry-run"` because argv[3] was the flag).
+const URL_ = (process.argv[3] && !process.argv[3].startsWith('--') ? process.argv[3] : null)
+  || process.env.KO_GUEST_URL || 'about:blank';
 const HEADLESS = process.env.KO_HEADLESS !== '0';
 const LOG = 'G:/Temp/opencode/ko-guest.log';
 
@@ -95,6 +99,42 @@ if (process.argv[2] === 'status') {
 }
 
 // start
+//
+// A GUEST IS THIS PROJECT'S ONE HEAVY STEP, SO IT ASKS THE BOX FIRST (measured 2026-11-27).
+// The pre-flight printed `{"verdict":"BUSY","total":58.1,"busiest":100,"pinned":8}` and this
+// launcher started a guest anyway, because the only reader of that verdict was the operator's
+// eyes; the watcher then measured `chrome.exe(53020)` (18 processes) at 11.9 % of the machine
+// and sent a relief request. Advice that lives in a log is not a limit. A BUSY or unreadable
+// pre-flight now REFUSES here, in <1.5 s, naming the reading and the pid nothing was started
+// with; `KO_ALLOW_BUSY=1` is the override for a run the owner explicitly asked for on a loaded
+// box, and it prints that it is overriding.
+const LOAD = await readLoad({
+  sampleMs: Number(process.env.KO_LOAD_SAMPLE_MS || 1500),
+  total: Number(process.env.KO_LOAD_MAX_TOTAL || 70),
+  core: Number(process.env.KO_LOAD_MAX_CORE || 90),
+  fixture: process.env.KO_LOAD_FIXTURE,
+});
+const DRY = process.argv.includes('--dry-run');
+const OVERRIDE = process.env.KO_ALLOW_BUSY === '1';
+if (LOAD.verdict !== 'READY' && !OVERRIDE) {
+  const why = LOAD.verdict === 'BUSY'
+    ? `BUSY total=${LOAD.total}% busiest=${LOAD.busiest}% pinned=${LOAD.pinned} (ceilings total ${process.env.KO_LOAD_MAX_TOTAL || 70}%, core ${process.env.KO_LOAD_MAX_CORE || 90}%)`
+    : `CANNOT-MEASURE ${LOAD.why || 'no cpu reading'}`;
+  console.log(JSON.stringify({
+    refused: true,
+    reason: `guest not started: ${why}`,
+    advice: 'queue the guest until the box is READY, or set KO_ALLOW_BUSY=1 when the owner asked for this run on a loaded box',
+    load: LOAD,
+  }));
+  process.exit(3);
+}
+if (DRY) {
+  console.log(JSON.stringify({ dryRun: true, wouldStart: { udd: UDD, port: PORT, url: URL_, headless: HEADLESS }, load: LOAD, override: OVERRIDE }));
+  process.exit(0);
+}
+if (OVERRIDE && LOAD.verdict !== 'READY') {
+  console.log(JSON.stringify({ overriding: true, reason: `KO_ALLOW_BUSY=1 with load ${LOAD.verdict}`, load: LOAD }));
+}
 killTree();
 const args = [
   `--user-data-dir=${UDD}`,

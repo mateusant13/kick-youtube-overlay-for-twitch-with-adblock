@@ -347,6 +347,17 @@ the report.
 - The same run is the READY receipt: measured twice minutes apart in that freeze, `56.5% total with 8
   cores pinned` (BUSY) and `49% total, busiest 70.8, pinned 0` (READY). Two samples of the same
   instrument, opposite verdicts, which is what makes the check discriminating instead of decorative.
+- **THE GUEST LAUNCHER ASKS THE BOX ITSELF** (measured 2026-11-27, watcher card
+  `dm-025e33fc2336dfca59e3`). `ko-load-check` printed `BUSY total=58.1 busiest=100 pinned=8` and
+  `_tools/ko-guest.mjs` started a guest anyway, because the only reader of that verdict was an
+  operator's eyes; the watcher then billed this pane `chrome.exe(53020)` (18 processes) at 11.9 % of
+  the machine. The launcher now calls `readLoad()` before it spawns anything and on BUSY or
+  CANNOT-MEASURE prints `{"refused":true,"reason":"guest not started: BUSY total=..% pinned=.."}`
+  and exits **3**, naming the override `KO_ALLOW_BUSY=1` for a run the owner explicitly asked for on
+  a loaded box (which then prints that it is overriding). `--dry-run` prints the argv it would use.
+  Arms: `_tools/gate/guest-load-guard-selftest.mjs`, 12 checks / 4 arms, check
+  `guest-load-guard` in `ko-verify`; the arms start nothing, so the check cannot become the heavy
+  step it guards.
 - **A TIMING METRIC REFUSES ON A STARVED BOX, and the refusal is the metric's own command**
   (measured 2026-11-27). The acceptance rail graded `subsystem.ad_time_continuity_ms` at 16 923.85 ms
   against a 5 963.49 ms baseline, `+183.8 %`, and called it REGRESSED while all eight E-cores were

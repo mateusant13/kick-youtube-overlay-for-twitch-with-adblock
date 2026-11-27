@@ -1,8 +1,8 @@
 {
   "schema": "revival.features/v1",
   "repo": "kicktwitchyoutube_instagram",
-  "git_head": "ceba943",
-  "generated_at": "2026-11-27T08:13:11Z",
+  "git_head": "dbf5683",
+  "generated_at": "2026-11-27T08:33:18Z",
   "total_tracked_files": 163,
   "feature_count": 2,
   "features": [

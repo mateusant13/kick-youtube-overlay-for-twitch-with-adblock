@@ -124,4 +124,28 @@ export const instrumentChecks = [
       return `starvation refusal proven (${m[1]} checks, 4 arms): busy and cannot-measure refuse with the numbers, ready measures, a failing suite propagates its rc, and the mutant arm shows the ceilings are what makes the refusal real`;
     },
   },
+  {
+    // THE GUEST IS THIS PROJECT'S ONE HEAVY STEP; ITS LAUNCHER MUST ASK THE BOX.
+    //
+    // MEASURED 2026-11-27: `ko-load-check` printed BUSY, the launcher started the guest
+    // anyway, and the watcher billed this pane 18 processes at 11.9 % of the machine
+    // (`dm-025e33fc2336dfca59e3`). The refusal now lives in `ko-guest.mjs`; this check runs
+    // its arms and refuses if the launcher stops asking (the arms start nothing: every path
+    // is a refusal or a dry run, so the check cannot become the heavy step it guards).
+    name: 'guest-load-guard',
+    run(ctx) {
+      const tool = path.join(ctx.ROOT, '_tools/gate/guest-load-guard-selftest.mjs');
+      ctx.assert(existsSync(tool), 'missing _tools/gate/guest-load-guard-selftest.mjs');
+      const r = spawnSync(process.execPath, [tool], { timeout: 120000, killSignal: 'SIGKILL', cwd: ctx.ROOT, encoding: 'utf8' });
+      const out = String(r.stdout || '') + String(r.stderr || '');
+      ctx.assert(r.status === 0, `guest-load-guard selftest refused:\n${out.trim().slice(-500)}`);
+      const m = /RESULT PASS guest-load-guard checks=(\d+) failed=0 arms=4\/4/.exec(out);
+      ctx.assert(m, `selftest printed no verdict:\n${out.trim().slice(-400)}`);
+      const guest = ctx.read('_tools/ko-guest.mjs');
+      ctx.assert(/readLoad\(/.test(guest), 'ko-guest.mjs no longer reads the load pre-flight');
+      ctx.assert(/process\.exit\(3\)/.test(guest), 'ko-guest.mjs no longer refuses with exit 3');
+      return `guest launch guard proven (${m[1]} checks, 4 arms): BUSY refuses with the reading and names KO_ALLOW_BUSY=1, the override proceeds and still reports BUSY, READY launches, a --flag is never the URL`;
+
+    },
+  },
 ];
