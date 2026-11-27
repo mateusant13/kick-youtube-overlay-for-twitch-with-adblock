@@ -30,3 +30,8 @@ _evidence/
 cookie-extension/
 instagram-followguard/
 _scratch/
+
+# The governor's own project marker (written by I:/!watcher tools/project_prep.py).
+# It is derived state about this checkout, not product state, and it must not make
+# the SIM gate refuse a commit that changed nothing in the repo.
+.watcher-project.toml
