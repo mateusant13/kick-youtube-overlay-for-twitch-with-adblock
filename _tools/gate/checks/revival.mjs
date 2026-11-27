@@ -80,7 +80,18 @@ export const revivalChecks = [
       ctx.assert(rc === 0, `inner-loop friction is open or over budget:\n${out.trim().slice(-700)}`);
       const m = /"verdict":\s*"PASS"/.exec(out);
       ctx.assert(m, `friction audit printed no verdict:\n${out.trim().slice(-400)}`);
-      return 'every friction row has a verify_cmd that runs inside its target (tree left byte-identical)';
+      // A row that went over its target WHILE THE BOX WAS ABOVE ITS CEILING is a
+      // CANNOT-MEASURE, and the audit says so instead of failing the tree: the
+      // same command read 6.1 s and 17.9 s (min of four) minutes apart on
+      // 2026-11-26 with 8 cores pinned by foreign lanes. Naming it here keeps the
+      // refusal visible; a quiet box still fails on `OVER_BUDGET`.
+      const starvedBlock = /"starved":\s*\[([^\]]*)\]/.exec(out);
+      const starved = starvedBlock ? (starvedBlock[1].match(/":/g) || []).length : 0;
+      const loadBlock = /"load":\s*\{[^}]*"total":\s*([\d.]+),[^}]*"busiest":\s*([\d.]+)/.exec(out);
+      const load = loadBlock ? `total ${loadBlock[1]}% busiest ${loadBlock[2]}%` : 'load unread';
+      return starved
+        ? `${starved} row(s) CANNOT-MEASURE at load ceiling (${load}); every other row inside target (tree left byte-identical)`
+        : 'every friction row has a verify_cmd that runs inside its target (tree left byte-identical)';
     },
   },
 ];
