@@ -1,20 +1,20 @@
 # Macro Feature Architecture — kicktwitchyoutube_instagram
 
-> Auto-synced from Git (`94fbb4d`) at `2026-11-27T08:09:33Z` by `feature_map_sync.py`.
+> Auto-synced from Git (`ceba943`) at `2026-11-27T08:13:11Z` by `feature_map_sync.py`.
 > Refine `how_it_works`, `inputs`, `outputs`, `interlinks`, `verify_cmd`, and `metric_ids` in `features/features.json` (set `"curated": true`) — re-syncs preserve curated contracts while keeping file lists & commits live.
 
 ## 1. Macro Feature Matrix
 
 | Feature | Files | Commits | Inputs | Outputs | Interlinks | How It Works |
 |---|---:|---:|---|---|---|---|
-| `_tools` | 60 | 162 | the repository working tree and its git history; the extension's ring dump (`chrome.storage.local['ko.adlog']`) read over CDP; a guest Chrome on port 9446 with the unpacked extension loaded, or the owner's Chrome on 9222 for read-only probes | a gate verdict + receipt (`_evidence/ko-verify-latest.md`); machine artifacts per verified bug (`_evidence/<bug>-arms.md`) and reachability records; verdict lines on stdout (`RESULT PASS|FAIL ... checks=N failed=0`) that a lane quotes as evidence | kick-overlay | Instruments, never product: (1) `ko-verify.mjs` runs every static suite plus the ledger, census, artifact and revival gates and writes `_evi |
+| `_tools` | 63 | 167 | the repository working tree and its git history; the extension's ring dump (`chrome.storage.local['ko.adlog']`) read over CDP; a guest Chrome on port 9446 with the unpacked extension loaded, or the owner's Chrome on 9222 for read-only probes | a gate verdict + receipt (`_evidence/ko-verify-latest.md`); machine artifacts per verified bug (`_evidence/<bug>-arms.md`) and reachability records; verdict lines on stdout (`RESULT PASS|FAIL ... checks=N failed=0`) that a lane quotes as evidence | kick-overlay | Instruments, never product: (1) `ko-verify.mjs` runs every static suite plus the ledger, census, artifact and revival gates and writes `_evi |
 | `kick-overlay` | 24 | 306 | the Twitch watch page DOM: `[data-a-target="video-player"]`, the squeezeback/slate ad text, the page's own `HTMLVideoElement`; Twitch's HLS playlists as fetched by the page's own player worker (token, `adExtinf`, `#EXT-X-DATERANGE`) and the GQL usher (`playbackAccessToken`); real user gestures: pointer/key input on the page, the overlay bar, the popup (each carries an author stamp) | the overlay iframe + bar (`#ko-wrap`, `#ko-g1`, seek bar) with the kick/YouTube picture; published attributes the instruments read: `data-ko-owner`, `data-ko-audio-m/-v/-vis/-wt/-it`, `data-ko-adpark`, `data-ko-adblock`; media-element writes: pause/resume, `currentTime` seeks, `muted`/`volume`, `playbackRate` | _tools | Three worlds, one page. The ISOLATED content script (`content.js`) mounts the kick/YouTube layer in an iframe (`player.html`), arbitrates ow |
 
 ## 2. Subsystem Interconnection Graph
 
 ```mermaid
 flowchart LR
-  _tools["_tools (60 files)"]
+  _tools["_tools (63 files)"]
   kick_overlay["kick-overlay (24 files)"]
   _tools --> kick_overlay
   kick_overlay --> _tools
@@ -29,7 +29,7 @@ flowchart LR
 - **Interlinks:** kick-overlay
 - **Verify command:** `node _tools/ko-census.mjs --gate`
 - **Metric budgets:** basic.census_ms, e2e.gate_wall_ms
-- **Key files (60):** `_tools/cdp-daemon.mjs`, `_tools/cdp.mjs`, `_tools/gate/arms.mjs`, `_tools/gate/checks/artifacts.mjs`, `_tools/gate/checks/index.mjs`, `_tools/gate/checks/instruments.mjs`, `_tools/gate/checks/ledger.mjs`, `_tools/gate/checks/revival.mjs`, `_tools/gate/checks/static-contracts.mjs`, `_tools/gate/checks/suites.mjs`, `_tools/gate/checks/syntax.mjs`, `_tools/gate/checks/tooling.mjs` ...
+- **Key files (63):** `_tools/cdp-daemon.mjs`, `_tools/cdp.mjs`, `_tools/gate/arms.mjs`, `_tools/gate/checks/artifacts.mjs`, `_tools/gate/checks/index.mjs`, `_tools/gate/checks/instruments.mjs`, `_tools/gate/checks/ledger.mjs`, `_tools/gate/checks/revival.mjs`, `_tools/gate/checks/static-contracts.mjs`, `_tools/gate/checks/suites.mjs`, `_tools/gate/checks/syntax.mjs`, `_tools/gate/checks/tooling.mjs` ...
 
 ### `kick-overlay` — Kick Overlay
 - **How it works:** Three worlds, one page. The ISOLATED content script (`content.js`) mounts the kick/YouTube layer in an iframe (`player.html`), arbitrates ownership of the screen (`data-ko-owner`, `overlayOwnsPicture`, `OWNER_GRACE_MS`), pauses/resumes the page's own `<video>` through the stall watchdog (`nativeStallWatch`, which refuses with a named row), publishes the display clock verdicts (LIVE/BEHIND/REPEAT/FROZEN/PAUSED), sets the toolbar badge (`setBadge` -> `chrome.action`) and heals a stale tab only while it is hidden. `ko-audio.js` is the single writer of mute/volume (intent x policy x visible surface), persisted per tab in sessionStorage. The MAIN-world ad path (`twitch-adblock.js`) detects an ad by paint + slate text + the worker-hooked playlist, opens a pod, mints a clean source over Twitch's GQL usher, covers the native with the clean picture only once it is decoding at the sync target (`cleanLatTarget`, reveal waits for the caught-up report), freezes the page element for the pod's duration, and hands back exactly once (timeline-reset detection, buffered-edge or wall-clock target, `handback-wait` until `rs >= 3` or 3 s). `adblock-bridge.js` crosses the world boundary in both directions; `background.js` installs the DNR rules and the packaged resources (it holds no storage record and no badge).
@@ -58,3 +58,4 @@ flowchart LR
 | `slider-record-without-evidence` | A recorded slider score goes stale or is written from a remembered number, so the record must be regenerated b | 1P / 0F | **The scorecard's numbers are claims; the record must carry the command that produced them a** -> slider_scorecard.py report --repo . --strict-evidence -> overall_0_100 94.1, sliders_below_target 1 (delivery_ | `opencode-go/hy4-flash-free` / `slider_probe` |
 | `one-evidence-blob-not-eight-proofs` | A slider row's number is a claim; recording eight rows with one shared evidence paragraph makes the file read  | 1P / 0F | **The scorecard's duplicate_evidence arm exists because the live file already did this once;** -> slider_scorecard.py report --strict-evidence -> duplicate_evidence [], unmeasured_sliders [], gaps [('delivery | `opencode-go/hy4-flash-free` / `slider_scorecard` |
 | `rulebook-carries-history` | AGENTS.md accumulated 2790 lines of wave narrative beside its rules, so the delivery_balance hygiene sub-score | 1P / 0F | **The sub-score asks one question: is history somewhere other than the rulebook? An archive ** -> landing_ratio_check --balance-score: score_0_100 100, band Product-Led, subs product 40/40 telemetry 25/25 hyg | `deepseek-v4.1-flash` / `landing_ratio_check --balance-score; feature_map_sync --gate` |
+| `timing-metric-grades-a-queue` | A wall-clock metric whose command is the suite itself cannot tell a slow product from a busy box, so the accep | 1P / 0F | **benchmark_history already turns a typed latency_refused into CANNOT-MEASURE; the missing p** -> wrapper arms 14/14 PASS (busy refuses with total/busiest/pinned, cannot refuses naming the missing reading, re | `deepseek-v4.1-flash` / `revival_verify.py --repo . ; node _tools/ko-verify.mjs` |
