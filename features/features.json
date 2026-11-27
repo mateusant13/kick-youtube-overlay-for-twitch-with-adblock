@@ -1,8 +1,8 @@
 {
   "schema": "revival.features/v1",
   "repo": "kicktwitchyoutube_instagram",
-  "git_head": "bf9e8cd",
-  "generated_at": "2026-11-27T07:31:25Z",
+  "git_head": "21fb6fb",
+  "generated_at": "2026-11-27T07:56:17Z",
   "total_tracked_files": 159,
   "feature_count": 2,
   "features": [
@@ -136,7 +136,7 @@
         "kick-overlay/yt-route-test.cjs"
       ],
       "file_count": 24,
-      "recent_commit_touches": 309,
+      "recent_commit_touches": 308,
       "recent_commit_subjects": [
         "0.8.130: one heavy job at a time is enforced, and the suite stops recompiling the product",
         "Put the content.js suite on a virtual clock, bound the extension's fetches, and repair two slider probes",
