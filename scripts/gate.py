@@ -16,9 +16,13 @@ Verdict rules (no silent green):
 
 * `PASS` only when the child exits 0 AND its declared verdict text is present;
 * `FAIL` with the stage name when a child or its verdict is red;
+* `FAIL` (or `CANNOT-MEASURE`) when the child prints that verdict in
+  assertion position but exits 0; a verdict word quoted inside an
+  informational line is evidence, not a verdict.
 * `CANNOT-MEASURE` when a tool/script is unavailable, a launch fails, or a
   stage exceeds its own explicit timeout -- printed as `SKIPPED: <reason>`
-  for unavailable tools; never reported as `PASS`.
+  for unavailable tools; never reported as `PASS`. On timeout the whole
+  child tree is killed, so no grandchild outlives the gate's budget.
 
 Exit codes: 0 all selected stages PASS, 2 any FAIL, 3 any CANNOT-MEASURE and
 no FAIL. A FAIL outranks CANNOT-MEASURE so a red stays red.
@@ -38,6 +42,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -46,6 +51,38 @@ from pathlib import Path
 
 CREATE_NO_WINDOW = getattr(os, "CREATE_NO_WINDOW", 0x08000000)
 PASS, FAIL, CANNOT = "PASS", "FAIL", "CANNOT-MEASURE"
+
+# A verdict is a statement in assertion position, not an incidental word. Real
+# passing children print "claim: SELFTEST PASS - quoted legacy FAIL message still
+# caught" and "  ok  crashReceipt printed RESULT FAIL on its own stream": FAIL
+# there is quoted evidence, not the child's verdict. Anchoring keeps those green
+# while a child that actually prints FAIL/REFUSE under rc 0 stays red.
+_NEG_VERDICT = re.compile(
+    r"^\s*(?:(?:RESULT|[A-Za-z0-9_.@/-]+)\s*:\s*)*(FAIL|REFUSE|CANNOT-MEASURE)\b"
+)
+
+
+def _kill_tree(child: subprocess.Popen) -> None:
+    """Kill the child and every descendant before re-reading captured pipes.
+
+    On Windows ``subprocess.run(timeout=...)`` kills only the direct child and
+    then re-reads its pipe with no deadline. A grandchild that inherited that
+    pipe holds it open, so the gate blocks long past its own stage budget.
+    """
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ("taskkill", "/PID", str(child.pid), "/T", "/F"),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=CREATE_NO_WINDOW, timeout=5,
+            )
+            return
+        except (OSError, subprocess.SubprocessError):
+            pass
+    try:
+        os.killpg(os.getpgid(child.pid), signal.SIGKILL)
+    except (OSError, AttributeError):
+        child.kill()
 PRODUCT_JS = (
     "kick-overlay/background.js",
     "kick-overlay/content.js",
@@ -178,28 +215,48 @@ def run_stage(stage: Stage, repo: Path) -> Result:
     }
     if os.name == "nt":
         kw["creationflags"] = CREATE_NO_WINDOW
+    if os.name != "nt":
+        kw["start_new_session"] = True
     t0 = time.perf_counter()
     try:
-        proc = subprocess.run(argv, timeout=stage.timeout_s, **kw)
-    except subprocess.TimeoutExpired:
-        return Result(stage.name, CANNOT,
-                      f"TIMEOUT after {stage.timeout_s:g}s: {stage.name}",
-                      round(time.perf_counter() - t0, 2), timeout_s=stage.timeout_s)
+        child = subprocess.Popen(argv, **kw)
     except OSError as ex:
         return Result(stage.name, CANNOT, f"SKIPPED: launch failed: {ex}",
                       round(time.perf_counter() - t0, 2), timeout_s=stage.timeout_s,
                       skipped=True)
+    try:
+        body, _ = child.communicate(timeout=stage.timeout_s)
+        rc = child.returncode
+    except subprocess.TimeoutExpired:
+        _kill_tree(child)
+        try:
+            child.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        return Result(stage.name, CANNOT,
+                      f"TIMEOUT after {stage.timeout_s:g}s: {stage.name}",
+                      round(time.perf_counter() - t0, 2), timeout_s=stage.timeout_s)
     wall = round(time.perf_counter() - t0, 2)
-    body = proc.stdout or ""
-    if proc.returncode != 0:
+    body = body or ""
+    if rc != 0:
         return Result(stage.name, FAIL,
-                      f"child rc={proc.returncode}: {_tail(body) or '<no output>'}",
-                      wall, proc.returncode, stage.timeout_s)
+                      f"child rc={rc}: {_tail(body) or '<no output>'}",
+                      wall, rc, stage.timeout_s)
+    neg_kind, neg_line = None, ""
+    for line in body.splitlines():
+        m = _NEG_VERDICT.match(line.strip())
+        if m:
+            neg_kind, neg_line = m.group(1), line.strip()
+            break
+    if neg_kind:
+        verdict = CANNOT if neg_kind == "CANNOT-MEASURE" else FAIL
+        return Result(stage.name, verdict, f"CHILD VERDICT {neg_kind}: {_tail(neg_line)}",
+                      wall, rc, stage.timeout_s)
     if stage.pass_pattern and not re.search(stage.pass_pattern, body):
         return Result(stage.name, FAIL,
                       f"NO-PASS-VERDICT /{stage.pass_pattern}/: {_tail(body) or '<no output>'}",
-                      wall, proc.returncode, stage.timeout_s)
-    return Result(stage.name, PASS, _tail(body) or "rc=0", wall, proc.returncode, stage.timeout_s)
+                      wall, rc, stage.timeout_s)
+    return Result(stage.name, PASS, _tail(body) or "rc=0", wall, rc, stage.timeout_s)
 
 
 def main(argv: list[str] | None = None) -> int:
