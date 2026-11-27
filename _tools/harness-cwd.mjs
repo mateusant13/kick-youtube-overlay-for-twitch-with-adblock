@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Run one command from a declared subdirectory of the repo.
 //
-// WHY THIS EXISTS. `harness/angles.tsv` cells are executed by the matrix reader
+// WHY THIS EXISTS. `harness/angulos.tsv` cells are executed by the matrix reader
 // from the repo root, but several suites resolve their inputs from the working
 // directory: `kick-overlay/content-fix-test.cjs` reads `./manifest.json` and
 // `kick-overlay/route-gate-test.cjs` reads `./content.js`, so from the root they

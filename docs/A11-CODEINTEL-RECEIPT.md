@@ -63,10 +63,10 @@ Registered as check `suite-verdict` in `_tools/gate/checks/instruments.mjs`: rc 
 `RESULT FAIL` refused, rc 0 + `RESULT PASS` accepted, rc 2 refused, no verdict refused, last verdict
 decides, and the runner still calls it.
 
-## 4. `harness/angulos.tsv` exists as `harness/angles.tsv` (same content contract)
+## 4. `harness/angulos.tsv` is the falsifier matrix
 
 ```
-$ head -1 harness/angles.tsv
+$ head -1 harness/angulos.tsv
 # feature	angle	cmd	expect	neg	note	timeout_s        # 15 data rows
 $ node kick-overlay/ad-detect-test.cjs
 ARMS 134/134
@@ -74,9 +74,9 @@ RESULT PASS ad-detect: the DOM detector sees the ad Twitch paints, and the media
 ```
 
 Superset of the DM's `<regra>\t<feature>\t<comando>`: also carries the expected output and a
-negative/plant command per row, so a row is a falsifier. A second file named `angulos.tsv` would be
-two definitions of one concept; `_tools/gate/checks/tooling.mjs`, `_tools/harness-cwd.mjs`,
-`_tools/harness-plant.mjs` and `AGENTS.md:485,493` already read `angles.tsv`.
+negative/plant command per row, so a row is a falsifier. The one matrix keeps that definition;
+`_tools/gate/checks/tooling.mjs`, `_tools/harness-cwd.mjs`,
+`_tools/harness-plant.mjs` and `AGENTS.md:485,493` already read `angulos.tsv`.
 
 ## Reproduce
 

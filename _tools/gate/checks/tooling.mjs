@@ -36,7 +36,7 @@ export const toolingChecks = [
     // THE GRADER'S OWN TWO-DIRECTION PROOF MUST RUN IN THE GATE, NOT ON REQUEST.
     //
     // MEASURED 2026-11-27: `replay.mjs --corrupt` was invoked by no check at all -
-    // it appeared only as data rows in `harness/angles.tsv` - so the twin grader's
+    // it appeared only as data rows in `harness/angulos.tsv` - so the twin grader's
     // ability to FAIL was optional. A green twin row cannot distinguish "the product
     // is right" from "the grader never looked" without it, which is exactly the class
     // this file exists to refuse.
@@ -62,14 +62,14 @@ export const toolingChecks = [
   },
   {
     // The two harness launchers every mutating angle row goes through. Both were
-    // only ever exercised as data rows in `harness/angles.tsv`, so their refusal
+    // only ever exercised as data rows in `harness/angulos.tsv`, so their refusal
     // contracts were untested: a plant that restored BEFORE the child ran, or a
     // bypass that never returned the child's rc, would have printed a green row.
     //
     // Measured 2026-11-27 why this must be a check and not an assumption: the two
     // launchers spawn with `shell: true`, and an inline `node -e` falsifier lost
     // its quoting at cmd.exe (`expected ',', got '<eof>'`) - the arms below use a
-    // FILE probe, which is the shape `angles.tsv` already passes.
+    // FILE probe, which is the shape `angulos.tsv` already passes.
     //
     // 17 arms, 62 checks, measured ~2.8 s: it starts no suite, only small fixtures.
     name: 'harness-tools',

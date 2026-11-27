@@ -2475,7 +2475,7 @@
     });
   }
 
-  // The two rows `AGENTS.md` promises and harness/angles.tsv reads. They used
+  // The two rows `AGENTS.md` promises and harness/angulos.tsv reads. They used
   // to have no producer at all: the worker wrote `bypass-msg`, which named
   // none of the evidence fields the verdict needs.
   function emitPodStart(msg, ev) {

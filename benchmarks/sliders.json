@@ -155,9 +155,9 @@
       "target": 85,
       "counterpart": "Maintenance burden",
       "proof_cmd": "node harness/twins/slider_probe.mjs harness_falsifiers",
-      "evidence": "harness/angles.tsv: 15 rows, each run through the resident reader (features: ad-path, overlay, audio, reef); every row's `neg` is the command that must stop the `expect` line from being printed",
+      "evidence": "harness/angulos.tsv: 15 rows, each run through the resident reader (features: ad-path, overlay, audio, reef); every row's `neg` is the command that must stop the `expect` line from being printed",
       "rubric": {
-        "measurement": "Count every applicable harness/angles.tsv feature-angle combination for overlay provider selection, message normalization, render and disconnect recovery. A combination counts only with an observed passing and failing arm.",
+        "measurement": "Count every applicable harness/angulos.tsv feature-angle combination for overlay provider selection, message normalization, render and disconnect recovery. A combination counts only with an observed passing and failing arm.",
         "anchors": {
           "60": "60% of applicable combinations",
           "70": "70% of applicable combinations",

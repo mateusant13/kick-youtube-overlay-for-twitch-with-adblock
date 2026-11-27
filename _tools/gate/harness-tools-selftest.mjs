@@ -3,7 +3,7 @@
 //
 // MEASURED 2026-11-27: `_tools/harness-plant.mjs` and `_tools/harness-cwd.mjs` were
 // invoked by NO gate check. They appeared only as data commands inside
-// `harness/angles.tsv`, so the two tools every red matrix arm depends on could break
+// `harness/angulos.tsv`, so the two tools every red matrix arm depends on could break
 // while the matrix stayed green: a plant that never restored its bytes would corrupt
 // the tree, and a plant whose anchor went stale would refuse while the row still read
 // "red arm refused as designed".
@@ -105,7 +105,7 @@ try {
   // `harness-cwd.mjs` launch their child with `shell: true`, so an inline script
   // reaches cmd.exe where its quotes are mangled (measured 2026-11-27:
   // `expected ',', got '<eof>'`, `MODULE_NOT_FOUND` from a `require` that never
-  // arrived). Every real caller in `harness/angles.tsv` passes `node <file>`.
+  // arrived). Every real caller in `harness/angulos.tsv` passes `node <file>`.
   const RAN_PROBE = path.join(SCRATCH, 'ran-probe.mjs');
   const SAW_PROBE = path.join(SCRATCH, 'saw-probe.mjs');
   mkdirSync(SCRATCH, { recursive: true });

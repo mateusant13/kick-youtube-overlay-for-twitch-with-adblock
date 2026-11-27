@@ -482,7 +482,7 @@ Follow this exact decision tree on **every** user message before touching code:
 1. **Classify the Request First (pick ONE primary type):**
    - **Question / Explanation** (*"how does X work?", "why did Y happen?"*) -> Read `features/INDEX.md` first, then jump directly to the named owning `file:line`. Never scan the whole repo blindly.
    - **Proposal / Design / Trade-off** -> Read `features/INDEX.md` + `benchmarks/budgets.json` + `benchmarks/sliders.json`. State current behavior, target shape, blast radius, and metric impact before writing code.
-   - **Bug / Defect / Regression** -> Check `features/INDEX.md` (inputs/outputs & interlinks) + `harness/angles.tsv` + `codeintel trace` / runtime logs. Reproduce with a failing RED test or offline twin in `harness/twins/` **before** editing.
+   - **Bug / Defect / Regression** -> Check `features/INDEX.md` (inputs/outputs & interlinks) + `harness/angulos.tsv` + `codeintel trace` / runtime logs. Reproduce with a failing RED test or offline twin in `harness/twins/` **before** editing.
    - **Feature / Improvement** -> Check `features/INDEX.md` + `revival/COMMANDS.md` + `benchmarks/budgets.json`. Plan the smallest vertical slice (`<=400` LOC), isolate in a git worktree, wire into real entrypoints (zero unwired ghosts).
    - **Performance / Slow Loop / Refactor** -> Run `codeintel health` + `codeintel trace` + `benchmarks/budgets.json` + `revival/FRICTION.json`. Measure BEFORE on the real target, optimize, prove AFTER on the same instrument.
 
@@ -490,7 +490,7 @@ Follow this exact decision tree on **every** user message before touching code:
    1. `features/INDEX.md` — macro architecture, inputs, outputs, and feature interlinks.
    2. `revival/COMMANDS.md` — verified build, fast-test (`<15s`), offline twin, and gate commands.
    3. `benchmarks/budgets.json` — required metrics & ceilings (basic -> E2E) that MUST NOT regress.
-   4. `harness/angles.tsv` & `harness/twins/` — falsifiers and offline replayable twins.
+   4. `harness/angulos.tsv` & `harness/twins/` — falsifiers and offline replayable twins.
    5. `revival/GOAL.json` & `revival/MILESTONES.json` — durable multi-day goal and active wave.
 
 3. **Execution & Landing Contract (Non-Negotiable):**

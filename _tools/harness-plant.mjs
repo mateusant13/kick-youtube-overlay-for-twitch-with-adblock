@@ -2,7 +2,7 @@
 // Plant one pre-fix mutation in a shipped file, run a falsifier against it, and
 // restore the exact bytes -- the missing half of a two-direction harness arm.
 //
-// WHY THIS EXISTS. `harness/angles.tsv` carries a `neg` cell per row ("write the
+// WHY THIS EXISTS. `harness/angulos.tsv` carries a `neg` cell per row ("write the
 // adverse arm first: mutate the owning line and prove the check turns red"). The
 // matrix readers of record (`_packs/task/project-harness/scripts/harness_run.py`)
 // take that cell as a COMMAND and require its output to stop matching `expect`.

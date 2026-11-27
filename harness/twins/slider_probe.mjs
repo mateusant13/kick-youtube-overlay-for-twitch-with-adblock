@@ -6,7 +6,7 @@
 //   node harness/twins/slider_probe.mjs --all --json    machine object
 //
 // SLIDER_PROBE_ANGLES can point the harness-angle parse at a copy of
-// harness/angles.tsv (used by the falsifier to blank one neg cell).
+// harness/angulos.tsv (used by the falsifier to blank one neg cell).
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
@@ -37,7 +37,7 @@ const REPLAY_CMD = 'node harness/twins/replay.mjs --all --json';
 const GATE_CMD = `python ${FEATURE_SYNC} --repo . --gate`;
 const ANGLES_PATH = process.env.SLIDER_PROBE_ANGLES
   ? resolve(process.env.SLIDER_PROBE_ANGLES)
-  : join(ROOT, 'harness', 'angles.tsv');
+  : join(ROOT, 'harness', 'angulos.tsv');
 
 const IDS = [
   'delivery_balance', 'observability', 'inner_loop_speed', 'architecture_coherence',
@@ -362,7 +362,7 @@ function harnessFalsifiers() {
     return cannot(`harness angles file unreadable: ${error.message}`, `read ${ANGLES_PATH}`);
   }
   const rows = text.split(/\r?\n/).filter((line) => line.trim() && !line.trimStart().startsWith('#'));
-  if (!rows.length) return cannot('harness/angles.tsv has no data rows', `read ${ANGLES_PATH}`);
+  if (!rows.length) return cannot('harness/angulos.tsv has no data rows', `read ${ANGLES_PATH}`);
   const families = new Set();
   const dropped = [];
   let qualified = 0;
