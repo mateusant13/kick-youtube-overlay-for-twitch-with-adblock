@@ -1,6 +1,6 @@
 {
-  "schema": "revival.sliders/v1",
-  "updated_at": "2026-11-27T07:56:06Z",
+  "schema": "revival.sliders/v2",
+  "updated_at": "2026-11-27T11:04:05Z",
   "scale_0_100": [
     {
       "id": "delivery_balance",
@@ -21,7 +21,15 @@
           "100": "90% product commits and remaining infrastructure changes tied to measured product blockers"
         },
         "falsifier": "Git history and diff classification for the same 20-commit window."
-      }
+      },
+      "levels": {
+        "60": "Product commits >= 50% of recent history; meta drift noticed manually.",
+        "70": "Product commits >= 65%; meta scripts separated from feature PRs.",
+        "80": "Product commits >= 75% (~3:1) with landing_ratio_check measured.",
+        "90": "Product commits >= 80% (>=4:1 Product-Led) verified mechanically on recent window.",
+        "100": "Sustained >=85-90% product commits with zero meta-hijack streaks and all infra decoupled to async/nightly."
+      },
+      "why_not_100": ""
     },
     {
       "id": "observability",
@@ -42,7 +50,15 @@
           "100": "All also preserve fault attribution on failure, retry and an unavailable collector"
         },
         "falsifier": "Compare each fault receipt with the successful path and check the external report independently."
-      }
+      },
+      "levels": {
+        "60": "Basic stdout logs on errors; manual reproduction needed to locate stalls.",
+        "70": "Structured JSON/log events on main entrypoints and partial phase timing.",
+        "80": "Single machine-readable report.json outside repo + health check covering core paths.",
+        "90": "report.json + per-stage p50/p95 timings + zero silent-catch paths + live failure counters feeding backlog.",
+        "100": "End-to-end correlated telemetry across every entrypoint/subprocess/I/O boundary with <2% overhead and instant root-cause attribution."
+      },
+      "why_not_100": ""
     },
     {
       "id": "inner_loop_speed",
@@ -63,7 +79,15 @@
           "100": "<=5 s with verified stale-fixture refusal and live calibration outside smoke"
         },
         "falsifier": "Timed main/HEAD smoke output and an adverse replay with a stale fixture."
-      }
+      },
+      "levels": {
+        "60": "Targeted tests run in 30-90s without full rebuilds.",
+        "70": "Targeted tests run in 15-30s with partial caching or scoped runner.",
+        "80": "Edit->verify runs <=15s for core paths with fail-fast timeout guards.",
+        "90": "Edit->verify <=5-15s via warm/delta cache + offline twins + zero hang risks (fail_fast_audit PASS).",
+        "100": "Sub-second to <=3s deterministic offline twin + incremental verify covering every core surface with zero flaky waits."
+      },
+      "why_not_100": ""
     },
     {
       "id": "architecture_coherence",
@@ -84,7 +108,15 @@
           "100": "All traced normal and fallback paths are exercised and incompatible state writers are excluded"
         },
         "falsifier": "Trace the entrypoints against features/INDEX.md and drive each real fallback once."
-      }
+      },
+      "levels": {
+        "60": "Feature map exists; major monoliths and duplicate paths documented.",
+        "70": "Core modules mapped; dead wrappers removed from hot paths.",
+        "80": "0 unmapped files in feature_map_sync; primary contracts single-sourced.",
+        "90": "0 unmapped files, static blast-radius map synced, top monoliths split, zero doc-vs-code contradictions.",
+        "100": "Deep, clean module boundaries with zero duplicated pipelines, zero dead shims, and machine-enforced boundary contracts."
+      },
+      "why_not_100": ""
     },
     {
       "id": "metric_gate_coverage",
@@ -105,7 +137,15 @@
           "100": "All also reject malformed, missing and stale evidence inside the gate-time budget"
         },
         "falsifier": "Match current budget rows to check output, an injected regression and a gate timing."
-      }
+      },
+      "levels": {
+        "60": "Basic smoke metrics recorded once in benchmarks/history.jsonl.",
+        "70": "Basic + subsystem budgets defined with ceilings in benchmarks/budgets.json.",
+        "80": "Automated budget gate runs on PR/commit with baseline->after comparison.",
+        "90": "Basic->subsystem->E2E I/O budgets with tight ceilings, verified RED arms (--verify-red), and blast-radius callers.",
+        "100": "100% of core I/O surfaces covered by paired main-vs-HEAD metric budgets with proven falsifiers and <60s total gate wall."
+      },
+      "why_not_100": ""
     },
     {
       "id": "harness_falsifiers",
@@ -126,7 +166,15 @@
           "100": "100% including failure injection into the evaluator"
         },
         "falsifier": "Match harness receipts to the declared combinations and inspect exclusions."
-      }
+      },
+      "levels": {
+        "60": "Example-based unit tests pass on happy paths.",
+        "70": "Regression tests cover past bugs + key error paths.",
+        "80": "Feature x Angle harness covers majority of angles with explicit RED controls.",
+        "90": "All applicable Feature x Angle rows covered (0 silent HOLEs, manual-audit fallback on CANNOT-MEASURE/FAIL) with proven RED arms.",
+        "100": "Mutation-verified falsifiers across all 24 angles (steady-state decay, chaos/restart, concurrency, boundary invariants) with zero false greens."
+      },
+      "why_not_100": ""
     },
     {
       "id": "reversibility_safety",
@@ -147,7 +195,15 @@
           "100": "All also recover after interruption without lost durable state or duplicate work"
         },
         "falsifier": "Rehearse rollback or off-arm on disposable data and compare resulting state with its checkpoint."
-      }
+      },
+      "levels": {
+        "60": "Clean git history with manual rollback possible.",
+        "70": "Pre-wave git checkpoints created before large refactors.",
+        "80": "Isolated worktrees + checkpoints + explicit kill-switch on major runtime shifts.",
+        "90": "Pre-wave checkpoints + isolated worktrees + env kill-switches (off-arm tested) + atomic rollback-on-red landing.",
+        "100": "Every behavioral/schema/runtime shift is instant-reversible with dual-arm automated proof and zero-data-loss recovery drills."
+      },
+      "why_not_100": ""
     },
     {
       "id": "autonomy_end_to_end",
@@ -168,7 +224,15 @@
           "100": "Core and recovery stages run unaided and fail explicitly for stale or missing evidence"
         },
         "falsifier": "Run the supported entrypoint in a disposable environment with success, failure and recovery inputs."
-      }
+      },
+      "levels": {
+        "60": "Agent can build and run unit tests without human clicks.",
+        "70": "Agent can run integration/smoke verification locally using fixtures.",
+        "80": "Offline twins replace most manual UI/external checks; single verify command exists.",
+        "90": "Zero owner-tab/manual-click inner-loop dependencies, fail_fast_audit PASS, one-command revival_verify PASS, autonomous wave execution.",
+        "100": "Fully self-verifying, self-healing end-to-end pipeline where agents detect, diagnose, fix, prove, and land changes with zero owner babysitting."
+      },
+      "why_not_100": ""
     }
   ],
   "natural_unit_pairs": [
