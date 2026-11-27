@@ -122,7 +122,7 @@ node _tools/ko-real-capture.mjs --summarize <capture.json>  # re-analyse a SAVED
 `--summarize` exists because the classifier is part of the instrument: when it was wrong (2026-11-26,
 `rodil`, `non-live-titles=0 ad-segments=1562` on one line, ledger `KO-20261126-07`), the only honest
 way to prove the fix was to re-read the SAME 114 playlists. Ad media is a segment TITLE (the contract
-`twitch-adblock.js:4876` uses, `,live` means content); an `#EXT-X-DATERANGE` marker is reported as
+`twitch-adblock.js:5693` uses, `,live` means content); an `#EXT-X-DATERANGE` marker is reported as
 `ad-markers` and never turns a `,live` segment into an ad one, because Twitch writes a
 `twitch-trigger` row on every playlist of a channel that runs ads and its base64 `TRIGGER-URL` contains
 `ad` by chance.
@@ -170,7 +170,7 @@ TWO DIVERGENCES ARE INTENTIONAL, and each has a reason that is about the product
 - **fMP4 instead of MPEG-TS.** `page/player-worker.js` appends fMP4 into `MediaSource` and skips any
   segment that has no init (`if (!it.map) continue`). Switching the fixture to TS would mean writing a
   transmuxer inside the worker, and the extension reads playlist TEXT only (`#EXTINF` titles and the
-  stitched-ad markers, `twitch-adblock.js:4876-4882`) , never the container. The divergence is visible
+  stitched-ad markers, `twitch-adblock.js:5696-5704`) , never the container. The divergence is visible
   to `compare.mjs` and named here instead of being hidden.
 - **`#EXT-X-VERSION:7`.** `EXT-X-MAP` requires 6+; Twitch's own TS playlists send 3. No consumer of the
   replica reads this tag.

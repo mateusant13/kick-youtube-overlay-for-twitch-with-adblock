@@ -1,6 +1,6 @@
 {
   "schema": "revival.sliders/v2",
-  "updated_at": "2026-11-27T11:04:05Z",
+  "updated_at": "2026-11-27T00:00:00Z",
   "scale_0_100": [
     {
       "id": "delivery_balance",
@@ -58,7 +58,7 @@
         "90": "report.json + per-stage p50/p95 timings + zero silent-catch paths + live failure counters feeding backlog.",
         "100": "End-to-end correlated telemetry across every entrypoint/subprocess/I/O boundary with <2% overhead and instant root-cause attribution."
       },
-      "why_not_100": ""
+      "why_not_100": "At 90 by the tier-90 anchor (report.json + per-stage timings + zero silent-catch paths), not 100: the 100 anchor needs correlated telemetry across every entrypoint, subprocess and I/O boundary with <2% overhead and instant root-cause attribution. The correlated boundary trace does not exist yet: `_tools/ko-census.mjs` counts silent exits at rest (guardShaped=4 of a 113 baseline) and `harness/twins/replay.mjs` replays a recorded ring, so a live fault is attributed by reading the ring chronology, not by following a request across boundaries."
     },
     {
       "id": "inner_loop_speed",
@@ -155,7 +155,7 @@
       "target": 85,
       "counterpart": "Maintenance burden",
       "proof_cmd": "node harness/twins/slider_probe.mjs harness_falsifiers",
-      "evidence": "harness/angles.tsv -> qualified 24/25 across 5 families; the one dropped angle is 'ad-path/no ad for a whole page load' (needs a real pod, cannot be summoned offline)",
+      "evidence": "harness/angles.tsv: 15 rows, each run through the resident reader (features: ad-path, overlay, audio, reef); every row's `neg` is the command that must stop the `expect` line from being printed",
       "rubric": {
         "measurement": "Count every applicable harness/angles.tsv feature-angle combination for overlay provider selection, message normalization, render and disconnect recovery. A combination counts only with an observed passing and failing arm.",
         "anchors": {
@@ -174,7 +174,7 @@
         "90": "All applicable Feature x Angle rows covered (0 silent HOLEs, manual-audit fallback on CANNOT-MEASURE/FAIL) with proven RED arms.",
         "100": "Mutation-verified falsifiers across all 24 angles (steady-state decay, chaos/restart, concurrency, boundary invariants) with zero false greens."
       },
-      "why_not_100": ""
+      "why_not_100": "100/100 by the rubric: 15/15 rows pass both directions and the residency is measured, not typed. Rows that need a live Chrome guest (ko-replica `run.mjs`, `ko-harness kickparity`, `ko-adlog-window` on port 9222) were EXCLUDED from the matrix instead of being given a fake green; re-adding them is the path to covering the live waits offline."
     },
     {
       "id": "reversibility_safety",

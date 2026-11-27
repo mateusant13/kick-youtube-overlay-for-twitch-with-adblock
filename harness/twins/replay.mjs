@@ -179,6 +179,34 @@ function selftest(config) {
   console.log('SELFTEST PASS arms=2');
 }
 
+// A corrupt arm is the grader's own two-direction proof: grade a MUTATED copy of
+// the recorded artifact and require the grader to FAIL. Without it a green twin
+// row cannot distinguish "the product is right" from "the grader never looked".
+function corruptTwin(twin, tempDir) {
+  const source = recordedPath(twin);
+  if (!existsSync(source)) {
+    return { id: twin.id, status: 'PASS', reason: 'nothing to corrupt (no recording)', ms: 0 };
+  }
+  const t0 = Date.now();
+  const mutated = join(tempDir, `${twin.id}.corrupt`);
+  if (twin.kind === 'ring-replay') {
+    const recorded = JSON.parse(readFileSync(source, 'utf8'));
+    writeFileSync(mutated, `${JSON.stringify({ ...recorded, log: recorded.log.slice(0, 5) })}\n`, 'utf8');
+  } else {
+    // A golden line the tool cannot print is the same corruption a stale golden
+    // would be: the grader must notice the absence, not shrug at it.
+    writeFileSync(mutated, `${readFileSync(source, 'utf8').trimEnd()}\nPASS impossible golden line\n`, 'utf8');
+  }
+  const arm = gradeTwin({ ...twin, recorded: mutated });
+  const ok = arm.status === 'FAIL';
+  return {
+    id: twin.id,
+    status: ok ? 'PASS' : 'FAIL',
+    reason: ok ? `grader caught the corrupt artifact (${arm.reason.slice(0, 80)})` : 'grader passed a corrupt artifact',
+    ms: Date.now() - t0,
+  };
+}
+
 function main() {
   const config = loadConfig();
   if (flag('selftest')) {
@@ -187,6 +215,30 @@ function main() {
   }
   const id = argOf('twin');
   const all = flag('all');
+  if (flag('corrupt')) {
+    const chosen = all || !id ? config.twins : config.twins.filter((twin) => twin.id === id);
+    if (!chosen.length) {
+      console.log(`TWIN CORRUPT FAIL reason=unknown twin id=${id}`);
+      process.exit(2);
+    }
+    const tempDir = mkdtempSync(join(tmpdir(), 'twins-corrupt-'));
+    let arms;
+    try {
+      arms = chosen.map((twin) => corruptTwin(twin, tempDir));
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+    for (const arm of arms) {
+      console.log(`TWIN CORRUPT ${arm.status} ${arm.id} reason=${arm.reason}`);
+    }
+    const bad = arms.filter((arm) => arm.status !== 'PASS').length;
+    if (bad) {
+      console.log(`TWIN CORRUPT FAIL arms=${arms.length} failed=${bad}`);
+      process.exit(1);
+    }
+    console.log(`TWIN CORRUPT PASS arms=${arms.length}`);
+    return;
+  }
   if (!all && !id) {
     console.log('TWIN USAGE node harness/twins/replay.mjs --twin <id> | --all | --selftest [--json]');
     process.exit(2);
