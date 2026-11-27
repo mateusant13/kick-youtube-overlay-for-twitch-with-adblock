@@ -347,6 +347,18 @@ the report.
 - The same run is the READY receipt: measured twice minutes apart in that freeze, `56.5% total with 8
   cores pinned` (BUSY) and `49% total, busiest 70.8, pinned 0` (READY). Two samples of the same
   instrument, opposite verdicts, which is what makes the check discriminating instead of decorative.
+- **A TIMING METRIC REFUSES ON A STARVED BOX, and the refusal is the metric's own command**
+  (measured 2026-11-27). The acceptance rail graded `subsystem.ad_time_continuity_ms` at 16 923.85 ms
+  against a 5 963.49 ms baseline, `+183.8 %`, and called it REGRESSED while all eight E-cores were
+  pinned at 100 % and `git diff` over `kick-overlay/` was empty; the metric's own note already called
+  the contended pair "the queue and not the instrument". `benchmarks/budgets.json` now runs that metric
+  through `_tools/ko-timed-suite.mjs`, which reads the same pre-flight every lane reads
+  (`_tools/gate/load-sample.mjs`, one instrument and two callers) and on BUSY or CANNOT-MEASURE prints
+  a typed `latency_refused {reason: "starved: total=..% pinned=.."}` instead of a number, which
+  `benchmark_history.py` turns into CANNOT-MEASURE: never a PASS, never a REGRESSED. A READY box still
+  prints `RESULT_MS` and still regresses. Four arms plus the mutant (ceilings raised to 100 % makes the
+  same busy fixture measure) are check `timed-suite` in `ko-verify`, and it refuses if the metric stops
+  running through the wrapper.
 - **The gate is this project's one heavy step** (`node _tools/ko-verify.mjs`, ~330 s serial on the SMR
   volume). One at a time, with the READY reading quoted beside its result, and no second suite, build,
   replica scenario or browser guest started while it runs.

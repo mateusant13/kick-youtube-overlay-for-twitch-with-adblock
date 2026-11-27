@@ -19,8 +19,8 @@
 //
 // Exit codes: 0 ready (or informational), 2 busy -> QUEUE the heavy step,
 // 3 CANNOT-MEASURE (the counters did not advance).
-import os from 'node:os';
-import { evaluateLoad, exitCodeFor } from './gate/load-verdict.mjs';
+import { readLoad } from './gate/load-sample.mjs';
+import { exitCodeFor } from './gate/load-verdict.mjs';
 
 const GATE = process.argv.includes('--gate');
 // `--json` is accepted for callers that want the machine form spelled out;
@@ -34,41 +34,13 @@ const MAX_CORE = Number(process.env.KO_LOAD_MAX_CORE || 90); // % of one core, a
 // Unset in normal use; no other behaviour reads it.
 const FIXTURE = process.env.KO_LOAD_FIXTURE;
 
-function snap() {
-  return os.cpus().map((c) => {
-    const t = c.times;
-    const idle = t.idle;
-    const total = t.user + t.nice + t.sys + t.idle + t.irq;
-    return { idle, total };
-  });
+// The sampling window and the os.cpus() reads live in gate/load-sample.mjs, because
+// the timing wrapper (`ko-timed-suite.mjs`) asks the same question and two
+// conventions for "is the box ready" is the defect this instrument exists to stop.
+const out = await readLoad({ sampleMs: SAMPLE_MS, total: MAX_TOTAL, core: MAX_CORE, fixture: FIXTURE });
+if (out.verdict === 'CANNOT-MEASURE' && String(out.why || '').startsWith('bad KO_LOAD_FIXTURE')) {
+  console.log(JSON.stringify({ verdict: 'CANNOT-MEASURE', why: 'bad KO_LOAD_FIXTURE value' }));
+  process.exit(3);
 }
-
-function fixturePair(kind, cores) {
-  const before = Array.from({ length: cores }, () => ({ idle: 0, total: 1000 }));
-  if (kind === 'ready') {
-    return [before, Array.from({ length: cores }, () => ({ idle: 1000, total: 2000 }))];
-  }
-  if (kind === 'busy') {
-    return [before, Array.from({ length: cores }, () => ({ idle: 0, total: 2000 }))];
-  }
-  // 'cannot': identical snapshots, so no counter advances in the window.
-  return [before, before.map((s) => ({ ...s }))];
-}
-
-let a;
-let b;
-if (FIXTURE === undefined) {
-  a = snap();
-  await new Promise((r) => setTimeout(r, SAMPLE_MS));
-  b = snap();
-} else {
-  if (FIXTURE !== 'ready' && FIXTURE !== 'busy' && FIXTURE !== 'cannot') {
-    console.log(JSON.stringify({ verdict: 'CANNOT-MEASURE', why: 'bad KO_LOAD_FIXTURE value' }));
-    process.exit(3);
-  }
-  [a, b] = fixturePair(FIXTURE, Math.max(os.cpus().length, 1));
-}
-
-const out = evaluateLoad(a, b, { total: MAX_TOTAL, core: MAX_CORE, windowMs: SAMPLE_MS });
 console.log(JSON.stringify(out));
 process.exit(exitCodeFor(out.verdict, { gate: GATE }));

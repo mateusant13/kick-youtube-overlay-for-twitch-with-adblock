@@ -93,15 +93,17 @@
       "unit": "ms",
       "direction": "lower_is_better",
       "ceiling": 60000.0,
-      "command": "node kick-overlay/ad-time-continuity-test.cjs",
-      "parse_mode": "wall_ms",
-      "parse_pattern": "",
+      "command": "node _tools/ko-timed-suite.mjs --label ad_time_continuity",
+      "parse_mode": "regex",
+      "parse_pattern": "RESULT_MS=(\\d+)",
       "owner_paths": [
-        "kick-overlay/ad-time-continuity-test.cjs"
+        "kick-overlay/ad-time-continuity-test.cjs",
+        "_tools/ko-timed-suite.mjs",
+        "_tools/gate/load-sample.mjs"
       ],
       "blast_radius_callers": [],
       "red_arm_cmd": "node kick-overlay/ad-time-continuity-test.cjs | grep -q 'RESULT PASS'",
-      "note": "MEASURED 4235.22 ms in a quiet window at e66f551 (benchmark_history bench-quiet-20261126T2045Z). The contended reading that preceded it was 12 979.36 ms warm / 16 493.28 ms cold with two sibling agents running node on the same SMR volume (bench-reconcile-20261126T202925Z-final), a 3.1x contention factor, so that pair is the queue and not the instrument. Historically MEASURED 268 250 ms before the virtual clock and 5 133 ms after it (2026-11-26, identical checks=185, ARMS 29/29). Ceiling = 60 000 ms, ~14x the quiet value: it is the suite every ad-path change must pass, so it has to stay runnable inside a lane."
+      "note": "MEASURED 4235.22 ms in a quiet window at e66f551 (benchmark_history bench-quiet-20261126T2045Z). The contended reading that preceded it was 12 979.36 ms warm / 16 493.28 ms cold with two sibling agents running node on the same SMR volume (bench-reconcile-20261126T202925Z-final), a 3.1x contention factor, so that pair is the queue and not the instrument. Historically MEASURED 268 250 ms before the virtual clock and 5 133 ms after it (2026-11-26, identical checks=185, ARMS 29/29). Ceiling = 60 000 ms, ~14x the quiet value: it is the suite every ad-path change must pass, so it has to stay runnable inside a lane. MEASURED 2026-11-27 (revival_verify rail metric_budgets): 16 923.85 ms min-of-3 with the box at total=61.5 % and ALL EIGHT E-cores pinned at 100 %, graded REGRESSED +183.8 % against a baseline of 5 963.49 ms - while git diff af51a90..HEAD over kick-overlay/ was empty. That is the queue, not the instrument, and the rail had no way to say so. The command is now _tools/ko-timed-suite.mjs, which reads the same pre-flight every lane reads (gate/load-sample.mjs, one instrument two callers) and emits a typed `latency_refused` on BUSY or CANNOT-MEASURE instead of a number, which benchmark_history turns into CANNOT-MEASURE - never into a PASS and never into a REGRESSED. A READY box still prints RESULT_MS and still regresses. Arms: DEEP gate check `timed-suite` (busy refuses, cannot refuses, ready measures, failing suite propagates rc; the mutant - ceilings raised to 100 - measures on a busy box, which is the failure the arm must catch)."
     },
     {
       "id": "e2e.gate_wall_ms",

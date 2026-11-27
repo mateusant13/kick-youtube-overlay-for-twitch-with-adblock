@@ -99,4 +99,29 @@ export const instrumentChecks = [
       return `single-flight lock proven (${m[1]} checks, ${m[2]} arms): refuse <200ms naming the holder, queue waits, dead holder stolen; the heavy suite holds it and this gate queues`;
     },
   },
+  {
+    // A TIMING METRIC GRADED ON A STARVED BOX IS A RED NOBODY CAN FIX.
+    //
+    // MEASURED 2026-11-27: the acceptance rail graded `subsystem.ad_time_continuity_ms` at
+    // 16 923.85 ms vs a 5 963.49 ms baseline (+183.8 %) while all eight E-cores were pinned
+    // and no product file had changed. The metric's command is now
+    // `_tools/ko-timed-suite.mjs`, which refuses on BUSY/CANNOT-MEASURE with a typed
+    // `latency_refused` instead of printing a number. This check runs the wrapper's own
+    // arms, and refuses if the wrapper stops being the metric's command - otherwise the
+    // arms would be decoration beside an unwired tool.
+    name: 'timed-suite',
+    run(ctx) {
+      const tool = path.join(ctx.ROOT, '_tools/gate/timed-suite-selftest.mjs');
+      ctx.assert(existsSync(tool), 'missing _tools/gate/timed-suite-selftest.mjs');
+      const r = spawnSync(process.execPath, [tool], { timeout: 120000, killSignal: 'SIGKILL', cwd: ctx.ROOT, encoding: 'utf8' });
+      const out = String(r.stdout || '') + String(r.stderr || '');
+      ctx.assert(r.status === 0, `timed-suite selftest refused:\n${out.trim().slice(-500)}`);
+      const m = /RESULT PASS timed-suite checks=(\d+) failed=0 arms=4\/4/.exec(out);
+      ctx.assert(m, `selftest printed no verdict:\n${out.trim().slice(-400)}`);
+      const budgets = ctx.read('benchmarks/budgets.json');
+      ctx.assert(/node _tools\/ko-timed-suite\.mjs --label ad_time_continuity/.test(budgets), 'the ad-time-continuity metric no longer runs through the timing wrapper');
+      ctx.assert(/"parse_pattern": "RESULT_MS=/.test(budgets), 'the metric no longer parses the wrapper\'s RESULT_MS line');
+      return `starvation refusal proven (${m[1]} checks, 4 arms): busy and cannot-measure refuse with the numbers, ready measures, a failing suite propagates its rc, and the mutant arm shows the ceilings are what makes the refusal real`;
+    },
+  },
 ];
