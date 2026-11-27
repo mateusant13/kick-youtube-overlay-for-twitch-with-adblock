@@ -4850,6 +4850,10 @@ mKO.kickState = { state: 'Playing', pos: 10, lat: 18, dur: 3600, qualities: [], 
   const missing = ARMS.filter((a) => !printed.some((l) => l.startsWith(a)));
   assert.deepStrictEqual(missing, [], `arms that never printed their OK line: ${missing.join(', ')}`);
   console.log(`ARMS ${ARMS.length}/${ARMS.length} present`);
+  // The gate maps a suite from rc AND the printed verdict (`assertPrintedVerdict`
+  // in _tools/gate/checks/suites.mjs): a suite that exits 0 without saying so is
+  // indistinguishable from one that died quietly.
+  console.log(`RESULT PASS content-fix checks=${ARMS.length} failed=0`);
   console.log('\nALL CONTENT.JS FIX CHECKS PASSED');
   process.exit(0);
 })().catch((e) => { console.error('HARNESS FAIL:', e); process.exit(1); });

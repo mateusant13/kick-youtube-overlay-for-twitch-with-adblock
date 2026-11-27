@@ -40,6 +40,7 @@
         "_tools/gate/receipt-data.mjs",
         "_tools/gate/receipt.mjs",
         "_tools/gate/registry.mjs",
+        "_tools/gate/suite-verdict-selftest.mjs",
         "_tools/gate/timed-suite-selftest.mjs",
         "_tools/harness-cwd.mjs",
         "_tools/harness-plant.mjs",
@@ -181,6 +182,35 @@
         "subsystem.mute_decision_ms",
         "subsystem.ad_time_continuity_ms"
       ],
+      "curated": true
+    },
+    {
+      "id": "scripts",
+      "name": " scripts",
+      "status": "active",
+      "file_count": 1,
+      "files": [
+        "scripts/gate.py"
+      ],
+      "recent_commit_touches": 3,
+      "recent_commit_subjects": [
+        "gate: one command that runs this repo's real fast checks"
+      ],
+      "how_it_works": "`scripts/gate.py` is the repo-owned fast gate named in `revival/COMMANDS.md:14`: one stdlib Python driver that runs the repo's own instruments (JS syntax checks, `ko-census --gate`, the two product suites and the gate's selftests) with explicit per-stage timeouts and a named verdict per stage. `--json` prints one object, `--stage <name>` runs one stage, and the minute-scale `ko_verify` stage is opt-in so the driver can never become a second heavy job.",
+      "inputs": [
+        "the repository working tree",
+        "`node` on PATH",
+        "the instruments under `_tools/`"
+      ],
+      "outputs": [
+        "one verdict object (`--json`) or per-stage PASS/FAIL lines",
+        "rc 0 all PASS, 2 a named FAIL, 3 CANNOT-MEASURE/SKIPPED"
+      ],
+      "interlinks": [
+        "_tools"
+      ],
+      "verify_cmd": "python scripts/gate.py --json",
+      "metric_ids": [],
       "curated": true
     }
   ]

@@ -23,6 +23,9 @@ function runSuite(ctx, check, rel, { maxBuffer, env } = {}) {
   // than this has a wedged child, and the gate must refuse instead of waiting.
   const r = spawnSync(process.execPath, [path.join(ctx.ROOT, rel)], { timeout: 300000, killSignal: 'SIGKILL', ...opts });
   ctx.capture(check, rel, r);
+  // ONE PLACE, EVERY SUITE: rc 0 plus a printed `RESULT FAIL` is a red that the
+  // exit-code branch would have reported as a pass.
+  assertPrintedVerdict(ctx, r, rel);
   return r;
 }
 
@@ -40,6 +43,30 @@ function lastLines(r, n) {
     .filter((l) => /^FAIL\b/.test(l));
   if (!fails.length) return text.trim().slice(-n);
   return `${fails.length} FAIL line(s): ${fails.slice(0, 3).join(' | ').slice(0, n)} | tail: ${text.trim().slice(-Math.min(200, n))}`;
+}
+
+// THE EXIT CODE ALONE IS NOT THE VERDICT. Measured 2026-11-27: every suite call
+// site asserted `r.status === 0` and nothing else, while the file's own header
+// claims "the gate checks rc and the verdict string". A suite that prints
+// `RESULT FAIL ... failed=1` and exits 0 - a `process.exit` on the wrong branch,
+// a child that swallows its own failure - read PASS here, and the receipt would
+// have carried a green for a red. The LAST printed verdict line is the suite's
+// own statement, so rc and that line must agree.
+export function assertPrintedVerdict(ctx, r, rel) {
+  const text = String(r.stdout || '') + String(r.stderr || '');
+  const verdicts = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => /^RESULT\b/.test(l));
+  const last = verdicts.length ? verdicts[verdicts.length - 1] : '';
+  // Both halves in ONE place: a call site that keeps only `r.status === 0` cannot
+  // skip the printed half, and the printed half alone cannot excuse a non-zero rc.
+  ctx.assert(r.status === 0, `${rel}: rc ${r.status} | ${lastLines(r, 320)}`);
+  ctx.assert(
+    /^RESULT PASS\b/.test(last),
+    `${rel}: printed verdict ${last ? JSON.stringify(last.slice(0, 160)) : 'NONE'}`
+      + ` under rc ${r.status}`,
+  );
 }
 
 // ad-detect-test.cjs printed `ARMS 119/119` in this worktree on 2026-11-27

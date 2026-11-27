@@ -100,6 +100,27 @@ export const instrumentChecks = [
     },
   },
   {
+    // ---- 6b-3. a suite's printed verdict is the verdict --------------------
+    // Measured 2026-11-27: `suites.mjs` reported every suite from `r.status === 0`
+    // alone, so a suite printing `RESULT FAIL ... failed=1` and exiting 0 read as
+    // PASS in the receipt. The runner now requires the last printed `RESULT` line
+    // to be `RESULT PASS`, and this check pins it with real children both ways.
+    name: 'suite-verdict',
+    run(ctx) {
+      const tool = path.join(ctx.ROOT, '_tools/gate/suite-verdict-selftest.mjs');
+      ctx.assert(existsSync(tool), 'missing _tools/gate/suite-verdict-selftest.mjs');
+      const r = spawnSync(process.execPath, [tool], { timeout: 60000, killSignal: 'SIGKILL', cwd: ctx.ROOT, encoding: 'utf8' });
+      const out = String(r.stdout || '') + String(r.stderr || '');
+      ctx.assert(r.status === 0, `suite-verdict selftest refused:\n${out.trim().slice(-500)}`);
+      const m = /RESULT PASS suite-verdict checks=(\d+) failed=0 arms=(\d+)\/(\d+)/.exec(out);
+      ctx.assert(m, `selftest printed no verdict:\n${out.trim().slice(-400)}`);
+      const gate = ctx.read('_tools/gate/checks/suites.mjs');
+      ctx.assert(/assertPrintedVerdict\(ctx, r, rel\)/.test(gate),
+        'runSuite no longer checks the printed verdict (rc alone maps a red to a pass)');
+      return `${m[1]} checks, ${m[2]}/${m[3]} arms: rc 0 + printed RESULT FAIL refused, rc 0 + RESULT PASS accepted, rc 2 refused, no verdict refused, last verdict decides`;
+    },
+  },
+  {
     // A TIMING METRIC GRADED ON A STARVED BOX IS A RED NOBODY CAN FIX.
     //
     // MEASURED 2026-11-27: the acceptance rail graded `subsystem.ad_time_continuity_ms` at
