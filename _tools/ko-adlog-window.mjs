@@ -3,7 +3,7 @@
 // opened to reach chrome.storage from the extension origin; the service worker
 // sleeps and cannot be asked directly).
 //   node _tools/ko-adlog-window.mjs [port] [rows] [--keep a,b,c]
-import { connect } from 'file:///C:/Users/Administrador/.agents/skills/_packs/task/chrome-unpacked-extension-deploy/scripts/cdp.mjs';
+import { connect } from './ko-cdp.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const port = Number(process.argv[2] || 9222);

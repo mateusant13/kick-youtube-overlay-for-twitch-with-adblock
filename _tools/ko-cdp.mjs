@@ -49,6 +49,18 @@ export class CDP {
     this.handlers.get(method).push(cb);
   }
 
+  // Evaluate in a target's context and hand back the VALUE. A CDP exception is
+  // returned as `undefined` rather than thrown: every caller here is a probe, and
+  // a page that refuses the expression must read as "no answer", not as a crashed
+  // instrument. `awaitPromise` so an async body answers its own value.
+  async evaluate(expression, sessionId) {
+    const r = await this.send('Runtime.evaluate', {
+      expression, returnByValue: true, awaitPromise: true,
+    }, sessionId);
+    if (!r || r.exceptionDetails) return undefined;
+    return r.result ? r.result.value : undefined;
+  }
+
   close() { try { this.ws.close(); } catch { /* ignore */ } }
 }
 

@@ -18,7 +18,7 @@
 //        --minutes <n> (watch length for --live, default 6), --no-adlog.
 // Exit: 0 = everything it looked at is consistent, 2 = a contract violation
 //       (the hold did not freeze the picture / no clean source / version drift).
-import { connect } from 'file:///C:/Users/Administrador/.agents/skills/_packs/task/chrome-unpacked-extension-deploy/scripts/cdp.mjs';
+import { connect } from './ko-cdp.mjs';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import fs from 'node:fs';

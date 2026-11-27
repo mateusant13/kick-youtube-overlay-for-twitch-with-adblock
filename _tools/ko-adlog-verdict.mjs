@@ -79,9 +79,7 @@ const SOUND = new Set([
 ]);
 
 async function loadLive() {
-  const { connect } = await import(
-    'file:///C:/Users/Administrador/.agents/skills/_packs/task/chrome-unpacked-extension-deploy/scripts/cdp.mjs'
-  );
+  const { connect } = await import('./ko-cdp.mjs');
   const cdp = await connect(PORT);
   const { targetInfos } = await cdp.send('Target.getTargets');
   const worker = targetInfos.find((t) => t.type === 'service_worker' && /kick|overlay/i.test(t.url));

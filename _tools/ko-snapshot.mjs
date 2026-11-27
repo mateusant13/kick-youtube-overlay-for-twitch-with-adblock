@@ -22,7 +22,7 @@
 //   node _tools/ko-snapshot.mjs 9446         # a guest
 //   node _tools/ko-snapshot.mjs 9222 --json
 
-import { connect } from 'file:///C:/Users/Administrador/.agents/skills/_packs/task/chrome-unpacked-extension-deploy/scripts/cdp.mjs';
+import { connect, delay } from './ko-cdp.mjs';
 
 const port = Number(process.argv[2]) || 9222;
 const asJson = process.argv.includes('--json');
@@ -83,7 +83,7 @@ for (const t of wanted.slice(0, 4)) {
     ({ sessionId } = await cdp.send('Target.attachToTarget', { targetId: t.targetId, flatten: true }));
     await cdp.send('Runtime.enable', {}, sessionId);
     const a = await cdp.evaluate(SNAP, sessionId);
-    await cdp.delay(1500);
+    await delay(1500);
     const b = await cdp.evaluate(SNAP, sessionId);
     out.push({ title: t.title, a, b });
   } catch (e) {
