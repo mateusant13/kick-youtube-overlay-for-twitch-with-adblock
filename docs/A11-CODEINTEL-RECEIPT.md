@@ -6,43 +6,70 @@ load `{"verdict":"READY","total":63.1,"busiest":82.7,"pinned":0}` measured immed
 ## 1. Producer (small clean scope, ceiling declared: 1 process, 400 files, 10 min, output on `G:`)
 
 Re-run at the commit this checkpoint names, same scope, so a reader can tell these numbers from last
-week's:
+week's. **A verdict without the build that produced it is `CANNOT-COMPARE`** (seat, DM
+`dm-1ab8ac747808dd73e77b`): the detector set lives in the installed codeintel, not in this tree, and two
+builds of the same argv disagree here. The build line below is the tool's own:
 
 ```
+$ py -3 -m codeintel --version
+codeintel 14.0.0 root=H:\codeintel-worktrees\triad-milestones-20261105 sha=d552474de514
+  branch=mission/consolidated-20261105 dist=consultgpt
 $ py -3 -m codeintel full --scope kick-overlay --json --max-population-files 400 \
-      --stream G:/Temp/ko-scratch/a11-stream2.json H:/kicktwitchyoutube_instagram
-rc=0  real 0m3.34s
+      --stream G:/Temp/ko-scratch/a11-stream3.json H:/kicktwitchyoutube_instagram
+rc=2  real 0m23.9s
 population_counts       = {scope: 65, outside-scope: 0, scratch: 0}
 population_class_counts = {product: 65, docs: 0, tests: 0, benchmarks: 0}
-findings=65  verdict=pass  total=18
-detectors_measured=18/18  detectors_pending=[]  cannot_measure=0  complete=true
-summary: AMBIGUOUS-PROVENANCE=41 CONFIG-KEY-ORPHAN=65 DEAD-CONFIG-KEY=71 INERT-GRADUATION=26
-  NEAR-DUPLICATE-CAUSE=7 PASS=2 RUNG-LAG=6 SELECTOR-MATCHES-NOTHING=4 STALE-UNRESOLVED=41
-  UNORDERED-CAP-SLICE=5 VIOLATION=1
+findings=65  verdict=partial  total=25
+detectors_measured=25/25  detectors_pending=[]  cannot_measure=259
 HEAD medido: 1e87c89
 ```
+
+An earlier run of the same argv on this box resolved an older install and returned `rc=0`,
+`verdict=pass`, `total=18`, `18/18`, `cannot_measure=0` in 3.3 s. **That build no longer resolves here**,
+so its `pass` is `CANNOT-REPRODUCE` and must not be published as this tool's verdict; the numbers above
+(25 detectors, `partial`, 259 refusals) are what the installed build says today. The delta was the BUILD,
+not the tree: both runs agree on `population=65` and `findings=65`.
+
+**The 65 findings are one class, not 65 defects.** All 65 are `CONFIG-KEY-ORPHAN` from detector
+`config_drift`, evidence `origin: config file entry`, e.g. `"name"` at `kick-overlay/manifest.json:2`
+("config file entry but no reader names it"). Grouped by file: `kick-overlay/manifest.json` 47,
+`kick-overlay/rules.json` 18. **Zero findings land on a source file** — they are dead config KEYS.
 
 **Population beside the verdict, and what it does not cover.** The walk enumerates 65 files
 (`population_counts.scope=65`) and `population_class_counts` labels all of them `product`, so the
 population is **not** zero — `scope=0` is not what this command returns. But the label is the walk's,
-not coverage: group the 65 findings by file and **every one of them sits in 2 JSON files** —
-`kick-overlay/manifest.json` (47) and `kick-overlay/rules.json` (18). No detector
-reported a row on any of this repo's **113 `.js`/`.mjs`/`.cjs`/`.ts` files** (the checkout also carries
-4 `.py`). So the honest statement is:
+not coverage: it counts files the walker classified, and every finding it produced is over JSON config.
+
+The walk is also where the tool states its own limit, no longer just where we derive it: the **259
+`cannot_measure` rows are 7 detectors x 37 files** (`ARCHITECTURE-CONTRACT-DRIFT`,
+`MISSING-CHECKPOINT-LONG-WALK`, `MISSING-OBSERVABILITY`, `MISSING-RETRY-BOUND`, `NO-CACHE-OR-INCREMENTAL`,
+`SILENT-WORKER-NO-TELEMETRY`, `UNBOUNDED-GROWTH-NO-CAP`), each refusing with
+`reason: revival_std cannot measure <file>: syntax error: invalid syntax (<file>, line 3)` — i.e. the
+Python parser handed a non-Python file. **161 of those 259 rows name a `.js`/`.mjs`/`.cjs`/`.ts` file.**
+
+File census, measured at `fd3893e` rather than quoted from the preflight (whose `js` column counts
+`.js`/`.mjs`/`.ts` only and therefore omits `.cjs`):
+
+| population | .js | .mjs | .ts | .cjs | total |
+|---|---:|---:|---:|---:|---:|
+| tracked (`git ls-files`) | 12 | 70 | 0 | 15 | **97** |
+| on disk (`fd -t f`) | 21 | 91 | 1 | 15 | **128** |
+
+So the honest sentence is:
 
 ```
-populacao JS: 113 arquivos; o auditor nao cobre, CANNOT-MEASURE
+populacao JS: 113 arquivos (.js/.mjs/.ts) + 15 .cjs = 128; o auditor nao cobre, CANNOT-MEASURE
 ```
 
-The `verdict=pass` above is therefore a statement about the Python-side detectors over this tree's
-config surface, never a clean bill for the JS product. `total=18` is detectors that *ran*, which is a
-different count from detectors that *apply*.
+`verdict=partial` (and the earlier `pass`) is therefore a statement about Python-side detectors over this
+tree's config surface, never a clean bill for the JS product. `total=25` counts detectors that *ran*,
+which is a different count from detectors that *apply*.
 
-Whole-repo run at the same commit (the scope that also sees the root config/registry files):
-`population_counts.scope=187`, `population_class_counts.product=187`, `findings=187`,
-`detectors_measured=18/18`, `cannot_measure=0`, `total=18`, `verdict=fail`, 5.2 s.
-
-`detectors_measured=18/18`, `cannot_measure=0` — the two figures the proven recipe also quotes.
+Whole-repo run, same build, same commit (the scope that also sees the root config/registry files):
+`population_counts.scope=205`, `population_class_counts.product=205`, `findings=205`,
+`verdict=partial`, `total=25`, `detectors_measured=25/25`, `cannot_measure=1421`, 6.6 s. The earlier
+18-detector build reported `scope=187` / `findings=187` / `verdict=fail` for the same scope, which is the
+same build-dependence as above: the walk the two builds share is the tree, the counts are the build's.
 
 ## 2. Scorer: CANNOT-MEASURE, by the scorer's own refusal
 

@@ -110,3 +110,14 @@ Output: `score.py: error: the following arguments are required: --truth`; rc `2`
 ## Verdict
 
 `FAIL (full rc=1): 18/18 detectors measured, 0 CANNOT-MEASURE classes, 7 ranked findings (3 high); the repo gate passed rc=0 and codeintel full emitted no refusal.`
+
+## The build that produced this verdict (added 2026-11-28)
+
+A verdict is only comparable with the codeintel build that emitted it: the detector set lives in the
+installed tree (`H:\codeintel-worktrees\triad-milestones-20261105`), not in this repo. This file was
+written without that line, so its `18/18` / `cannot_measure=0` is **CANNOT-COMPARE** against today's
+install, which `py -3 -m codeintel --version` reports as
+`codeintel 14.0.0 root=H:\codeintel-worktrees\triad-milestones-20261105 sha=d552474de514 branch=mission/consolidated-20261105`
+with 25 detectors and, on the same scope, `verdict=partial` / `cannot_measure=259`. Read
+`docs/A11-CODEINTEL-RECEIPT.md` §1 for the build-pinned run; treat the numbers above as the older
+build's, still valid as history and not as the current tool's opinion.

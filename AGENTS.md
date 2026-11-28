@@ -128,6 +128,13 @@ Cap: one visible pane per canonical project across workspaces/worktrees. The pan
   withdrawn findings on 2026-11-27. Scope the search to the tree that owns the file, and after editing one
   of them regenerate the artifact from a cleared `__pycache__` and diff, because a stale byte is
   indistinguishable from a generator that never changed.
+- **A codeintel verdict without its build is CANNOT-COMPARE.** The detector set lives in the installed
+  tree (`H:\codeintel-worktrees\triad-milestones-20261105`), not in this repo, so the same argv produced
+  `verdict=pass total=18 cannot_measure=0` on one install and `verdict=partial total=25
+  cannot_measure=259` on the next, with the tree unchanged (measured 2026-11-28, DM
+  `dm-1ab8ac747808dd73e77b`). Every receipt quotes `py -3 -m codeintel --version` beside the verdict, and
+  a verdict without it is refused. Population is quoted too, and never as coverage: a 65-file walk whose
+  65 findings are all `CONFIG-KEY-ORPHAN` over two JSON config files covers zero source files.
 - **The SIM recorder is not in this repo.** `revival/sim.jsonl` is written by the *shared* script
   `C:/Users/Administrador/.agents/skills/project-revival/scripts/sim_memory.py` (`predict` before the
   eval, `observe` after), invoked by `.git/hooks/pre-commit` through that absolute path; `fd` and
