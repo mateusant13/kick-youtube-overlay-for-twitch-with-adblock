@@ -1,9 +1,9 @@
 {
   "schema": "revival.features/v1",
-  "repo": "AdoptAngles-kick",
-  "git_head": "9e55eb2",
-  "generated_at": "2026-11-27T23:26:33Z",
-  "total_tracked_files": 179,
+  "repo": "kicktwitchyoutube_instagram",
+  "git_head": "5a785f7",
+  "generated_at": "2026-11-28T05:54:38Z",
+  "total_tracked_files": 182,
   "feature_count": 3,
   "features": [
     {
@@ -20,6 +20,7 @@
         "_tools/gate/checks/index.mjs",
         "_tools/gate/checks/instruments.mjs",
         "_tools/gate/checks/ledger.mjs",
+        "_tools/gate/checks/receipts.mjs",
         "_tools/gate/checks/revival.mjs",
         "_tools/gate/checks/static-contracts.mjs",
         "_tools/gate/checks/suites.mjs",
@@ -37,6 +38,8 @@
         "_tools/gate/load-sample.mjs",
         "_tools/gate/load-verdict.mjs",
         "_tools/gate/product.mjs",
+        "_tools/gate/receipt-build-selftest.mjs",
+        "_tools/gate/receipt-build.mjs",
         "_tools/gate/receipt-data.mjs",
         "_tools/gate/receipt.mjs",
         "_tools/gate/registry.mjs",
@@ -86,15 +89,15 @@
         "_tools/relay.mjs",
         "_tools/test-clock.cjs"
       ],
-      "file_count": 74,
-      "recent_commit_touches": 208,
+      "file_count": 77,
+      "recent_commit_touches": 203,
       "recent_commit_subjects": [
         "tools: the CDP client is the repo's own, and it answers `evaluate`",
         "verdict: the reader stops claiming blindness it can lift",
         "verdict: read the squeeze, his gestures and the DVR rescue",
         "verdict: print pod age in seconds, not seconds squared",
-        "gate: one definition per concept, and a crash can no longer leave a PASS",
         "Bound every hang-capable call in the tooling, and add the impacted fast loop",
+        "gate: one definition per concept, and a crash can no longer leave a PASS",
         "pre-flight: a refusal names the ceiling that broke, not the ones that held",
         "gate: the node gate reads a suite's printed verdict too"
       ],
@@ -153,7 +156,7 @@
         "kick-overlay/yt-route-test.cjs"
       ],
       "file_count": 25,
-      "recent_commit_touches": 313,
+      "recent_commit_touches": 299,
       "recent_commit_subjects": [
         "0.8.140: a token rewrite that threw says so, and the route arm stops measuring a flag",
         "0.8.139: a sustained refusal is one row, not one row per poll",

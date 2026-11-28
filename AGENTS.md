@@ -140,6 +140,12 @@ Cap: one visible pane per canonical project across workspaces/worktrees. The pan
   refuses one whose `codeintel X.Y.Z` or `sha=` is missing — and refuses it again after stripping the
   build from its own bytes, so the check cannot pass by accepting everything
   (`node _tools/gate/receipt-build-selftest.mjs`, 10 checks).
+- **The feature-map census reads `git ls-files`, so an untracked file is invisible to it.** Measured
+  2026-11-28: `feature_map_sync --gate` printed `{"verdict":"PASS","problems":[]}` rc 0 while three new
+  `_tools` files were on disk but not yet staged; the same command on the commit that tracked them
+  returned `FAIL … 3 unmapped file(s)` rc 1 (`feature_map_sync.py:127-130`, `:229`). Run that stage
+  AFTER `git add`, never between writing a file and staging it: a green taken while the artifact was
+  untracked is a green about a different tree, and the seat caught it in 1.2 s at zero box cost.
 - **The SIM recorder is not in this repo.** `revival/sim.jsonl` is written by the *shared* script
   `C:/Users/Administrador/.agents/skills/project-revival/scripts/sim_memory.py` (`predict` before the
   eval, `observe` after), invoked by `.git/hooks/pre-commit` through that absolute path; `fd` and
