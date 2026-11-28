@@ -22,6 +22,22 @@ summary: AMBIGUOUS-PROVENANCE=41 CONFIG-KEY-ORPHAN=65 DEAD-CONFIG-KEY=71 INERT-G
 HEAD medido: 1e87c89
 ```
 
+**Population beside the verdict, and what it does not cover.** The walk enumerates 65 files
+(`population_counts.scope=65`) and `population_class_counts` labels all of them `product`, so the
+population is **not** zero — `scope=0` is not what this command returns. But the label is the walk's,
+not coverage: group the 65 findings by file and **every one of them sits in 2 JSON files** —
+`kick-overlay/manifest.json` (47) and `kick-overlay/rules.json` (18). No detector
+reported a row on any of this repo's **113 `.js`/`.mjs`/`.cjs`/`.ts` files** (the checkout also carries
+4 `.py`). So the honest statement is:
+
+```
+populacao JS: 113 arquivos; o auditor nao cobre, CANNOT-MEASURE
+```
+
+The `verdict=pass` above is therefore a statement about the Python-side detectors over this tree's
+config surface, never a clean bill for the JS product. `total=18` is detectors that *ran*, which is a
+different count from detectors that *apply*.
+
 Whole-repo run at the same commit (the scope that also sees the root config/registry files):
 `population_counts.scope=187`, `population_class_counts.product=187`, `findings=187`,
 `detectors_measured=18/18`, `cannot_measure=0`, `total=18`, `verdict=fail`, 5.2 s.
