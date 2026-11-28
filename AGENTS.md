@@ -135,6 +135,11 @@ Cap: one visible pane per canonical project across workspaces/worktrees. The pan
   `dm-1ab8ac747808dd73e77b`). Every receipt quotes `py -3 -m codeintel --version` beside the verdict, and
   a verdict without it is refused. Population is quoted too, and never as coverage: a 65-file walk whose
   65 findings are all `CONFIG-KEY-ORPHAN` over two JSON config files covers zero source files.
+  **Machine-enforced, not remembered:** check `receipt-build` (`_tools/gate/checks/receipts.mjs`,
+  predicate `_tools/gate/receipt-build.mjs`) reads every published receipt named in `RECEIPTS` and
+  refuses one whose `codeintel X.Y.Z` or `sha=` is missing — and refuses it again after stripping the
+  build from its own bytes, so the check cannot pass by accepting everything
+  (`node _tools/gate/receipt-build-selftest.mjs`, 10 checks).
 - **The SIM recorder is not in this repo.** `revival/sim.jsonl` is written by the *shared* script
   `C:/Users/Administrador/.agents/skills/project-revival/scripts/sim_memory.py` (`predict` before the
   eval, `observe` after), invoked by `.git/hooks/pre-commit` through that absolute path; `fd` and

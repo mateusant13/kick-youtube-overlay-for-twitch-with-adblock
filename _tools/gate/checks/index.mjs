@@ -13,6 +13,7 @@ import { vacuousGreen } from './vacuous-green.mjs';
 import { instrumentChecks } from './instruments.mjs';
 import { ledgerChecks } from './ledger.mjs';
 import { revivalChecks } from './revival.mjs';
+import { receiptChecks } from './receipts.mjs';
 
 export const CHECKS = [
   ...syntaxChecks,
@@ -23,4 +24,5 @@ export const CHECKS = [
   ...instrumentChecks,
   ...ledgerChecks,
   ...revivalChecks,
+  ...receiptChecks,
 ];
