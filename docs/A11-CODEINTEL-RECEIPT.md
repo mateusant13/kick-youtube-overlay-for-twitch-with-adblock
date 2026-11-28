@@ -5,14 +5,26 @@ load `{"verdict":"READY","total":63.1,"busiest":82.7,"pinned":0}` measured immed
 
 ## 1. Producer (small clean scope, ceiling declared: 1 process, 400 files, 10 min, output on `G:`)
 
+Re-run at the commit this checkpoint names, same scope, so a reader can tell these numbers from last
+week's:
+
 ```
 $ py -3 -m codeintel full --scope kick-overlay --json --max-population-files 400 \
-      --stream G:/Temp/ko-scratch/a11-stream.json H:/kicktwitchyoutube_instagram
-rc=0  real 0m8.096s  150571 bytes
-summary: AMBIGUOUS-PROVENANCE=35 CONFIG-KEY-ORPHAN=65 DEAD-CONFIG-KEY=71 INERT-GRADUATION=23
-  NEAR-DUPLICATE-CAUSE=3 PASS=2 RUNG-LAG=5 SELECTOR-MATCHES-NOTHING=4 STALE-UNRESOLVED=35
-  UNORDERED-CAP-SLICE=3 VIOLATION=1 total=65 cannot_measure=0 detectors_measured=18/18 exit=0
+      --stream G:/Temp/ko-scratch/a11-stream2.json H:/kicktwitchyoutube_instagram
+rc=0  real 0m3.34s
+population_counts       = {scope: 65, outside-scope: 0, scratch: 0}
+population_class_counts = {product: 65, docs: 0, tests: 0, benchmarks: 0}
+findings=65  verdict=pass  total=18
+detectors_measured=18/18  detectors_pending=[]  cannot_measure=0  complete=true
+summary: AMBIGUOUS-PROVENANCE=41 CONFIG-KEY-ORPHAN=65 DEAD-CONFIG-KEY=71 INERT-GRADUATION=26
+  NEAR-DUPLICATE-CAUSE=7 PASS=2 RUNG-LAG=6 SELECTOR-MATCHES-NOTHING=4 STALE-UNRESOLVED=41
+  UNORDERED-CAP-SLICE=5 VIOLATION=1
+HEAD medido: 1e87c89
 ```
+
+Whole-repo run at the same commit (the scope that also sees the root config/registry files):
+`population_counts.scope=187`, `population_class_counts.product=187`, `findings=187`,
+`detectors_measured=18/18`, `cannot_measure=0`, `total=18`, `verdict=fail`, 5.2 s.
 
 `detectors_measured=18/18`, `cannot_measure=0` — the two figures the proven recipe also quotes.
 
@@ -37,7 +49,9 @@ _tools/gate/checks/revival.mjs:96  name: 'revival-friction'
 _tools/gate/checks/revival.mjs:128 name: 'revival-failfast'
 ```
 
-`node _tools/ko-verify.mjs` → `RESULT PASS checks=43 failed=0`; the four rows read
+`node _tools/ko-verify.mjs` → `RESULT PASS checks=43 failed=0`, re-measured at the commit the receipt
+names (`1e87c89`, 100.2 s, load `{"verdict":"READY","via":"watcher-traffic-light"}` immediately
+before); the four rows read
 `revival-features PASS · revival-budgets PASS (3/3 timing rows refused on a starved box) ·
 revival-friction PASS · revival-failfast PASS (119 files, 0 unbounded fetch/spawn/loop)`.
 They call `feature_map_sync.py --repo . --gate`, `benchmark_history.py`, `loop_friction_audit.py
